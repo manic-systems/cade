@@ -58,8 +58,14 @@ programs.cade = {
   enableBashIntegration = true;  # default
   enableZshIntegration  = true;  # default; needs programs.zsh.enable
   enableFishIntegration = true;  # default; needs programs.fish.enable
+  verbosity = "normal";          # null, quiet, normal, vars, trace
+  longRunningWarningMs = 5000;   # null, or a positive integer
 };
 ```
+
+setting `verbosity` or `longRunningWarningMs` makes the module generate a TOML
+config file and pass it to cade with `--config`. alternatively, set
+`programs.cade.configFile` to pass your own strict config path.
 
 for **nushell**, **elvish**, or **murex**, add the hook to your user shell config; see
 [Manual setup](#manual-setup) below. the ready-made init lines are also exposed
@@ -130,8 +136,21 @@ cade hook <SHELL>             # print the shell hook initialization code
 cade enter --shell <SHELL>    # activate the environment (used by the hook)
 cade exit --shell <SHELL>     # deactivate and restore the previous environment
 cade reload --shell <SHELL>   # re-evaluate on directory change (called by the hook)
+cade --config /nix/store/cade.toml status  # strict config file override
 cade --verbosity vars status  # quiet | normal | vars | trace
 ```
+
+cade reads an optional TOML config from `$XDG_CONFIG_HOME/cade/config.toml`
+(usually `~/.config/cade/config.toml`). `--config <file>` is strict: that exact
+file is read instead of the XDG default, and a missing or invalid file is an
+error. this is intended for wrappers and declarative systems.
+
+```toml
+verbosity = "normal"           # quiet | normal | vars | trace
+long_running_warning_ms = 5000
+```
+
+CLI flags override environment variables, which override the config file.
 
 verbosity controls cade's human-facing diagnostics:
 
@@ -140,11 +159,11 @@ verbosity controls cade's human-facing diagnostics:
 - `vars`: normal plus variable names set/cleared/restored
 - `trace`: vars plus layer/cache, external command, and hook details
 
-set `CADE_VERBOSITY` to apply a level to shell hooks.
+set `CADE_VERBOSITY` to apply a level to shell hooks without a config file.
 
 external loaders (`load flake`, `load shell`, and `call`) print a warning if
-they run for more than 5 seconds. set `CADE_LONG_RUNNING_WARNING_MS` to adjust
-that threshold.
+they run for more than 5 seconds. set `long_running_warning_ms` in the config
+or `CADE_LONG_RUNNING_WARNING_MS` in the environment to adjust that threshold.
 ## permissions
 
 cade only composes layers from directories you've **explicitly allowed**.

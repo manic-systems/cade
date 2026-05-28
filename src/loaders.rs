@@ -1,4 +1,5 @@
 use crate::{
+    config,
     types::EnvSet,
     verbosity::{self, Verbosity},
 };
@@ -8,9 +9,7 @@ use std::{io::Read, path::Path, process::Command, sync::mpsc::RecvTimeoutError, 
 const DEFAULT_LONG_RUNNING_WARNING_AFTER: Duration = Duration::from_secs(5);
 
 fn long_running_warning_after() -> Duration {
-    std::env::var("CADE_LONG_RUNNING_WARNING_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
+    config::long_running_warning_ms()
         .map(Duration::from_millis)
         .unwrap_or(DEFAULT_LONG_RUNNING_WARNING_AFTER)
 }

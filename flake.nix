@@ -47,6 +47,6 @@
       # Shell init snippets for nushell/elvish/murex (plain strings invoking
       # `cade` from PATH), accessible without evaluating the system module:
       #   cade.lib.shellSnippets.nushell
-      lib.shellSnippets = import ./nix/snippets.nix;
+      lib.shellSnippets = import ./nix/snippets.nix { };
     };
 }

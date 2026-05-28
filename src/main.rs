@@ -1,4 +1,5 @@
 mod cli;
+mod config;
 mod core;
 mod envrc;
 mod envs;
@@ -15,6 +16,8 @@ use crate::shells::ShellName;
 
 fn try_main() -> Result<()> {
     let args = cli::clap::Cli::parse();
+    let config = crate::config::load(args.config.as_deref())?;
+    crate::config::set(config);
     if let Some(verbosity) = args.verbosity {
         crate::verbosity::set(verbosity.into());
     }
@@ -28,7 +31,20 @@ fn try_main() -> Result<()> {
             .context("resolve cade executable for shell hook")?
             .to_string_lossy()
             .into_owned();
-        print!("{}", output.hook_init(&cade_exe));
+        let cade_args = args
+            .config
+            .as_ref()
+            .map(|path| -> Result<Vec<String>> {
+                let path =
+                    std::fs::canonicalize(path).context("resolve config path for shell hook")?;
+                Ok(vec![
+                    "--config".to_string(),
+                    path.to_string_lossy().into_owned(),
+                ])
+            })
+            .transpose()?
+            .unwrap_or_default();
+        print!("{}", output.hook_init(&cade_exe, &cade_args));
         return Ok(());
     }
 

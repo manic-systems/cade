@@ -37,6 +37,7 @@ pub fn current() -> Verbosity {
                 .ok()
                 .and_then(|v| v.parse().ok())
         })
+        .or_else(|| crate::config::current().verbosity)
         .unwrap_or(Verbosity::Normal)
 }
 

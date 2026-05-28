@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum CliVerbosity {
@@ -44,6 +45,10 @@ pub enum CliAction {
 
 #[derive(Parser)]
 pub struct Cli {
+    /// Strictly read this TOML config file instead of the XDG default.
+    #[arg(long, global = true)]
+    pub config: Option<PathBuf>,
+
     /// Diagnostic verbosity: quiet, normal, vars, or trace.
     #[arg(long, value_enum, global = true)]
     pub verbosity: Option<CliVerbosity>,

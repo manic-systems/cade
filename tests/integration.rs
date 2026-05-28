@@ -47,6 +47,21 @@ impl Sandbox {
         std::fs::write(dir.join(format!("{session}.env")), contents).unwrap();
     }
 
+    fn write_config(&self, contents: &str) -> PathBuf {
+        let path = self.state.join(".config").join("cade").join("config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    fn write_config_home(&self, rel: &str, contents: &str) -> (PathBuf, PathBuf) {
+        let home = self.state.join(rel);
+        let path = home.join("cade").join("config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, contents).unwrap();
+        (home, path)
+    }
+
     /// Run `cade <args>` in `cwd` with an isolated, mostly-empty environment.
     fn run(&self, cwd: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
         let mut cmd = Command::new(BIN);
@@ -608,6 +623,129 @@ fn quiet_verbosity_suppresses_lifecycle_text() {
 }
 
 #[test]
+fn xdg_config_sets_verbosity() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    sb.write_config("verbosity = \"quiet\"\n");
+    sb.allow(&sb.root);
+
+    let out = sb.enter(&sb.root, &[]);
+    assert!(out.status.success(), "{:?}", out);
+    assert!(stdout(&out).contains("export A='1';"), "{}", stdout(&out));
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+}
+
+#[test]
+fn malformed_xdg_config_home_does_not_break_optional_config() {
+    let sb = Sandbox::new();
+    let out = sb.run(&sb.root, &["status"], &[("XDG_CONFIG_HOME", "relative")]);
+    assert!(out.status.success(), "{:?}", out);
+}
+
+#[test]
+fn pure_reload_keeps_loaded_xdg_config_path() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "pure\nA=1\n");
+    let (config_home, config_path) =
+        sb.write_config_home("custom-config", "verbosity = \"quiet\"\n");
+    sb.allow(&sb.root);
+
+    let config_home = config_home.to_string_lossy().to_string();
+    let first = sb.run(
+        &sb.root,
+        &["enter", "--shell", "bash"],
+        &[("XDG_CONFIG_HOME", config_home.as_str())],
+    );
+    assert!(first.status.success(), "{:?}", first);
+    let first_stdout = stdout(&first);
+    assert!(
+        first_stdout.contains("__CADE_CONFIG_PATH"),
+        "activation must retain the loaded config path: {first_stdout}"
+    );
+    assert!(
+        first_stdout.contains("unset XDG_CONFIG_HOME;"),
+        "pure should still discard ambient XDG_CONFIG_HOME: {first_stdout}"
+    );
+
+    let root = sb.root.to_string_lossy().to_string();
+    let config = config_path.to_string_lossy().to_string();
+    let watches = serde_json::json!({
+        "root": root,
+        "cade_paths": [],
+        "files": []
+    })
+    .to_string();
+
+    let out = sb.run(
+        &sb.root,
+        &["reload", "--shell", "bash"],
+        &[
+            ("__CADE_CONFIG_PATH", config.as_str()),
+            ("__CADE_SESSION", "config-path"),
+            ("__CADE_SET", "A"),
+            ("__CADE_UNSET", ""),
+            ("__CADE_PURE", "1"),
+            ("__CADE_HOOKS", "[]"),
+            ("__CADE_LAYERS", root.as_str()),
+            ("__CADE_WATCHES", watches.as_str()),
+            ("A", "1"),
+        ],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("export A='1';"), "{}", stdout(&out));
+}
+
+#[test]
+fn cli_verbosity_overrides_config() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    sb.write_config("verbosity = \"quiet\"\n");
+    sb.allow(&sb.root);
+
+    let out = sb.run(
+        &sb.root,
+        &["--verbosity", "vars", "enter", "--shell", "bash"],
+        &[],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    let err = stderr(&out);
+    assert!(err.contains("cade: loaded"), "{err}");
+    assert!(err.contains("cade: set A."), "{err}");
+}
+
+#[test]
+fn strict_config_override_requires_existing_file() {
+    let sb = Sandbox::new();
+    let missing = sb.state.join("missing.toml");
+    let out = sb.run(
+        &sb.root,
+        &["--config", missing.to_str().unwrap(), "status"],
+        &[],
+    );
+    assert!(!out.status.success(), "missing config should fail");
+    assert!(stderr(&out).contains("reading config"), "{}", stderr(&out));
+}
+
+#[test]
+fn hook_generated_with_strict_config_keeps_using_it() {
+    let sb = Sandbox::new();
+    let config = sb.write_config("verbosity = \"quiet\"\n");
+
+    let out = sb.run(
+        &sb.root,
+        &["--config", config.to_str().unwrap(), "hook", "bash"],
+        &[],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    assert!(
+        stdout(&out).contains(&format!("--config' '{}'", config.display())),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
 fn vars_verbosity_prints_variable_names() {
     let sb = Sandbox::new();
     sb.write(".cade", "A=1\nclear OLD\n");
@@ -821,6 +959,28 @@ fn watch_directive_invalidates_a_call_layer() {
 fn slow_external_loader_prints_warning() {
     let sb = Sandbox::new();
     sb.write(".cade", "call sh -c \"sleep 0.05; echo SLOW=ok\"\n");
+    sb.write_config("long_running_warning_ms = 1\n");
+    sb.allow(&sb.root);
+
+    let path = std::env::var("PATH").unwrap_or_default();
+    let out = sb.enter(&sb.root, &[("PATH", path.as_str())]);
+    assert!(out.status.success(), "{:?}", out);
+    assert!(
+        stdout(&out).contains("export SLOW='ok';"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("is taking a long time"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn zero_env_warning_threshold_is_ignored() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "call sh -c \"sleep 0.05; echo SLOW=ok\"\n");
     sb.allow(&sb.root);
 
     let path = std::env::var("PATH").unwrap_or_default();
@@ -828,7 +988,7 @@ fn slow_external_loader_prints_warning() {
         &sb.root,
         &[
             ("PATH", path.as_str()),
-            ("CADE_LONG_RUNNING_WARNING_MS", "1"),
+            ("CADE_LONG_RUNNING_WARNING_MS", "0"),
         ],
     );
     assert!(out.status.success(), "{:?}", out);
@@ -838,7 +998,7 @@ fn slow_external_loader_prints_warning() {
         stdout(&out)
     );
     assert!(
-        stderr(&out).contains("is taking a long time"),
+        !stderr(&out).contains("is taking a long time"),
         "{}",
         stderr(&out)
     );

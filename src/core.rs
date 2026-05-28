@@ -1,4 +1,5 @@
 use crate::{
+    config,
     types::{CadeAction, CadeLayer, EnvSet, HookType, InnerHook, Keyword, Loadable},
     verbosity::{self, Verbosity},
 };
@@ -529,6 +530,12 @@ impl Cade {
             "{}",
             shell.set_env("__CADE_STATE_DIR", &self.state_dir.to_string_lossy())
         );
+        if let Some(path) = config::current().path.as_deref() {
+            print!(
+                "{}",
+                shell.set_env("__CADE_CONFIG_PATH", &path.to_string_lossy())
+            );
+        }
 
         let mut set_keys: Vec<&str> = rollup.env.keys().map(String::as_str).collect();
         set_keys.sort_unstable();
@@ -677,6 +684,7 @@ impl Cade {
             "__CADE_WATCHES",
             "__CADE_HOOKS",
             "__CADE_STATE_DIR",
+            "__CADE_CONFIG_PATH",
         ] {
             print!("{}", shell.unset_env(var));
         }
