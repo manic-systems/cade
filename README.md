@@ -261,9 +261,10 @@ two escape hatches:
 
 - `KEY:=value` (in `.env`/`call` output) forces a **hard replace** even for a
   path-like var, with no ambient and no parent layers.
-- `pure` discards the ambient environment entirely for that layer, so concat
-  vars resolve to the layer stack only (inherited *layer* values are still
-  kept). it's the way to start from a clean base.
+- `pure` discards the ambient environment for that layer, so concat vars
+  resolve to the layer stack only (inherited *layer* values are still kept).
+  shell runtime variables such as `PWD`, `HOME`, and command status are
+  preserved so the interactive shell can still run its hooks.
 
 ## how it works
 
@@ -279,7 +280,7 @@ two escape hatches:
 6. your shell evaluates the output, setting/unsetting variables and running hooks
 7. on exit it restores precisely what it changed: variables cade set are
    reverted to their prior value or unset, while shell-managed variables
-   (`PWD`, `OLDPWD`, `SHLVL`, …) and anything you changed mid-session are left
+   (`PWD`, `OLDPWD`, `SHLVL`, status, …) and anything you changed mid-session are left
    untouched. after `pure`, the discarded ambient environment is restored from a
    snapshot.
 

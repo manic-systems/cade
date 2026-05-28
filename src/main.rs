@@ -20,7 +20,11 @@ fn try_main() -> Result<()> {
     if let Hook { shell } = &args.action {
         let shell_name: ShellName = shell.parse().map_err(|e: String| anyhow::anyhow!(e))?;
         let output = shell_name.get_output();
-        print!("{}", output.hook_init());
+        let cade_exe = std::env::current_exe()
+            .context("resolve cade executable for shell hook")?
+            .to_string_lossy()
+            .into_owned();
+        print!("{}", output.hook_init(&cade_exe));
         return Ok(());
     }
 
@@ -49,9 +53,7 @@ fn try_main() -> Result<()> {
         Edit => {
             let editor = std::env::var("EDITOR").context("find EDITOR variable")?;
             let parts = shlex::split(&editor).context("parse EDITOR variable")?;
-            let (program, args) = parts
-                .split_first()
-                .context("EDITOR variable is empty")?;
+            let (program, args) = parts.split_first().context("EDITOR variable is empty")?;
             let mut session = std::process::Command::new(program)
                 .args(args)
                 .arg(".cade")

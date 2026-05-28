@@ -161,6 +161,33 @@ fn pure_discards_ambient_but_keeps_inherited_layers() {
 }
 
 #[test]
+fn pure_preserves_shell_runtime_vars() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "pure\n");
+    sb.allow(&sb.root);
+
+    let out = sb.enter(
+        &sb.root,
+        &[
+            ("AMBIENT_TEST", "zzz"),
+            ("HOME", "/home/tester"),
+            ("LAST_EXIT_CODE", "7"),
+        ],
+    );
+    assert!(out.status.success(), "enter failed: {:?}", out);
+    let s = stdout(&out);
+    assert!(s.contains("unset AMBIENT_TEST;"), "ambient not purged: {s}");
+    assert!(
+        !s.contains("unset HOME;"),
+        "pure must keep HOME usable: {s}"
+    );
+    assert!(
+        !s.contains("unset LAST_EXIT_CODE;"),
+        "pure must keep shell status usable: {s}"
+    );
+}
+
+#[test]
 fn hostile_env_value_is_single_quoted_and_inert() {
     let sb = Sandbox::new();
     sb.write(".cade", "load env\n");
@@ -242,6 +269,10 @@ fn first_activation_emits_session_id_not_an_env_blob() {
     let s = stdout(&out);
     // a small session id, not the old exported full-env snapshot
     assert!(s.contains("export __CADE_SESSION="), "no session id: {s}");
+    assert!(
+        s.contains("export __CADE_STATE_DIR="),
+        "no state dir marker: {s}"
+    );
     assert!(
         !s.contains("__CADE_PREV"),
         "should not emit the env blob: {s}"
