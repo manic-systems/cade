@@ -648,6 +648,92 @@ fn concat_uses_snapshot_ambient_so_reloads_dont_grow() {
 }
 
 #[test]
+fn reload_between_unrelated_roots_announces_unload_then_load() {
+    let sb = Sandbox::new();
+    let a = sb.dir("a");
+    let b = sb.dir("b");
+    sb.write("a/.cade", "A=1\n");
+    sb.write("b/.cade", "B=2\n");
+    sb.allow(&a);
+    sb.allow(&b);
+    sb.write_snapshot("s4", "PATH=/orig");
+
+    let a_str = a.to_string_lossy().to_string();
+    let b_str = b.to_string_lossy().to_string();
+    let watches = serde_json::json!({
+        "root": a_str,
+        "cade_paths": [a_str],
+        "files": []
+    })
+    .to_string();
+
+    let out = sb.run(
+        &b,
+        &["reload", "--shell", "bash"],
+        &[
+            ("__CADE_SESSION", "s4"),
+            ("__CADE_SET", "A"),
+            ("__CADE_UNSET", ""),
+            ("__CADE_PURE", "0"),
+            ("__CADE_HOOKS", "[]"),
+            ("__CADE_LAYERS", a_str.as_str()),
+            ("__CADE_WATCHES", watches.as_str()),
+            ("A", "1"),
+        ],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    let err = stderr(&out);
+    assert!(err.contains(&format!("cade: unloaded {a_str}.")), "{err}");
+    assert!(err.contains(&format!("cade: loaded {b_str}.")), "{err}");
+    assert!(
+        !err.contains(&format!("cade: reloaded {b_str}.")),
+        "unrelated root should not be called reload: {err}"
+    );
+}
+
+#[test]
+fn reload_within_same_cade_tree_stays_reload() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    let sub = sb.dir("sub");
+    sb.write("sub/.cade", "B=2\n");
+    sb.allow(&sb.root);
+    sb.allow(&sub);
+    sb.write_snapshot("s5", "PATH=/orig");
+
+    let root_str = sb.root.to_string_lossy().to_string();
+    let sub_str = sub.to_string_lossy().to_string();
+    let watches = serde_json::json!({
+        "root": root_str,
+        "cade_paths": [root_str],
+        "files": []
+    })
+    .to_string();
+
+    let out = sb.run(
+        &sub,
+        &["reload", "--shell", "bash"],
+        &[
+            ("__CADE_SESSION", "s5"),
+            ("__CADE_SET", "A"),
+            ("__CADE_UNSET", ""),
+            ("__CADE_PURE", "0"),
+            ("__CADE_HOOKS", "[]"),
+            ("__CADE_LAYERS", root_str.as_str()),
+            ("__CADE_WATCHES", watches.as_str()),
+            ("A", "1"),
+        ],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    let err = stderr(&out);
+    assert!(!err.contains("cade: unloaded"), "{err}");
+    assert!(
+        err.contains(&format!("cade: reloaded {sub_str} (+1 parent layer(s)).")),
+        "{err}"
+    );
+}
+
+#[test]
 fn watch_directive_invalidates_a_call_layer() {
     let sb = Sandbox::new();
     // a `call` whose output depends on token.txt, which cade wouldn't otherwise

@@ -626,10 +626,12 @@ impl Cade {
 
         if is_active {
             // reload/restore only when the active state is stale
-            let stale = std::env::var("__CADE_WATCHES")
+            let watch_state = std::env::var("__CADE_WATCHES")
                 .ok()
-                .and_then(|w| serde_json::from_str::<WatchState>(&w).ok())
-                .map(|state| watches_are_stale(&state, root.as_deref()))
+                .and_then(|w| serde_json::from_str::<WatchState>(&w).ok());
+            let stale = watch_state
+                .as_ref()
+                .map(|state| watches_are_stale(state, root.as_deref()))
                 .unwrap_or(true);
 
             if stale {
@@ -637,9 +639,20 @@ impl Cade {
                     Some(r) => self.get_permission(r)?,
                     None => false,
                 };
-                self.do_restore(shell, !reactivating, !reactivating)?;
+                let same_tree = match (&watch_state, &root) {
+                    (Some(state), Some(r)) if reactivating => roots_in_same_cade_tree(state, r),
+                    _ => false,
+                };
+                self.do_restore(shell, !reactivating, !reactivating || !same_tree)?;
                 if reactivating {
-                    self.do_activation(shell, Announce::Reloaded)?;
+                    self.do_activation(
+                        shell,
+                        if same_tree {
+                            Announce::Reloaded
+                        } else {
+                            Announce::Loaded
+                        },
+                    )?;
                 }
             }
         } else {
@@ -1032,6 +1045,15 @@ fn watches_are_stale(state: &WatchState, current_root: Option<&Path>) -> bool {
     }
 
     false
+}
+
+fn roots_in_same_cade_tree(state: &WatchState, current_root: &Path) -> bool {
+    let current = current_root.to_string_lossy();
+    state.root == current
+        || state.cade_paths.iter().any(|p| p == current.as_ref())
+        || collect_cade_paths(current_root)
+            .iter()
+            .any(|p| p == &state.root)
 }
 
 /// chain of .cade or .envrcs from root upward (tip-first)
