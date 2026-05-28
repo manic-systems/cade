@@ -5,7 +5,7 @@ pub trait ShellOutput {
     fn set_env(&self, key: &str, value: &str) -> String;
     fn unset_env(&self, key: &str) -> String;
     fn emit_hook(&self, command: &str) -> String;
-    fn hook_init(&self) -> String;
+    fn hook_init(&self, cade_exe: &str) -> String;
 }
 
 /// A valid env var identifier. Prevents breakout
@@ -31,6 +31,10 @@ fn posix_single_quote(s: &str) -> String {
     }
     out.push('\'');
     out
+}
+
+fn fish_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -106,15 +110,15 @@ impl ShellOutput for Fish {
     fn emit_hook(&self, command: &str) -> String {
         format!("{command};")
     }
-    fn hook_init(&self) -> String {
+    fn hook_init(&self, cade_exe: &str) -> String {
         r#"function __cade_hook --on-event fish_prompt
     if test "$PWD" != "$__cade_last_pwd"; or set -q __CADE_LAYERS
-        cade reload --shell fish | source
+        __CADE__ reload --shell fish | source
         set -g __cade_last_pwd $PWD
     end
 end
 "#
-        .to_string()
+        .replace("__CADE__", &fish_single_quote(cade_exe))
     }
 }
 
@@ -138,11 +142,11 @@ impl ShellOutput for Bash {
     fn emit_hook(&self, command: &str) -> String {
         format!("{command};")
     }
-    fn hook_init(&self) -> String {
+    fn hook_init(&self, cade_exe: &str) -> String {
         r#"_cade_hook() {
     local previous_exit_status=$?
     if [[ "$PWD" != "$__cade_last_pwd" || -n "${__CADE_LAYERS:-}" ]]; then
-        eval "$(cade reload --shell bash)"
+        eval "$(__CADE__ reload --shell bash)"
         __cade_last_pwd="$PWD"
     fi
     return $previous_exit_status
@@ -151,7 +155,7 @@ if [[ ";${PROMPT_COMMAND[*]:-};" != *";_cade_hook;"* ]]; then
     PROMPT_COMMAND="_cade_hook;${PROMPT_COMMAND:-}"
 fi
 "#
-        .to_string()
+        .replace("__CADE__", &posix_single_quote(cade_exe))
     }
 }
 
@@ -175,10 +179,10 @@ impl ShellOutput for Zsh {
     fn emit_hook(&self, command: &str) -> String {
         format!("{command};")
     }
-    fn hook_init(&self) -> String {
+    fn hook_init(&self, cade_exe: &str) -> String {
         r#"_cade_hook() {
     if [[ "$PWD" != "$__cade_last_pwd" || -n "${__CADE_LAYERS:-}" ]]; then
-        eval "$(cade reload --shell zsh)"
+        eval "$(__CADE__ reload --shell zsh)"
         __cade_last_pwd="$PWD"
     fi
 }
@@ -191,7 +195,7 @@ if (( ! ${chpwd_functions[(I)_cade_hook]} )); then
     chpwd_functions=(_cade_hook $chpwd_functions)
 fi
 "#
-        .to_string()
+        .replace("__CADE__", &posix_single_quote(cade_exe))
     }
 }
 
@@ -220,12 +224,16 @@ impl ShellOutput for Nushell {
     fn emit_hook(&self, command: &str) -> String {
         format!("{}\n", serde_json::json!({ "h": command }))
     }
-    fn hook_init(&self) -> String {
-        r#"$env.config.hooks.pre_prompt = (
+    fn hook_init(&self, cade_exe: &str) -> String {
+        let cade = serde_json::to_string(cade_exe).unwrap_or_else(|_| "\"cade\"".to_string());
+        r#"let cade = __CADE__
+let nu_exe = (try { which nu | get path.0 } catch { "nu" })
+
+$env.config.hooks.pre_prompt = (
     ($env.config.hooks?.pre_prompt? | default [])
     | append {||
         if ($env.PWD != ($env.__cade_last_pwd? | default "")) or ("__CADE_LAYERS" in $env) {
-            for line in (cade reload --shell nushell | lines) {
+            for line in (^$cade reload --shell nushell | lines) {
                 if ($line | str trim | is-empty) { continue }
                 let m = ($line | from json)
                 if "s" in $m { load-env $m.s }
@@ -234,7 +242,7 @@ impl ShellOutput for Nushell {
                     # no in-scope eval, so run the hook in a child nu and diff
                     # its env before/after to propagate vars it set or unset.
                     let prog = ("let __pre = $env\n" + $m.h + "\nlet __post = $env\nlet __set = ($__post | transpose k v | where {|r| ($r.v | describe) == \"string\" and $r.k not-in [PWD OLDPWD] and (($__pre | get -i $r.k) != $r.v)} | reduce -f {} {|r, a| $a | upsert $r.k $r.v}); {set: $__set, unset: ($__pre | columns | where {|k| $k not-in ($__post | columns)})} | to json")
-                    let d = (nu --no-config-file --commands $prog | from json)
+                    let d = (^$nu_exe --no-config-file --commands $prog | from json)
                     load-env $d.set
                     for k in $d.unset { hide-env --ignore-errors $k }
                 }
@@ -244,7 +252,7 @@ impl ShellOutput for Nushell {
     }
 )
 "#
-        .to_string()
+        .replace("__CADE__", &cade)
     }
 }
 
@@ -269,18 +277,19 @@ impl ShellOutput for Elvish {
     fn emit_hook(&self, command: &str) -> String {
         format!("{command};")
     }
-    fn hook_init(&self) -> String {
-        r#"var cade-last-pwd = ''
+    fn hook_init(&self, cade_exe: &str) -> String {
+        r#"var cade = __CADE__
+var cade-last-pwd = ''
 set edit:before-readline = [
     {||
         if (or (not-eq $pwd $cade-last-pwd) (has-env __CADE_LAYERS)) {
-            eval (cade reload --shell elvish | slurp)
+            eval ($cade reload --shell elvish | slurp)
             set cade-last-pwd = $pwd
         }
     }
 ]
 "#
-        .to_string()
+        .replace("__CADE__", &posix_single_quote(cade_exe))
     }
 }
 
@@ -311,14 +320,14 @@ impl ShellOutput for Murex {
     fn emit_hook(&self, command: &str) -> String {
         format!("{command}\n")
     }
-    fn hook_init(&self) -> String {
+    fn hook_init(&self, cade_exe: &str) -> String {
         // murex runs cade on every prompt (no PWD-change fast-path): its
         // conditional syntax made the guard unreliable
         r#"event onPrompt cade=before {
-    cade reload --shell murex -> source
+    __CADE__ reload --shell murex -> source
 }
 "#
-        .to_string()
+        .replace("__CADE__", &posix_single_quote(cade_exe))
     }
 }
 
@@ -339,6 +348,28 @@ mod tests {
         assert!(!is_valid_key("x;rm -rf"));
         assert!(!is_valid_key("a=b"));
         assert!(!is_valid_key("a$b"));
+    }
+
+    #[test]
+    fn hooks_use_supplied_cade_executable() {
+        let exe = "/tmp/cade bin/cade";
+        assert!(
+            Bash.hook_init(exe)
+                .contains("'/tmp/cade bin/cade' reload --shell bash")
+        );
+        assert!(
+            Zsh.hook_init(exe)
+                .contains("'/tmp/cade bin/cade' reload --shell zsh")
+        );
+        assert!(
+            Fish.hook_init(exe)
+                .contains("'/tmp/cade bin/cade' reload --shell fish")
+        );
+        assert!(
+            Nushell
+                .hook_init(exe)
+                .contains(r#"let cade = "/tmp/cade bin/cade""#)
+        );
     }
 
     #[test]

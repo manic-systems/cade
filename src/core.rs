@@ -78,7 +78,11 @@ struct WatchState {
 // Keys cade must never set from a layer: the shell owns them, or they're
 // cade's own bookkeeping.
 fn is_shell_managed(key: &str) -> bool {
-    matches!(key, "PWD" | "OLDPWD" | "SHLVL" | "_") || key.starts_with("__CADE_")
+    matches!(key, "PWD" | "OLDPWD" | "SHLVL" | "_" | "LAST_EXIT_CODE") || key.starts_with("__CADE_")
+}
+
+fn is_pure_preserved_key(key: &str) -> bool {
+    is_shell_managed(key) || key == "HOME"
 }
 
 fn has_config(dir: &Path) -> bool {
@@ -136,7 +140,13 @@ fn read_keylist(var: &str) -> Vec<String> {
 
 impl Cade {
     pub fn init() -> anyhow::Result<Cade> {
-        let state_dir = Cade::ensure_dir()?;
+        let state_dir = if let Ok(dir) = std::env::var("__CADE_STATE_DIR") {
+            let path = PathBuf::from(dir);
+            std::fs::create_dir_all(&path).context("create cade state path")?;
+            path
+        } else {
+            Cade::ensure_dir()?
+        };
         let db_path = state_dir.join("cade.db");
         let mut db = rusqlite::Connection::open(db_path)?;
         Cade::ensure_db(&mut db)?;
@@ -401,6 +411,10 @@ impl Cade {
             "{}",
             shell.set_env("__CADE_LAYERS", &layer_paths.join("\x1F"))
         );
+        print!(
+            "{}",
+            shell.set_env("__CADE_STATE_DIR", &self.state_dir.to_string_lossy())
+        );
 
         let mut set_keys: Vec<&str> = rollup.env.keys().map(String::as_str).collect();
         set_keys.sort_unstable();
@@ -536,6 +550,7 @@ impl Cade {
             "__CADE_PURE",
             "__CADE_WATCHES",
             "__CADE_HOOKS",
+            "__CADE_STATE_DIR",
         ] {
             print!("{}", shell.unset_env(var));
         }
@@ -750,7 +765,7 @@ fn output_changes(
 ) {
     if purified {
         for (k, _) in std::env::vars() {
-            if is_shell_managed(&k) {
+            if is_pure_preserved_key(&k) {
                 continue;
             }
             print!("{}", shell.unset_env(&k));
@@ -792,7 +807,7 @@ pub fn read_cade(path: &Path) -> Result<Vec<Keyword>> {
                     "parse cade file at {}: line {}: {e}",
                     path.display(),
                     n + 1
-                ))
+                ));
             }
         }
     }
@@ -1105,12 +1120,21 @@ mod tests {
 
     #[test]
     fn shell_managed_classification() {
-        for k in ["PWD", "OLDPWD", "SHLVL", "_", "__CADE_PREV", "__CADE_SET"] {
+        for k in [
+            "PWD",
+            "OLDPWD",
+            "SHLVL",
+            "_",
+            "LAST_EXIT_CODE",
+            "__CADE_PREV",
+            "__CADE_SET",
+        ] {
             assert!(is_shell_managed(k), "{k} should be shell-managed");
         }
         for k in ["PATH", "HOME", "MY_VAR"] {
             assert!(!is_shell_managed(k), "{k} should not be shell-managed");
         }
+        assert!(is_pure_preserved_key("HOME"));
     }
 
     #[test]
