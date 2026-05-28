@@ -3,7 +3,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::named_params;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -138,6 +138,44 @@ fn read_keylist(var: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn session_from_environ(raw: &[u8]) -> Option<String> {
+    const PREFIX: &[u8] = b"__CADE_SESSION=";
+    raw.split(|&b| b == 0).find_map(|entry| {
+        let value = entry.strip_prefix(PREFIX)?;
+        let session = std::str::from_utf8(value).ok()?;
+        is_valid_session(session).then(|| session.to_string())
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn live_cade_sessions() -> HashSet<String> {
+    let mut sessions = HashSet::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return sessions;
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(environ) = std::fs::read(entry.path().join("environ")) else {
+            continue;
+        };
+        if let Some(session) = session_from_environ(&environ) {
+            sessions.insert(session);
+        }
+    }
+
+    sessions
+}
+
+#[cfg(not(target_os = "linux"))]
+fn live_cade_sessions() -> HashSet<String> {
+    HashSet::new()
+}
+
 impl Cade {
     pub fn init() -> anyhow::Result<Cade> {
         let state_dir = if let Ok(dir) = std::env::var("__CADE_STATE_DIR") {
@@ -191,21 +229,30 @@ impl Cade {
         std::fs::write(self.snapshot_path(session), body).context("write snapshot")
     }
 
-    // TODO: consider scanning /proc for live processes with a cwd here too,
-    // instead of relying solely on age.
     fn gc_snapshots(&self) {
         let max_age = std::time::Duration::from_secs(30 * 24 * 3600);
+        let live_sessions = live_cade_sessions();
         let Ok(entries) = std::fs::read_dir(self.state_dir.join("snapshots")) else {
             return;
         };
         for entry in entries.flatten() {
+            let path = entry.path();
+            let active = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_suffix(".env"))
+                .map(|session| live_sessions.contains(session))
+                .unwrap_or(false);
+            if active {
+                continue;
+            }
             let stale = entry
                 .metadata()
                 .and_then(|m| m.modified())
                 .map(|t| t.elapsed().map(|e| e > max_age).unwrap_or(false))
                 .unwrap_or(false);
             if stale {
-                std::fs::remove_file(entry.path()).ok();
+                std::fs::remove_file(path).ok();
             }
         }
     }
@@ -1135,6 +1182,18 @@ mod tests {
             assert!(!is_shell_managed(k), "{k} should not be shell-managed");
         }
         assert!(is_pure_preserved_key("HOME"));
+    }
+
+    #[test]
+    fn extracts_live_session_from_proc_environ() {
+        let raw = b"PATH=/bin\0__CADE_SESSION=123-456\0HOME=/tmp\0";
+        assert_eq!(session_from_environ(raw), Some("123-456".to_string()));
+    }
+
+    #[test]
+    fn ignores_invalid_proc_session_values() {
+        assert_eq!(session_from_environ(b"__CADE_SESSION=../bad\0"), None);
+        assert_eq!(session_from_environ(b"__CADE_SESSION=\xff\0"), None);
     }
 
     #[test]
