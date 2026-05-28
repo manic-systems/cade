@@ -72,8 +72,26 @@ pub fn call(path: &Path, argv: Vec<String>) -> Result<EnvSet> {
     let cmdline = argv.join(" ");
     let stdout = run_checked(process, &format!("call `{cmdline}`"))?;
 
-    // FIXME locale ?
     let text = String::from_utf8(stdout)
-        .with_context(|| format!("converting call `{cmdline}` output to text"))?;
+        .with_context(|| format!("call `{cmdline}` output must be valid UTF-8"))?;
     EnvSet::from_envs(&text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn call_output_must_be_utf8() {
+        let dir = std::env::temp_dir();
+        let err = call(
+            &dir,
+            vec!["sh".into(), "-c".into(), "printf 'BAD=\\377\\n'".into()],
+        )
+        .expect_err("invalid UTF-8 call output must fail");
+        assert!(
+            format!("{err:#}").contains("must be valid UTF-8"),
+            "{err:#}"
+        );
+    }
 }
