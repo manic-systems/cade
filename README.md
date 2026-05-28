@@ -131,6 +131,10 @@ cade enter --shell <SHELL>    # activate the environment (used by the hook)
 cade exit --shell <SHELL>     # deactivate and restore the previous environment
 cade reload --shell <SHELL>   # re-evaluate on directory change (called by the hook)
 ```
+
+external loaders (`load flake`, `load shell`, and `call`) print a warning if
+they run for more than 5 seconds. set `CADE_LONG_RUNNING_WARNING_MS` to adjust
+that threshold.
 ## permissions
 
 cade only composes layers from directories you've **explicitly allowed**.

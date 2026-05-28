@@ -1,10 +1,40 @@
 use crate::types::EnvSet;
 use anyhow::{Context, Result, bail};
-use std::{io::Read, path::Path, process::Command};
+use std::{io::Read, path::Path, process::Command, sync::mpsc::RecvTimeoutError, time::Duration};
+
+const DEFAULT_LONG_RUNNING_WARNING_AFTER: Duration = Duration::from_secs(5);
+
+fn long_running_warning_after() -> Duration {
+    std::env::var("CADE_LONG_RUNNING_WARNING_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_LONG_RUNNING_WARNING_AFTER)
+}
 
 /// Run a command, returning stdout on success or an error carrying its stderr
 fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
-    let out = cmd.output().with_context(|| format!("running {what}"))?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _ = tx.send(cmd.output());
+    });
+
+    let out = match rx.recv_timeout(long_running_warning_after()) {
+        Ok(out) => out,
+        Err(RecvTimeoutError::Timeout) => {
+            eprintln!(
+                "cade: {what} is taking a long time; press Ctrl-C to stop and inspect the command."
+            );
+            rx.recv().context("waiting for command output")?
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            let _ = worker.join();
+            bail!("{what} failed before producing output")
+        }
+    };
+    let _ = worker.join();
+    let out = out.with_context(|| format!("running {what}"))?;
+
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stderr = stderr.trim();
