@@ -7,7 +7,10 @@
 //! reproduce. This should cover most cases of .envrc.
 
 use crate::loaders::{load_env, load_flake, load_shell};
-use crate::types::EnvSet;
+use crate::{
+    types::EnvSet,
+    verbosity::{self, Verbosity},
+};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -165,14 +168,17 @@ pub fn load_envrc(dir: &Path, filename: String) -> Result<EnvSet> {
         }
     }
 
-    if !warnings.is_empty() {
-        eprintln!(
-            "cade: ignored {} unsupported line(s) in {} (not executed):",
-            warnings.len(),
-            path.display()
+    if !warnings.is_empty() && verbosity::enabled(Verbosity::Normal) {
+        verbosity::log(
+            Verbosity::Normal,
+            format_args!(
+                "cade: ignored {} unsupported line(s) in {} (not executed):",
+                warnings.len(),
+                path.display()
+            ),
         );
         for line in &warnings {
-            eprintln!("    {line}");
+            verbosity::log(Verbosity::Normal, format_args!("    {line}"));
         }
     }
 

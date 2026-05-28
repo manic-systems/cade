@@ -1,4 +1,7 @@
-use crate::types::EnvSet;
+use crate::{
+    types::EnvSet,
+    verbosity::{self, Verbosity},
+};
 use anyhow::{Context, Result, bail};
 use std::{io::Read, path::Path, process::Command, sync::mpsc::RecvTimeoutError, time::Duration};
 
@@ -14,6 +17,8 @@ fn long_running_warning_after() -> Duration {
 
 /// Run a command, returning stdout on success or an error carrying its stderr
 fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
+    verbosity::log(Verbosity::Trace, format_args!("cade: running {what}."));
+
     let (tx, rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
         let _ = tx.send(cmd.output());
@@ -22,8 +27,11 @@ fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     let out = match rx.recv_timeout(long_running_warning_after()) {
         Ok(out) => out,
         Err(RecvTimeoutError::Timeout) => {
-            eprintln!(
-                "cade: {what} is taking a long time; press Ctrl-C to stop and inspect the command."
+            verbosity::log(
+                Verbosity::Normal,
+                format_args!(
+                    "cade: {what} is taking a long time; press Ctrl-C to stop and inspect the command."
+                ),
             );
             rx.recv().context("waiting for command output")?
         }
@@ -34,6 +42,7 @@ fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     };
     let _ = worker.join();
     let out = out.with_context(|| format!("running {what}"))?;
+    verbosity::log(Verbosity::Trace, format_args!("cade: finished {what}."));
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);

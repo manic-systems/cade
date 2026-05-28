@@ -172,6 +172,7 @@ fn pure_preserves_shell_runtime_vars() {
             ("AMBIENT_TEST", "zzz"),
             ("HOME", "/home/tester"),
             ("LAST_EXIT_CODE", "7"),
+            ("CADE_VERBOSITY", "quiet"),
         ],
     );
     assert!(out.status.success(), "enter failed: {:?}", out);
@@ -184,6 +185,10 @@ fn pure_preserves_shell_runtime_vars() {
     assert!(
         !s.contains("unset LAST_EXIT_CODE;"),
         "pure must keep shell status usable: {s}"
+    );
+    assert!(
+        !s.contains("unset CADE_VERBOSITY;"),
+        "pure must keep cade verbosity usable: {s}"
     );
 }
 
@@ -583,6 +588,51 @@ fn path_like_var_concats_with_ambient_layer_first() {
         stdout(&out).contains("export PATH='/layer/bin:/usr/bin';"),
         "{}",
         stdout(&out)
+    );
+}
+
+#[test]
+fn quiet_verbosity_suppresses_lifecycle_text() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    sb.allow(&sb.root);
+
+    let out = sb.run(
+        &sb.root,
+        &["--verbosity", "quiet", "enter", "--shell", "bash"],
+        &[],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    assert!(stdout(&out).contains("export A='1';"), "{}", stdout(&out));
+    assert!(!stderr(&out).contains("cade: loaded"), "{}", stderr(&out));
+}
+
+#[test]
+fn vars_verbosity_prints_variable_names() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\nclear OLD\n");
+    sb.allow(&sb.root);
+
+    let out = sb.enter(&sb.root, &[("CADE_VERBOSITY", "vars")]);
+    assert!(out.status.success(), "{:?}", out);
+    let err = stderr(&out);
+    assert!(err.contains("cade: loaded"), "{err}");
+    assert!(err.contains("cade: set A."), "{err}");
+    assert!(err.contains("cade: cleared OLD."), "{err}");
+}
+
+#[test]
+fn trace_verbosity_prints_hook_details() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "hook load echo ready\n");
+    sb.allow(&sb.root);
+
+    let out = sb.enter(&sb.root, &[("CADE_VERBOSITY", "trace")]);
+    assert!(out.status.success(), "{:?}", out);
+    assert!(
+        stderr(&out).contains("cade: running load hook: echo ready"),
+        "{}",
+        stderr(&out)
     );
 }
 

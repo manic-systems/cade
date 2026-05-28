@@ -130,7 +130,17 @@ cade hook <SHELL>             # print the shell hook initialization code
 cade enter --shell <SHELL>    # activate the environment (used by the hook)
 cade exit --shell <SHELL>     # deactivate and restore the previous environment
 cade reload --shell <SHELL>   # re-evaluate on directory change (called by the hook)
+cade --verbosity vars status  # quiet | normal | vars | trace
 ```
+
+verbosity controls cade's human-facing diagnostics:
+
+- `quiet`: no lifecycle text or warnings
+- `normal`: load/unload/reload text and warnings (default)
+- `vars`: normal plus variable names set/cleared/restored
+- `trace`: vars plus layer/cache, external command, and hook details
+
+set `CADE_VERBOSITY` to apply a level to shell hooks.
 
 external loaders (`load flake`, `load shell`, and `call`) print a warning if
 they run for more than 5 seconds. set `CADE_LONG_RUNNING_WARNING_MS` to adjust

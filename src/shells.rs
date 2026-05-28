@@ -1,3 +1,4 @@
+use crate::verbosity::{self, Verbosity};
 use std::fmt;
 use std::str::FromStr;
 
@@ -304,9 +305,12 @@ impl ShellOutput for Murex {
         }
         // murex single-quotes are fully literal but can't contain a single quote
         if value.contains('\'') {
-            eprintln!(
-                "cade: warning: murex cannot represent a single quote in ${key}; \
-                 stripping it from the value"
+            verbosity::log(
+                Verbosity::Normal,
+                format_args!(
+                    "cade: warning: murex cannot represent a single quote in ${key}; \
+                     stripping it from the value"
+                ),
             );
         }
         format!("export {key}='{val}'\n", val = value.replace('\'', ""))

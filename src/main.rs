@@ -5,6 +5,7 @@ mod envs;
 mod loaders;
 mod shells;
 mod types;
+mod verbosity;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -14,6 +15,9 @@ use crate::shells::ShellName;
 
 fn try_main() -> Result<()> {
     let args = cli::clap::Cli::parse();
+    if let Some(verbosity) = args.verbosity {
+        crate::verbosity::set(verbosity.into());
+    }
     use cli::clap::CliAction::*;
 
     // `hook` emits a static snippet, so handle it before the side-effecting init
