@@ -1,4 +1,7 @@
-use crate::types::{CadeAction, CadeLayer, EnvSet, HookType, InnerHook, Keyword, Loadable};
+use crate::{
+    types::{CadeAction, CadeLayer, EnvSet, HookType, InnerHook, Keyword, Loadable},
+    verbosity::{self, Verbosity},
+};
 use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::named_params;
 use serde::{Deserialize, Serialize};
@@ -26,6 +29,50 @@ impl Announce {
             Announce::Loaded => "loaded",
             Announce::Reloaded => "reloaded",
         }
+    }
+}
+
+fn hook_label(kind: &HookType) -> &'static str {
+    match kind {
+        HookType::LoadPre => "preload",
+        HookType::LoadPost => "load",
+        HookType::UnloadPre => "preunload",
+        HookType::UnloadPost => "unload",
+    }
+}
+
+fn log_hook(hook: &InnerHook) {
+    verbosity::log(
+        Verbosity::Trace,
+        format_args!(
+            "cade: running {} hook: {}",
+            hook_label(&hook.kind),
+            hook.content
+        ),
+    );
+}
+
+fn log_key_list<I, S>(label: &str, keys: I)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    if !verbosity::enabled(Verbosity::Vars) {
+        return;
+    }
+
+    let mut keys: Vec<String> = keys
+        .into_iter()
+        .map(|k| k.as_ref().to_owned())
+        .filter(|k| !k.is_empty())
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    if !keys.is_empty() {
+        verbosity::log(
+            Verbosity::Vars,
+            format_args!("cade: {label} {}.", keys.join(", ")),
+        );
     }
 }
 
@@ -82,7 +129,11 @@ fn is_shell_managed(key: &str) -> bool {
 }
 
 fn is_pure_preserved_key(key: &str) -> bool {
-    is_shell_managed(key) || key == "HOME"
+    is_shell_managed(key)
+        || matches!(
+            key,
+            "HOME" | "CADE_VERBOSITY" | "CADE_LONG_RUNNING_WARNING_MS"
+        )
 }
 
 fn has_config(dir: &Path) -> bool {
@@ -308,14 +359,17 @@ impl Cade {
         for dir in &chain[0..upto] {
             self.record_permission(Path::new(dir), true)?;
         }
-        eprintln!(
-            "cade is now allowed in {}{}.",
-            root.display(),
-            if upto > 1 {
-                format!(" (+{} parent layer(s), up to the approved base)", upto - 1)
-            } else {
-                String::new()
-            }
+        verbosity::log(
+            Verbosity::Normal,
+            format_args!(
+                "cade is now allowed in {}{}.",
+                root.display(),
+                if upto > 1 {
+                    format!(" (+{} parent layer(s), up to the approved base)", upto - 1)
+                } else {
+                    String::new()
+                }
+            ),
         );
         Ok(())
     }
@@ -334,10 +388,13 @@ impl Cade {
 
     pub fn set_permission(&mut self, path: &Path, permission: bool) -> Result<()> {
         self.record_permission(path, permission)?;
-        eprintln!(
-            "cade is now {} in {}.",
-            if permission { "allowed" } else { "disallowed" },
-            path.display()
+        verbosity::log(
+            Verbosity::Normal,
+            format_args!(
+                "cade is now {} in {}.",
+                if permission { "allowed" } else { "disallowed" },
+                path.display()
+            ),
         );
         Ok(())
     }
@@ -404,8 +461,16 @@ impl Cade {
             let token = compute_layer_key(&watch_files);
             let dir = path.to_string_lossy();
             if let Some(cached) = self.get_cached_layer(&dir, &token)? {
+                verbosity::log(
+                    Verbosity::Trace,
+                    format_args!("cade: using cached layer {}.", path.display()),
+                );
                 cade_layers.push(cached);
             } else {
+                verbosity::log(
+                    Verbosity::Trace,
+                    format_args!("cade: loading layer {}.", path.display()),
+                );
                 let layer = load_single_layer(layer_count, path, keywords)?;
                 self.store_cached_layer(&dir, &token, &layer)?;
                 cade_layers.push(layer);
@@ -416,6 +481,7 @@ impl Cade {
 
         for hook in &rollup.hooks {
             if hook.kind == HookType::LoadPre {
+                log_hook(hook);
                 print!("{}", shell.emit_hook(&hook.content));
             }
         }
@@ -446,6 +512,7 @@ impl Cade {
 
         for hook in &rollup.hooks {
             if hook.kind == HookType::LoadPost {
+                log_hook(hook);
                 print!("{}", shell.emit_hook(&hook.content));
             }
         }
@@ -484,16 +551,21 @@ impl Cade {
         print!("{}", shell.set_env("__CADE_WATCHES", &watches_json));
 
         let extra = layer_paths.len().saturating_sub(1);
-        eprintln!(
-            "cade: {} {}{}.",
-            announce.verb(),
-            root.display(),
-            if extra > 0 {
-                format!(" (+{extra} parent layer(s))")
-            } else {
-                String::new()
-            }
+        verbosity::log(
+            Verbosity::Normal,
+            format_args!(
+                "cade: {} {}{}.",
+                announce.verb(),
+                root.display(),
+                if extra > 0 {
+                    format!(" (+{extra} parent layer(s))")
+                } else {
+                    String::new()
+                }
+            ),
         );
+        log_key_list("set", set_keys);
+        log_key_list("cleared", &rollup.unset);
 
         println!();
         Ok(())
@@ -532,24 +604,31 @@ impl Cade {
             .and_then(|h| serde_json::from_str(&h).ok())
             .unwrap_or_default();
 
-        if announce && let Some(layers) = &layers {
+        if announce
+            && verbosity::enabled(Verbosity::Normal)
+            && let Some(layers) = &layers
+        {
             let paths: Vec<&str> = layers.split('\x1F').filter(|s| !s.is_empty()).collect();
             if let Some(tip) = paths.last() {
                 let extra = paths.len().saturating_sub(1);
-                eprintln!(
-                    "cade: unloaded {}{}.",
-                    tip,
-                    if extra > 0 {
-                        format!(" (+{extra} parent layer(s))")
-                    } else {
-                        String::new()
-                    }
+                verbosity::log(
+                    Verbosity::Normal,
+                    format_args!(
+                        "cade: unloaded {}{}.",
+                        tip,
+                        if extra > 0 {
+                            format!(" (+{extra} parent layer(s))")
+                        } else {
+                            String::new()
+                        }
+                    ),
                 );
             }
         }
 
         for hook in &hooks {
             if hook.kind == HookType::UnloadPre {
+                log_hook(hook);
                 print!("{}", shell.emit_hook(&hook.content));
             }
         }
@@ -612,9 +691,13 @@ impl Cade {
 
         for hook in &hooks {
             if hook.kind == HookType::UnloadPost {
+                log_hook(hook);
                 print!("{}", shell.emit_hook(&hook.content));
             }
         }
+
+        log_key_list("restored", &set_keys);
+        log_key_list("restored cleared", &unset_keys);
 
         println!();
         Ok(())

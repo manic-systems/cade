@@ -129,7 +129,10 @@ impl FromStr for Keyword {
                 Concat(vars)
             }
             _ => {
-                eprintln!("found invalid command: {keyword}");
+                crate::verbosity::log(
+                    crate::verbosity::Verbosity::Normal,
+                    format_args!("found invalid command: {keyword}"),
+                );
                 return Err(ParseError::InvalidKeyword);
             }
         };
