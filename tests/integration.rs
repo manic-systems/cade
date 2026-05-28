@@ -768,6 +768,33 @@ fn watch_directive_invalidates_a_call_layer() {
 }
 
 #[test]
+fn slow_external_loader_prints_warning() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "call sh -c \"sleep 0.05; echo SLOW=ok\"\n");
+    sb.allow(&sb.root);
+
+    let path = std::env::var("PATH").unwrap_or_default();
+    let out = sb.enter(
+        &sb.root,
+        &[
+            ("PATH", path.as_str()),
+            ("CADE_LONG_RUNNING_WARNING_MS", "1"),
+        ],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    assert!(
+        stdout(&out).contains("export SLOW='ok';"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("is taking a long time"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn envrc_is_autodetected_when_no_cade() {
     let sb = Sandbox::new();
     // a bare .envrc, no .cade
