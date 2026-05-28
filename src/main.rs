@@ -6,8 +6,6 @@ mod loaders;
 mod shells;
 mod types;
 
-use std::ffi::OsString;
-
 use anyhow::{Context, Result};
 use clap::Parser;
 
@@ -50,8 +48,13 @@ fn try_main() -> Result<()> {
         Disallow => cade.allow_here(false)?,
         Edit => {
             let editor = std::env::var("EDITOR").context("find EDITOR variable")?;
-            let mut session = std::process::Command::new(Into::<OsString>::into(editor))
-                .arg(Into::<OsString>::into(".cade"))
+            let parts = shlex::split(&editor).context("parse EDITOR variable")?;
+            let (program, args) = parts
+                .split_first()
+                .context("EDITOR variable is empty")?;
+            let mut session = std::process::Command::new(program)
+                .args(args)
+                .arg(".cade")
                 .spawn()
                 .context("spawn editor process")?;
             session.wait().context("wait for editor process")?;

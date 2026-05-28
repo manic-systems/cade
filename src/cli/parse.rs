@@ -54,8 +54,11 @@ impl FromStr for Keyword {
         }
 
         let mut words = trimmed.split_whitespace();
-        let keyword = words.next().unwrap().to_lowercase();
-        let rest_raw = trimmed[keyword.len()..].trim_start();
+        // slice off the original first word rather than the lowercased copy
+        // since lowercasing can change byte boundaries
+        let first = words.next().unwrap();
+        let keyword = first.to_lowercase();
+        let rest_raw = trimmed[first.len()..].trim_start();
 
         let res = match keyword.as_str() {
             "pure" => Pure,
@@ -162,6 +165,15 @@ mod tests {
         // not all-caps, so it falls through to keyword lookup and is rejected
         assert!(matches!(
             "foo=bar".parse::<Keyword>(),
+            Err(ParseError::InvalidKeyword)
+        ));
+    }
+
+    #[test]
+    fn multibyte_first_word_does_not_panic() {
+        // `İ` (U+0130) lowercases to two bytes, potentially breaking slice indexing
+        assert!(matches!(
+            "İ foo".parse::<Keyword>(),
             Err(ParseError::InvalidKeyword)
         ));
     }

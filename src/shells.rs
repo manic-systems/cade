@@ -293,8 +293,13 @@ impl ShellOutput for Murex {
         if !is_valid_key(key) {
             return String::new();
         }
-        // murex single-quotes are fully literal (inert), but can't contain a
-        // single quote, so any embedded quote is dropped.
+        // murex single-quotes are fully literal but can't contain a single quote
+        if value.contains('\'') {
+            eprintln!(
+                "cade: warning: murex cannot represent a single quote in ${key}; \
+                 stripping it from the value"
+            );
+        }
         format!("export {key}='{val}'\n", val = value.replace('\'', ""))
     }
     fn unset_env(&self, key: &str) -> String {
@@ -308,7 +313,7 @@ impl ShellOutput for Murex {
     }
     fn hook_init(&self) -> String {
         // murex runs cade on every prompt (no PWD-change fast-path): its
-        // conditional syntax made the guard unreliable. Correct, just not cheap.
+        // conditional syntax made the guard unreliable
         r#"event onPrompt cade=before {
     cade reload --shell murex -> source
 }
@@ -369,6 +374,13 @@ mod tests {
     #[test]
     fn elvish_doubles_quotes() {
         assert_eq!(Elvish.set_env("X", "a'b"), "set-env X 'a''b';");
+    }
+
+    #[test]
+    fn murex_strips_single_quotes_to_stay_inert() {
+        let out = Murex.set_env("X", "pa'ss");
+        // value stays wrapped in literal single quotes, embedded quote removed
+        assert_eq!(out, "export X='pass'\n");
     }
 
     #[test]
