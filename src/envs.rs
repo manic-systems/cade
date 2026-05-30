@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::types::EnvSet;
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, bail};
 
 /// Normalize a raw .env value
 fn clean_env_value(raw: &str) -> String {
@@ -52,113 +52,6 @@ impl EnvSet {
                 .or_insert(values);
         }
         Ok(EnvSet { vars, hard })
-    }
-    pub fn from_json(raw: &[u8]) -> Result<EnvSet> {
-        let json: serde_json::Value = serde_json::from_slice(raw).context("parsing json")?;
-        if json.is_object()
-            && let Some(all_vars) = json.get("variables")
-        {
-            let vars = all_vars
-                .as_object()
-                .map(|inner| {
-                    inner
-                        .iter()
-                        .filter(|(var, _)| {
-                            !(var.starts_with("NIX_")
-                                || var.starts_with("output")
-                                || var.starts_with("deps")
-                                || var.starts_with("enable")
-                                || var.ends_with("Inputs")
-                                || var.ends_with("Flags")
-                                || var.ends_with("TYPE")
-                                || var.to_lowercase().contains("phase")
-                                || matches!(
-                                    var.as_str(),
-                                    "SHELL"
-                                        | "pkg"
-                                        | "prefix"
-                                        | "guess"
-                                        | "_substituteStream_has_warned_replace_deprecation"
-                                        | "LINENO"
-                                        | "OPTERROR"
-                                        | "OLDPWD"
-                                        | "BASH"
-                                        | "IFS"
-                                        | "PS4"
-                                        | "initialPath"
-                                        | "out"
-                                        | "shell"
-                                        | "STRINGS"
-                                        | "stdenv"
-                                        | "builder"
-                                        | "PWD"
-                                        | "SOURCE_DATE_EPOCH"
-                                        | "CXX"
-                                        | "TEMPDIR"
-                                        | "system"
-                                        | "HOST_PATH"
-                                        | "doInstallCheck"
-                                        | "buildCommandPath"
-                                        | "LS_COLORS"
-                                        | "cmakeFlakes"
-                                        | "TMPDIR"
-                                        | "LD"
-                                        | "READELF"
-                                        | "doCheck"
-                                        | "SIZE"
-                                        | "propagatedNativeBuildInputs"
-                                        | "strictDeps"
-                                        | "AR"
-                                        | "AS"
-                                        | "TEMP"
-                                        | "SHLVL"
-                                        | "NM"
-                                        | "patches"
-                                        | "passAsFile"
-                                        | "buildInputs"
-                                        | "SSL_CERT_FILE"
-                                        | "OBJCOPY"
-                                        | "STRIP"
-                                        | "TMP"
-                                        | "OBJDUMP"
-                                        | "propagatedBuildInputs"
-                                        | "CC"
-                                        | "__ETC_PROFILE_SOURCED"
-                                        | "CONFIG_SHELL"
-                                        | "__structuredAttrs"
-                                        | "RANLIB"
-                                        | "nativeBuildInputs"
-                                        | "name"
-                                        | "TEST"
-                                        | "TZ"
-                                        | "HOME"
-                                        | "GZIP_NO_TIMESTAMPS"
-                                        | "cmakeFlags"
-                                        | "TERM"
-                                        | "buildCommand"
-                                        | "preferLocalBuild"
-                                        | "dontAddDisableDepTrack"
-                                ))
-                        })
-                        .filter_map(|var| {
-                            Some((var.0.to_string(), var.1.get("value")?.as_str()?.to_owned()))
-                        })
-                        .map(|(name, value)| {
-                            (
-                                name,
-                                value
-                                    .split(':')
-                                    .map(|s| s.to_string())
-                                    .collect::<Vec<String>>(),
-                            )
-                        })
-                        .collect()
-                })
-                .context("collecting env vars")?;
-            Ok(EnvSet::from_vars(vars))
-        } else {
-            Err(anyhow!("failed to parse values from JSON output"))
-        }
     }
 }
 

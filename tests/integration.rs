@@ -2,51 +2,12 @@
 //! trees, asserting on the shell statements it emits. Each test gets an
 //! isolated state directory (its own permission/cache DB) via XDG_STATE_HOME.
 
+mod common;
+
+use common::{Sandbox, stderr, stdout};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU32, Ordering};
-
-const BIN: &str = env!("CARGO_BIN_EXE_cade");
-
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-/// An isolated sandbox: a project tree plus a private cade state directory.
-struct Sandbox {
-    root: PathBuf,
-    state: PathBuf,
-}
 
 impl Sandbox {
-    fn new() -> Self {
-        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let base = std::env::temp_dir().join(format!("cade-it-{}-{}", std::process::id(), id));
-        let root = base.join("project");
-        let state = base.join("state");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::create_dir_all(&state).unwrap();
-        Sandbox { root, state }
-    }
-
-    fn write(&self, rel: &str, contents: &str) {
-        let path = self.root.join(rel);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, contents).unwrap();
-    }
-
-    fn dir(&self, rel: &str) -> PathBuf {
-        let p = self.root.join(rel);
-        std::fs::create_dir_all(&p).unwrap();
-        p
-    }
-
-    /// Write a pre-activation snapshot for `session` (as cade stores it under
-    /// the state dir), so restore tests can simulate an active session.
-    fn write_snapshot(&self, session: &str, contents: &str) {
-        let dir = self.state.join("cade").join("snapshots");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(format!("{session}.env")), contents).unwrap();
-    }
-
     fn write_config(&self, contents: &str) -> PathBuf {
         let path = self.state.join(".config").join("cade").join("config.toml");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -62,40 +23,9 @@ impl Sandbox {
         (home, path)
     }
 
-    /// Run `cade <args>` in `cwd` with an isolated, mostly-empty environment.
-    fn run(&self, cwd: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
-        let mut cmd = Command::new(BIN);
-        cmd.args(args)
-            .current_dir(cwd)
-            .env_clear()
-            .env("XDG_STATE_HOME", &self.state)
-            .env("HOME", &self.state);
-        for (k, v) in extra_env {
-            cmd.env(k, v);
-        }
-        cmd.output().expect("run cade")
-    }
-
-    fn allow(&self, cwd: &Path) {
-        let out = self.run(cwd, &["allow"], &[]);
-        assert!(out.status.success(), "allow failed: {:?}", out);
-    }
-
-    fn enter(&self, cwd: &Path, extra_env: &[(&str, &str)]) -> Output {
+    fn enter(&self, cwd: &Path, extra_env: &[(&str, &str)]) -> std::process::Output {
         self.run(cwd, &["enter", "--shell", "bash"], extra_env)
     }
-}
-
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        if let Some(base) = self.root.parent() {
-            std::fs::remove_dir_all(base).ok();
-        }
-    }
-}
-
-fn stdout(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 #[test]
@@ -586,10 +516,6 @@ fn cache_invalidates_when_env_file_changes() {
         "cache served a stale value: {}",
         stdout(&second)
     );
-}
-
-fn stderr(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
 #[test]
@@ -1196,7 +1122,7 @@ fn envrc_is_autodetected_when_no_cade() {
 
     sb.allow(&sb.root);
     let out = sb.enter(&sb.root, &[]);
-    assert!(out.status.success(), "envrc activation failed: {:?}", out);
+    assert!(out.status.success(), "envrc activation failed: {out:?}");
     assert!(
         stdout(&out).contains("export FROM_ENVRC='1';"),
         "{}",
@@ -1213,7 +1139,7 @@ fn explicit_load_envrc_directive() {
 
     sb.allow(&sb.root);
     let out = sb.enter(&sb.root, &[]);
-    assert!(out.status.success(), "{:?}", out);
+    assert!(out.status.success(), "{out:?}");
     assert!(stdout(&out).contains("export FROM_DIRECTIVE='yes';"));
 }
 
@@ -1224,7 +1150,7 @@ fn envrc_literal_export_and_path_add() {
     sb.allow(&sb.root);
 
     let out = sb.enter(&sb.root, &[]);
-    assert!(out.status.success(), "{:?}", out);
+    assert!(out.status.success(), "{out:?}");
     let s = stdout(&out);
     assert!(s.contains("export PLAIN='ok';"), "{s}");
     // PATH_add prepends a dir resolved against the .envrc location
@@ -1239,11 +1165,7 @@ fn envrc_unsupported_lines_warn_and_are_skipped() {
     sb.allow(&sb.root);
 
     let out = sb.enter(&sb.root, &[]);
-    assert!(
-        out.status.success(),
-        "warn-and-continue, not fail: {:?}",
-        out
-    );
+    assert!(out.status.success(), "warn-and-continue, not fail: {out:?}");
     let s = stdout(&out);
     assert!(s.contains("export GOOD='fine';"), "good line dropped: {s}");
     assert!(

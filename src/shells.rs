@@ -54,6 +54,18 @@ fn fish_command(cade_exe: &str, cade_args: &[String]) -> String {
         .join(" ")
 }
 
+fn nushell_env_value(key: &str, value: &str) -> serde_json::Value {
+    if key == "PATH" {
+        return serde_json::Value::Array(
+            std::env::split_paths(value)
+                .map(|path| serde_json::Value::from(path.to_string_lossy().into_owned()))
+                .collect(),
+        );
+    }
+
+    serde_json::Value::from(value)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum ShellName {
     Fish,
@@ -127,6 +139,7 @@ impl ShellOutput for Fish {
     fn emit_hook(&self, command: &str) -> String {
         format!("{command};")
     }
+
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         r#"function __cade_hook --on-event fish_prompt
     set -l __cade_status $status
@@ -158,6 +171,7 @@ impl ShellOutput for Bash {
     fn emit_hook(&self, command: &str) -> String {
         format!("{command};")
     }
+
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         r#"_cade_hook() {
     local previous_exit_status=$?
@@ -194,6 +208,7 @@ impl ShellOutput for Zsh {
     fn emit_hook(&self, command: &str) -> String {
         format!("{command};")
     }
+
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         r#"_cade_hook() {
     local previous_exit_status=$?
@@ -224,7 +239,7 @@ impl ShellOutput for Nushell {
             return String::new();
         }
         let mut rec = serde_json::Map::new();
-        rec.insert(key.to_string(), serde_json::Value::from(value));
+        rec.insert(key.to_string(), nushell_env_value(key, value));
         format!("{}\n", serde_json::json!({ "s": rec }))
     }
     fn unset_env(&self, key: &str) -> String {
@@ -236,6 +251,7 @@ impl ShellOutput for Nushell {
     fn emit_hook(&self, command: &str) -> String {
         format!("{}\n", serde_json::json!({ "h": command }))
     }
+
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         let cade = serde_json::to_string(cade_exe).unwrap_or_else(|_| "\"cade\"".to_string());
         let cade_args = serde_json::to_string(cade_args).unwrap_or_else(|_| "[]".to_string());
@@ -292,6 +308,7 @@ impl ShellOutput for Elvish {
     fn emit_hook(&self, command: &str) -> String {
         format!("{command};")
     }
+
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         r#"set edit:before-readline = [
     {||
@@ -333,6 +350,7 @@ impl ShellOutput for Murex {
     fn emit_hook(&self, command: &str) -> String {
         format!("{command}\n")
     }
+
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         // murex runs cade on every prompt (no PWD-change fast-path): its
         // conditional syntax made the guard unreliable
@@ -361,6 +379,11 @@ mod tests {
         assert!(!is_valid_key("x;rm -rf"));
         assert!(!is_valid_key("a=b"));
         assert!(!is_valid_key("a$b"));
+    }
+
+    #[test]
+    fn json_is_not_a_shell_name() {
+        assert!("json".parse::<ShellName>().is_err());
     }
 
     #[test]
@@ -512,5 +535,12 @@ mod tests {
         // a JSON directive parsed with `from json`, never run as nu code
         let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(v["s"]["X"], "$(id)\"x");
+    }
+
+    #[test]
+    fn nushell_emits_path_as_a_list() {
+        let out = Nushell.set_env("PATH", "/one:/two");
+        let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(v["s"]["PATH"], serde_json::json!(["/one", "/two"]));
     }
 }

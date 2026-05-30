@@ -20,6 +20,11 @@ impl From<CliVerbosity> for crate::verbosity::Verbosity {
     }
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum CliExportFormat {
+    Json,
+}
+
 #[derive(Subcommand)]
 pub enum CliAction {
     Enter {
@@ -39,6 +44,12 @@ pub enum CliAction {
     Edit,
     Hook {
         shell: String,
+    },
+    /// Internal compatibility endpoint used by the direnv shim.
+    #[command(hide = true)]
+    Export {
+        #[arg(value_enum)]
+        format: CliExportFormat,
     },
     Status,
 }
