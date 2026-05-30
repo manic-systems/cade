@@ -19,6 +19,8 @@ pub struct CadeLayer {
     pub clears: HashSet<String>,
     #[serde(default)]
     pub concat: HashSet<String>,
+    #[serde(default)]
+    pub nix_store_paths: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -64,6 +66,9 @@ pub struct EnvSet {
     /// Keys assigned with := hard replace
     #[serde(default)]
     pub hard: HashSet<String>,
+    /// nix store paths
+    #[serde(default)]
+    pub nix_store_paths: Vec<String>,
 }
 
 impl EnvSet {
@@ -76,6 +81,7 @@ impl EnvSet {
         Self {
             vars,
             hard: HashSet::new(),
+            nix_store_paths: Vec::new(),
         }
     }
 }

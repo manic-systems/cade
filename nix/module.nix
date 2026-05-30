@@ -15,6 +15,7 @@ let
   configValues = lib.filterAttrs (_: v: v != null) {
     inherit (cfg) verbosity;
     long_running_warning_ms = cfg.longRunningWarningMs;
+    shell_gc_root_ttl_seconds = cfg.shellGcRootTtlSeconds;
   };
   tomlFormat = pkgs.formats.toml { };
   generatedConfigFile = tomlFormat.generate "cade-config.toml" configValues;
@@ -70,7 +71,7 @@ in
         "trace"
       ]);
       default = null;
-      description = "Default diagnostic verbosity written to cade's generated TOML config.";
+      description = "Default diagnostic verbosity.";
     };
 
     longRunningWarningMs = lib.mkOption {
@@ -79,10 +80,16 @@ in
       description = "External loader warning threshold, in milliseconds, written to cade's generated TOML config.";
     };
 
+    shellGcRootTtlSeconds = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.positive;
+      default = null;
+      description = "Retention time for inactive shell roots, in seconds.";
+    };
+
     configFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
-      description = "Strict TOML config path passed to cade with --config instead of generating one from module options.";
+      description = "Strict TOML config path.";
     };
 
     # Nushell, Elvish, and Murex have no system-level interactive-init hook on
@@ -119,7 +126,7 @@ in
     assertions = [
       {
         assertion = cfg.configFile == null || configValues == { };
-        message = "programs.cade.configFile cannot be combined with programs.cade.verbosity or programs.cade.longRunningWarningMs.";
+        message = "programs.cade.configFile cannot be combined with generated config options.";
       }
     ];
 
