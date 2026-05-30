@@ -13,6 +13,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) use crate::nix_dev_env::{load_flake, load_shell};
+
 const DEFAULT_LONG_RUNNING_WARNING_AFTER: Duration = Duration::from_secs(5);
 const LONG_RUNNING_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const RECENT_OUTPUT_LINES: usize = 3;
@@ -256,7 +258,7 @@ fn handle_stream_event(
 }
 
 /// Run a command, returning stdout on success or an error carrying its stderr
-fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
+pub(crate) fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     verbosity::log(Verbosity::Trace, format_args!("cade: running {what}."));
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -347,34 +349,6 @@ fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
         );
     }
     Ok(out.stdout)
-}
-
-pub fn load_flake(path: &Path, output: Option<String>) -> Result<EnvSet> {
-    let mut proc = Command::new("nix");
-    proc.args(["print-dev-env", "--json"]);
-    // A named output is a flake installable
-    if let Some(flake_output) = output.filter(|o| !o.is_empty()) {
-        proc.arg(format!(".#{flake_output}"));
-    }
-    proc.current_dir(path);
-    let stdout = run_checked(proc, &format!("nix print-dev-env at {}", path.display()))?;
-    EnvSet::from_json(&stdout)
-}
-
-pub fn load_shell(path: &Path, filename: String) -> Result<EnvSet> {
-    let file = if filename.is_empty() {
-        "./shell.nix".to_string()
-    } else {
-        filename
-    };
-    let mut proc = Command::new("nix");
-    proc.args(["print-dev-env", "--json", "-f", &file]);
-    proc.current_dir(path);
-    let stdout = run_checked(
-        proc,
-        &format!("nix print-dev-env -f {file} at {}", path.display()),
-    )?;
-    EnvSet::from_json(&stdout)
 }
 
 pub fn load_env(path: &Path, filename: String) -> Result<EnvSet> {

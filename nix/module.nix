@@ -28,6 +28,7 @@ let
     ]
   ));
   snippets = import ./snippets.nix { cade = cadeCmd; };
+  direnvShim = pkgs.callPackage "${self}/nix/direnv-compat.nix" { cade = cfg.package; };
 in
 {
   options.programs.cade = {
@@ -81,6 +82,18 @@ in
       description = "Strict TOML config path passed to cade with --config instead of generating one from module options.";
     };
 
+    direnvCompat = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      example = true;
+      description = ''
+        Install a cade-backed `direnv` executable on PATH for editor and tool
+        compatibility. This is not the shell integration path; interactive
+        shells should use cade's native hook snippets. The shim collides with a
+        real direnv in environment.systemPackages, so install only one.
+      '';
+    };
+
     shellSnippets = {
       nushell = lib.mkOption {
         type = lib.types.lines;
@@ -113,7 +126,7 @@ in
       }
     ];
 
-    environment.systemPackages = [ cfg.package ];
+    environment.systemPackages = [ cfg.package ] ++ lib.optional cfg.direnvCompat direnvShim;
 
     programs.bash.interactiveShellInit = lib.mkIf cfg.enableBashIntegration ''
       eval "$(${cadeCmd} hook bash)"
