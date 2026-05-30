@@ -70,6 +70,7 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
+ "libc",
  "microxdg",
  "rusqlite",
  "serde",

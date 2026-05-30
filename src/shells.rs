@@ -72,6 +72,7 @@ pub enum ShellName {
     Bash,
     Zsh,
     Nushell,
+    Json,
     Elvish,
     Murex,
 }
@@ -83,6 +84,7 @@ impl fmt::Display for ShellName {
             ShellName::Bash => write!(f, "bash"),
             ShellName::Zsh => write!(f, "zsh"),
             ShellName::Nushell => write!(f, "nushell"),
+            ShellName::Json => write!(f, "json"),
             ShellName::Elvish => write!(f, "elvish"),
             ShellName::Murex => write!(f, "murex"),
         }
@@ -97,6 +99,7 @@ impl FromStr for ShellName {
             "bash" => Ok(ShellName::Bash),
             "zsh" => Ok(ShellName::Zsh),
             "nushell" | "nu" => Ok(ShellName::Nushell),
+            "json" => Ok(ShellName::Json),
             "elvish" => Ok(ShellName::Elvish),
             "murex" => Ok(ShellName::Murex),
             _ => Err(format!("unknown shell: {s}")),
@@ -111,6 +114,7 @@ impl ShellName {
             ShellName::Bash => Box::new(Bash),
             ShellName::Zsh => Box::new(Zsh),
             ShellName::Nushell => Box::new(Nushell),
+            ShellName::Json => Box::new(Json),
             ShellName::Elvish => Box::new(Elvish),
             ShellName::Murex => Box::new(Murex),
         }
@@ -143,7 +147,7 @@ impl ShellOutput for Fish {
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         r#"function __cade_hook --on-event fish_prompt
     set -l __cade_status $status
-    __CADE__ reload --shell fish | source
+    __CADE__ --owner-pid $fish_pid reload --shell fish | source
     return $__cade_status
 end
 "#
@@ -176,7 +180,7 @@ impl ShellOutput for Bash {
         r#"_cade_hook() {
     local previous_exit_status=$?
     trap -- '' INT
-    eval "$(__CADE__ reload --shell bash)"
+    eval "$(__CADE__ --owner-pid $$ reload --shell bash)"
     trap - INT
     return $previous_exit_status
 }
@@ -213,7 +217,7 @@ impl ShellOutput for Zsh {
         r#"_cade_hook() {
     local previous_exit_status=$?
     trap -- '' INT
-    eval "$(__CADE__ reload --shell zsh)"
+    eval "$(__CADE__ --owner-pid $$ reload --shell zsh)"
     trap - INT
     return $previous_exit_status
 }
@@ -230,6 +234,20 @@ fi
 
 pub struct Nushell;
 
+fn json_set_directive(key: &str, value: &str) -> String {
+    let mut rec = serde_json::Map::new();
+    rec.insert(key.to_string(), nushell_env_value(key, value));
+    format!("{}\n", serde_json::json!({ "s": rec }))
+}
+
+fn json_unset_directive(key: &str) -> String {
+    format!("{}\n", serde_json::json!({ "u": key }))
+}
+
+fn json_hook_directive(command: &str) -> String {
+    format!("{}\n", serde_json::json!({ "h": command }))
+}
+
 impl ShellOutput for Nushell {
     // Nushell can't `source` a per-shell file (source needs a const path) and
     // `nu -c` loses env, so cade emits NDJSON directives that the prompt closure
@@ -238,18 +256,16 @@ impl ShellOutput for Nushell {
         if !is_valid_key(key) {
             return String::new();
         }
-        let mut rec = serde_json::Map::new();
-        rec.insert(key.to_string(), nushell_env_value(key, value));
-        format!("{}\n", serde_json::json!({ "s": rec }))
+        json_set_directive(key, value)
     }
     fn unset_env(&self, key: &str) -> String {
         if !is_valid_key(key) {
             return String::new();
         }
-        format!("{}\n", serde_json::json!({ "u": key }))
+        json_unset_directive(key)
     }
     fn emit_hook(&self, command: &str) -> String {
-        format!("{}\n", serde_json::json!({ "h": command }))
+        json_hook_directive(command)
     }
 
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
@@ -263,7 +279,7 @@ $env.config.hooks.pre_prompt = (
     ($env.config.hooks?.pre_prompt? | default [])
     | append {||
         let __cade_last_exit = ($env.LAST_EXIT_CODE? | default 0)
-        for line in (^$cade ...$cade_args reload --shell nushell | lines) {
+        for line in (^$cade ...$cade_args --owner-pid $nu.pid reload --shell nushell | lines) {
             if ($line | str trim | is-empty) { continue }
             let m = ($line | from json)
             if "s" in $m { load-env $m.s }
@@ -284,6 +300,31 @@ $env.config.hooks.pre_prompt = (
 "#
         .replace("__CADE__", &cade)
         .replace("__CADE_ARGS__", &cade_args)
+    }
+}
+
+// --- JSON ---
+
+pub struct Json;
+
+impl ShellOutput for Json {
+    fn set_env(&self, key: &str, value: &str) -> String {
+        if !is_valid_key(key) {
+            return String::new();
+        }
+        json_set_directive(key, value)
+    }
+    fn unset_env(&self, key: &str) -> String {
+        if !is_valid_key(key) {
+            return String::new();
+        }
+        json_unset_directive(key)
+    }
+    fn emit_hook(&self, command: &str) -> String {
+        json_hook_directive(command)
+    }
+    fn hook_init(&self, _cade_exe: &str, _cade_args: &[String]) -> String {
+        String::new()
     }
 }
 
@@ -382,8 +423,9 @@ mod tests {
     }
 
     #[test]
-    fn json_is_not_a_shell_name() {
-        assert!("json".parse::<ShellName>().is_err());
+    fn shell_name_accepts_json() {
+        assert!(matches!("json".parse::<ShellName>(), Ok(ShellName::Json)));
+        assert_eq!(ShellName::Json.to_string(), "json");
     }
 
     #[test]
@@ -391,13 +433,13 @@ mod tests {
         let exe = "/tmp/cade bin/cade";
         let args = vec!["--config".to_string(), "/tmp/cade config.toml".to_string()];
         assert!(Bash.hook_init(exe, &args).contains(
-            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' reload --shell bash"
+            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' --owner-pid $$ reload --shell bash"
         ));
         assert!(Zsh.hook_init(exe, &args).contains(
-            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' reload --shell zsh"
+            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' --owner-pid $$ reload --shell zsh"
         ));
         assert!(Fish.hook_init(exe, &args).contains(
-            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' reload --shell fish"
+            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' --owner-pid $fish_pid reload --shell fish"
         ));
         assert!(
             Nushell
@@ -542,5 +584,18 @@ mod tests {
         let out = Nushell.set_env("PATH", "/one:/two");
         let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(v["s"]["PATH"], serde_json::json!(["/one", "/two"]));
+    }
+
+    #[test]
+    fn json_shell_uses_nushell_directive_shape() {
+        let set: serde_json::Value = serde_json::from_str(Json.set_env("X", "1").trim()).unwrap();
+        let unset: serde_json::Value = serde_json::from_str(Json.unset_env("X").trim()).unwrap();
+        let hook: serde_json::Value =
+            serde_json::from_str(Json.emit_hook("echo ready").trim()).unwrap();
+
+        assert_eq!(set, serde_json::json!({ "s": { "X": "1" } }));
+        assert_eq!(unset, serde_json::json!({ "u": "X" }));
+        assert_eq!(hook, serde_json::json!({ "h": "echo ready" }));
+        assert_eq!(Json.hook_init("cade", &[]), "");
     }
 }

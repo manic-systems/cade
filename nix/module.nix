@@ -11,6 +11,7 @@ let
   configValues = lib.filterAttrs (_: v: v != null) {
     inherit (cfg) verbosity;
     long_running_warning_ms = cfg.longRunningWarningMs;
+    shell_gc_root_ttl_seconds = cfg.shellGcRootTtlSeconds;
   };
   tomlFormat = pkgs.formats.toml { };
   generatedConfigFile = tomlFormat.generate "cade-config.toml" configValues;
@@ -76,6 +77,12 @@ in
       description = "External loader warning threshold, in milliseconds.";
     };
 
+    shellGcRootTtlSeconds = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.positive;
+      default = null;
+      description = "Shell GC root and snapshot retention time, in seconds.";
+    };
+
     configFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
@@ -122,7 +129,7 @@ in
     assertions = [
       {
         assertion = cfg.configFile == null || configValues == { };
-        message = "programs.cade.configFile cannot be combined with programs.cade.verbosity or programs.cade.longRunningWarningMs.";
+        message = "programs.cade.configFile cannot be combined with generated config options.";
       }
     ];
 

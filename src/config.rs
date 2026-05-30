@@ -11,6 +11,7 @@ pub struct Config {
     pub path: Option<PathBuf>,
     pub verbosity: Option<Verbosity>,
     pub long_running_warning_ms: Option<u64>,
+    pub shell_gc_root_ttl_seconds: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -18,6 +19,7 @@ pub struct Config {
 struct RawConfig {
     verbosity: Option<String>,
     long_running_warning_ms: Option<u64>,
+    shell_gc_root_ttl_seconds: Option<u64>,
 }
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
@@ -36,6 +38,14 @@ pub fn long_running_warning_ms() -> Option<u64> {
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|v| *v > 0)
         .or_else(|| current().long_running_warning_ms)
+}
+
+pub fn shell_gc_root_ttl_seconds() -> Option<u64> {
+    std::env::var("CADE_SHELL_GC_ROOT_TTL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .or_else(|| current().shell_gc_root_ttl_seconds)
 }
 
 fn home_config_path() -> Option<PathBuf> {
@@ -112,10 +122,14 @@ impl TryFrom<RawConfig> for Config {
         if matches!(raw.long_running_warning_ms, Some(0)) {
             bail!("long_running_warning_ms must be greater than 0");
         }
+        if matches!(raw.shell_gc_root_ttl_seconds, Some(0)) {
+            bail!("shell_gc_root_ttl_seconds must be greater than 0");
+        }
         Ok(Self {
             path: None,
             verbosity,
             long_running_warning_ms: raw.long_running_warning_ms,
+            shell_gc_root_ttl_seconds: raw.shell_gc_root_ttl_seconds,
         })
     }
 }
@@ -129,10 +143,12 @@ mod tests {
         let raw = RawConfig {
             verbosity: Some("vars".into()),
             long_running_warning_ms: Some(100),
+            shell_gc_root_ttl_seconds: Some(200),
         };
         let cfg: Config = raw.try_into().unwrap();
         assert_eq!(cfg.verbosity, Some(Verbosity::Vars));
         assert_eq!(cfg.long_running_warning_ms, Some(100));
+        assert_eq!(cfg.shell_gc_root_ttl_seconds, Some(200));
     }
 
     #[test]
@@ -140,6 +156,7 @@ mod tests {
         let raw = RawConfig {
             verbosity: Some("loud".into()),
             long_running_warning_ms: None,
+            shell_gc_root_ttl_seconds: None,
         };
         assert!(Config::try_from(raw).is_err());
     }
@@ -149,6 +166,17 @@ mod tests {
         let raw = RawConfig {
             verbosity: None,
             long_running_warning_ms: Some(0),
+            shell_gc_root_ttl_seconds: None,
+        };
+        assert!(Config::try_from(raw).is_err());
+    }
+
+    #[test]
+    fn rejects_zero_shell_gc_root_ttl() {
+        let raw = RawConfig {
+            verbosity: None,
+            long_running_warning_ms: None,
+            shell_gc_root_ttl_seconds: Some(0),
         };
         assert!(Config::try_from(raw).is_err());
     }

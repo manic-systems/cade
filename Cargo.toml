@@ -16,6 +16,7 @@ codegen-units = 1
 [dependencies]
 anyhow = "1.0.99"
 clap = { version = "4.5.45", features = ["derive"] }
+libc = "0.2"
 microxdg = "0.2.0"
 rusqlite = "0.37.0"
 serde = { version = "1.0.226", features = ["derive"] }

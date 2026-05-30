@@ -51,7 +51,36 @@ pub enum CliAction {
         #[arg(value_enum)]
         format: CliExportFormat,
     },
+    Lease {
+        #[command(subcommand)]
+        action: LeaseAction,
+    },
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum LeaseAction {
+    Open {
+        #[arg(long, default_value = "generic")]
+        kind: String,
+
+        #[arg(long)]
+        project: Option<PathBuf>,
+
+        #[arg(long)]
+        ttl_seconds: Option<u64>,
+    },
+    Refresh {
+        #[arg(long)]
+        client_id: String,
+
+        #[arg(long)]
+        ttl_seconds: Option<u64>,
+    },
+    Close {
+        #[arg(long)]
+        client_id: String,
+    },
 }
 
 #[derive(Parser)]
@@ -63,6 +92,14 @@ pub struct Cli {
     /// Diagnostic verbosity: quiet, normal, vars, or trace.
     #[arg(long, value_enum, global = true)]
     pub verbosity: Option<CliVerbosity>,
+
+    /// Lease client id to attach while activating or reloading.
+    #[arg(long, global = true)]
+    pub client_id: Option<String>,
+
+    /// Shell process pid to hold this activation's GC roots.
+    #[arg(long, global = true)]
+    pub owner_pid: Option<u32>,
 
     #[command(subcommand)]
     pub action: CliAction,
