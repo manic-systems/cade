@@ -37,19 +37,11 @@ fn json_export_outside_cade_project_is_empty_diff() {
 }
 
 #[test]
-fn json_export_is_not_a_shell_and_has_no_activation_bookkeeping() {
+fn json_export_has_no_activation_bookkeeping() {
     let sb = Sandbox::new();
     sb.write(".cade", "load env\n");
     sb.write(".env", "A=1\nPATH=/layer\n");
     sb.allow(&sb.root);
-
-    let bad = sb.run(&sb.root, &["reload", "--shell", "json"], &[]);
-    assert!(!bad.status.success(), "json must not parse as a shell");
-    assert!(
-        stderr(&bad).contains("unknown shell: json"),
-        "{}",
-        stderr(&bad)
-    );
 
     let out = run_export_json(&sb, &sb.root, &[("PATH", "/usr/bin")]);
     assert!(out.status.success(), "{out:?}");

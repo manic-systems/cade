@@ -7,12 +7,14 @@ use crate::{
     types::{CadeAction, CadeLayer, EnvSet, HookType, InnerHook, Keyword, Loadable},
     verbosity::{self, Verbosity},
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::named_params;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    process::Command,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 pub struct Cade {
@@ -134,6 +136,86 @@ const PATH_LIKE: &[&str] = &[
     "XDG_CONFIG_DIRS",
     "TERMINFO_DIRS",
 ];
+const DEFAULT_SHELL_GC_ROOT_TTL_SECS: u64 = 30 * 24 * 3600;
+
+fn shell_gc_root_ttl() -> Duration {
+    Duration::from_secs(
+        config::shell_gc_root_ttl_seconds().unwrap_or(DEFAULT_SHELL_GC_ROOT_TTL_SECS),
+    )
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Write via a same-dir temp file and rename so a concurrent reader (the GC
+/// scan) never observes a half-written state file.
+fn atomic_write(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path.file_name().and_then(|n| n.to_str()).unwrap_or("cade");
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = parent.join(format!(".{stem}.tmp.{}.{nanos}", std::process::id()));
+    if let Err(e) = std::fs::write(&tmp, body).and_then(|()| std::fs::rename(&tmp, path)) {
+        std::fs::remove_file(&tmp).ok();
+        return Err(e);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SessionHolder {
+    Process {
+        pid: u32,
+        start_time: String,
+        last_seen: u64,
+    },
+    Lease {
+        client_id: String,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct LeaseRecord {
+    client_id: String,
+    kind: String,
+    project: Option<String>,
+    expires_at: u64,
+    last_seen: u64,
+}
+
+impl LeaseRecord {
+    fn session_holder(&self) -> SessionHolder {
+        SessionHolder::Lease {
+            client_id: self.client_id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct LeaseResponse {
+    client_id: String,
+    kind: String,
+    project: Option<String>,
+    expires_at: u64,
+}
+
+impl From<&LeaseRecord> for LeaseResponse {
+    fn from(lease: &LeaseRecord) -> Self {
+        Self {
+            client_id: lease.client_id.clone(),
+            kind: lease.kind.clone(),
+            project: lease.project.clone(),
+            expires_at: lease.expires_at,
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct WatchEntry {
@@ -178,16 +260,73 @@ fn find_cade_root(start: &Path) -> Option<PathBuf> {
 
 // Reject session ids that could escape the snapshots dir when used as a path.
 fn is_valid_session(s: &str) -> bool {
-    !s.is_empty() && !s.contains('/') && !s.contains('\\') && !s.contains("..")
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
+fn is_valid_client_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
+fn validate_client_id(s: &str) -> Result<()> {
+    if is_valid_client_id(s) {
+        Ok(())
+    } else {
+        bail!("invalid cade lease client id")
+    }
+}
+
+fn random_hex(bytes: usize) -> String {
+    let mut buf = vec![0u8; bytes];
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut buf))
+        .is_err()
+    {
+        let seed = format!("{}-{}-{}", std::process::id(), now_secs(), new_session_id());
+        for (i, byte) in seed.as_bytes().iter().enumerate() {
+            buf[i % bytes] ^= *byte;
+            buf[(i * 7 + 3) % bytes] = buf[(i * 7 + 3) % bytes].wrapping_add(*byte);
+        }
+    }
+    buf.into_iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn new_client_id() -> String {
+    random_hex(16)
 }
 
 /// Per-shell-session id, generated at first activation.
 fn new_session_id() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{}-{nanos}", std::process::id())
+}
+
+fn stable_hash_hex(text: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn layer_uses_nix_loader(keywords: &[Keyword]) -> bool {
+    keywords.iter().any(|kw| {
+        matches!(
+            kw,
+            Keyword::Load(
+                Loadable::Default | Loadable::Flake(_) | Loadable::Shell(_) | Loadable::Envrc(_)
+            )
+        )
+    })
 }
 
 /// Read a unit-separated key list
@@ -203,42 +342,107 @@ fn read_keylist(var: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn session_from_environ(raw: &[u8]) -> Option<String> {
-    const PREFIX: &[u8] = b"__CADE_SESSION=";
-    raw.split(|&b| b == 0).find_map(|entry| {
-        let value = entry.strip_prefix(PREFIX)?;
-        let session = std::str::from_utf8(value).ok()?;
-        is_valid_session(session).then(|| session.to_string())
-    })
+#[cfg(target_os = "linux")]
+fn parse_proc_stat(raw: &str) -> Option<(u32, String)> {
+    let end = raw.rfind(") ")?;
+    let fields: Vec<&str> = raw[end + 2..].split_whitespace().collect();
+    let ppid = fields.get(1)?.parse::<u32>().ok()?;
+    let start_time = fields.get(19)?.to_string();
+    Some((ppid, start_time))
 }
 
 #[cfg(target_os = "linux")]
-fn live_cade_sessions() -> HashSet<String> {
-    let mut sessions = HashSet::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return sessions;
-    };
-
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !name.bytes().all(|b| b.is_ascii_digit()) {
-            continue;
-        }
-        let Ok(environ) = std::fs::read(entry.path().join("environ")) else {
-            continue;
-        };
-        if let Some(session) = session_from_environ(&environ) {
-            sessions.insert(session);
-        }
-    }
-
-    sessions
+fn process_start_time(pid: u32) -> Option<String> {
+    let raw = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_proc_stat(&raw).map(|(_, start)| start)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn live_cade_sessions() -> HashSet<String> {
-    HashSet::new()
+#[cfg(target_os = "macos")]
+fn process_start_time(pid: u32) -> Option<String> {
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+    let info_len = std::mem::size_of::<libc::proc_bsdinfo>();
+    let rc = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast::<libc::c_void>(),
+            info_len as libc::c_int,
+        )
+    };
+    if rc < info_len as libc::c_int {
+        return None;
+    }
+    let info = unsafe { info.assume_init() };
+    (info.pbi_pid == pid as u32)
+        .then(|| format!("{}-{}", info.pbi_start_tvsec, info.pbi_start_tvusec))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_start_time(_pid: u32) -> Option<String> {
+    None
+}
+
+#[cfg(unix)]
+fn parent_pid() -> Option<u32> {
+    u32::try_from(unsafe { libc::getppid() }).ok()
+}
+
+#[cfg(not(unix))]
+fn parent_pid() -> Option<u32> {
+    None
+}
+
+fn process_holder_is_live(pid: u32, start_time: &str) -> bool {
+    process_start_time(pid)
+        .map(|current| current == start_time)
+        .unwrap_or(false)
+}
+
+fn lease_record_is_live(lease: &LeaseRecord) -> bool {
+    lease.expires_at > now_secs()
+}
+
+fn holder_file_name(holder: &SessionHolder) -> Result<String> {
+    match holder {
+        SessionHolder::Process {
+            pid, start_time, ..
+        } => {
+            if start_time
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+            {
+                Ok(format!("process-{pid}-{start_time}.json"))
+            } else {
+                bail!("invalid process start time")
+            }
+        }
+        SessionHolder::Lease { client_id } => {
+            validate_client_id(client_id)?;
+            Ok(format!("lease-{client_id}.json"))
+        }
+    }
+}
+
+fn configured_client_id(explicit: Option<&str>) -> Option<String> {
+    explicit
+        .map(str::to_owned)
+        .or_else(|| std::env::var("CADE_CLIENT_ID").ok())
+        .filter(|id| !id.is_empty())
+}
+
+/// A stable session id for the direnv export path, which cannot persist
+/// `__CADE_SESSION` between calls. Scoped to the holding lease if there is one,
+/// otherwise the owning shell process; `None` when neither is resolvable, in
+/// which case the export skips gc rooting.
+fn direnv_session_id(client_id: Option<&str>, owner_pid: Option<u32>) -> Option<String> {
+    if let Some(client_id) = configured_client_id(client_id) {
+        return Some(format!("direnv-lease-{}", stable_hash_hex(&client_id)));
+    }
+    let pid = owner_pid.or_else(parent_pid)?;
+    let start_time = process_start_time(pid)?;
+    Some(format!("direnv-{pid}-{}", stable_hash_hex(&start_time)))
 }
 
 impl Cade {
@@ -291,12 +495,36 @@ impl Cade {
             .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>()
             .join("\x1F");
-        std::fs::write(self.snapshot_path(session), body).context("write snapshot")
+        atomic_write(&self.snapshot_path(session), body.as_bytes()).context("write snapshot")
     }
 
-    fn gc_snapshots(&self) {
-        let max_age = std::time::Duration::from_secs(30 * 24 * 3600);
-        let live_sessions = live_cade_sessions();
+    fn shell_gc_roots_dir(&self) -> PathBuf {
+        self.state_dir.join("gcroots").join("shells")
+    }
+
+    fn shell_gc_root_session_dir(&self, session: &str) -> PathBuf {
+        self.shell_gc_roots_dir().join(session)
+    }
+
+    fn lease_dir(&self) -> PathBuf {
+        self.state_dir.join("leases")
+    }
+
+    fn lease_path(&self, client_id: &str) -> PathBuf {
+        self.lease_dir().join(format!("{client_id}.json"))
+    }
+
+    fn holders_dir(&self, session: &str) -> PathBuf {
+        self.shell_gc_root_session_dir(session).join("holders")
+    }
+
+    fn gc_state(&self, protected_session: Option<&str>) {
+        let live_sessions = self.gc_shell_roots(protected_session);
+        self.gc_snapshots(&live_sessions);
+    }
+
+    fn gc_snapshots(&self, live_sessions: &HashSet<String>) {
+        let max_age = shell_gc_root_ttl();
         let Ok(entries) = std::fs::read_dir(self.state_dir.join("snapshots")) else {
             return;
         };
@@ -318,6 +546,324 @@ impl Cade {
                 .unwrap_or(false);
             if stale {
                 std::fs::remove_file(path).ok();
+            }
+        }
+    }
+
+    fn gc_shell_roots(&self, protected_session: Option<&str>) -> HashSet<String> {
+        let mut live_sessions = HashSet::new();
+        let protected_session = protected_session.filter(|session| is_valid_session(session));
+        if let Some(session) = protected_session {
+            live_sessions.insert(session.to_string());
+        }
+        let max_age = shell_gc_root_ttl();
+        let Ok(entries) = std::fs::read_dir(self.shell_gc_roots_dir()) else {
+            return live_sessions;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(session) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if protected_session == Some(session) {
+                continue;
+            }
+            let live = self.session_has_live_holder(session);
+            if live {
+                live_sessions.insert(session.to_string());
+                continue;
+            }
+            let marker = path.join(".last-used");
+            let stale = marker
+                .metadata()
+                .or_else(|_| entry.metadata())
+                .and_then(|m| m.modified())
+                .map(|t| t.elapsed().map(|e| e > max_age).unwrap_or(false))
+                .unwrap_or(false);
+            if stale {
+                std::fs::remove_dir_all(path).ok();
+            }
+        }
+        live_sessions
+    }
+
+    fn session_has_live_holder(&self, session: &str) -> bool {
+        let holders_dir = self.holders_dir(session);
+        let Ok(entries) = std::fs::read_dir(&holders_dir) else {
+            return false;
+        };
+
+        let mut live = false;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // Skip a writer's in-flight `atomic_write` temp so the scan can't
+            // delete it out from under the pending rename.
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let holder = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<SessionHolder>(&raw).ok());
+            match holder {
+                Some(holder) if self.session_holder_is_live(&holder) => live = true,
+                _ => {
+                    std::fs::remove_file(path).ok();
+                }
+            }
+        }
+        live
+    }
+
+    fn session_holder_is_live(&self, holder: &SessionHolder) -> bool {
+        match holder {
+            SessionHolder::Lease { client_id } => self
+                .read_lease_record(client_id)
+                .map(|lease| lease_record_is_live(&lease))
+                .unwrap_or(false),
+            SessionHolder::Process {
+                pid, start_time, ..
+            } => process_holder_is_live(*pid, start_time),
+        }
+    }
+
+    fn touch_shell_gc_session(&self, session: &str) -> bool {
+        if !is_valid_session(session) {
+            return false;
+        }
+        let session_dir = self.shell_gc_root_session_dir(session);
+        if let Err(e) = std::fs::create_dir_all(&session_dir) {
+            verbosity::log(
+                Verbosity::Normal,
+                format_args!(
+                    "cade: cannot create nix gc root dir at {}: {e}.",
+                    session_dir.display()
+                ),
+            );
+            return false;
+        }
+        if let Err(e) = std::fs::write(session_dir.join(".last-used"), b"") {
+            verbosity::log(
+                Verbosity::Normal,
+                format_args!(
+                    "cade: cannot refresh nix gc root marker at {}: {e}.",
+                    session_dir.display()
+                ),
+            );
+            return false;
+        }
+        true
+    }
+
+    fn write_session_holder(&self, session: &str, holder: &SessionHolder) -> Result<()> {
+        if !is_valid_session(session) {
+            bail!("invalid cade session id")
+        }
+        if !self.touch_shell_gc_session(session) {
+            bail!("cannot refresh cade session holder")
+        }
+        let holders_dir = self.holders_dir(session);
+        std::fs::create_dir_all(&holders_dir).context("create cade session holders dir")?;
+        let path = holders_dir.join(holder_file_name(holder)?);
+        let body = serde_json::to_vec(holder).context("serialise cade session holder")?;
+        atomic_write(&path, &body).context("write cade session holder")
+    }
+
+    fn remove_session_holder(&self, session: &str, holder_name: &str) {
+        if !is_valid_session(session) {
+            return;
+        }
+        std::fs::remove_file(self.holders_dir(session).join(holder_name)).ok();
+        self.touch_shell_gc_session(session);
+    }
+
+    fn refresh_process_holder(&self, session: &str, owner_pid: Option<u32>) -> Result<()> {
+        let Some(pid) = owner_pid.or_else(parent_pid) else {
+            return Ok(());
+        };
+        let Some(start_time) = process_start_time(pid) else {
+            return Ok(());
+        };
+        self.write_session_holder(
+            session,
+            &SessionHolder::Process {
+                pid,
+                start_time,
+                last_seen: now_secs(),
+            },
+        )
+    }
+
+    fn refresh_session_holders(
+        &self,
+        session: &str,
+        client_id: Option<&str>,
+        owner_pid: Option<u32>,
+    ) {
+        if let Err(e) = self.refresh_process_holder(session, owner_pid) {
+            verbosity::log(
+                Verbosity::Trace,
+                format_args!("cade: cannot refresh process gc holder: {e}."),
+            );
+        }
+        if let Some(client_id) = configured_client_id(client_id) {
+            // an expired or closed lease is a benign, expected state here; never abort activation.
+            let result = self
+                .read_lease_record(&client_id)
+                .and_then(|lease| self.write_session_holder(session, &lease.session_holder()));
+            if let Err(e) = result {
+                verbosity::log(
+                    Verbosity::Trace,
+                    format_args!("cade: cannot refresh lease gc holder for {client_id}: {e}."),
+                );
+            }
+        }
+    }
+
+    fn read_lease_record(&self, client_id: &str) -> Result<LeaseRecord> {
+        validate_client_id(client_id)?;
+        let raw = std::fs::read_to_string(self.lease_path(client_id))
+            .with_context(|| format!("reading cade lease {client_id}"))?;
+        let lease: LeaseRecord = serde_json::from_str(&raw).context("parse cade lease")?;
+        if lease.client_id != client_id {
+            bail!("cade lease {client_id} has mismatched client id");
+        }
+        Ok(lease)
+    }
+
+    fn write_lease_record(&self, lease: &LeaseRecord) -> Result<()> {
+        validate_client_id(&lease.client_id)?;
+        std::fs::create_dir_all(self.lease_dir()).context("create cade leases dir")?;
+        let body = serde_json::to_vec(lease).context("serialise cade lease")?;
+        atomic_write(&self.lease_path(&lease.client_id), &body).context("write cade lease")
+    }
+
+    fn refresh_lease_record(
+        &self,
+        client_id: &str,
+        ttl_seconds: Option<u64>,
+    ) -> Result<LeaseRecord> {
+        let existing = self.read_lease_record(client_id)?;
+        let ttl = ttl_seconds
+            .map(Duration::from_secs)
+            .unwrap_or_else(shell_gc_root_ttl);
+        let lease = LeaseRecord {
+            client_id: existing.client_id,
+            kind: existing.kind,
+            project: existing.project,
+            expires_at: now_secs().saturating_add(ttl.as_secs()),
+            last_seen: now_secs(),
+        };
+        self.write_lease_record(&lease)?;
+        Ok(lease)
+    }
+
+    fn remove_current_session_holders(
+        &self,
+        session: &str,
+        client_id: Option<&str>,
+        owner_pid: Option<u32>,
+    ) {
+        if let Some(pid) = owner_pid.or_else(parent_pid)
+            && let Some(start_time) = process_start_time(pid)
+        {
+            self.remove_session_holder(
+                session,
+                &holder_file_name(&SessionHolder::Process {
+                    pid,
+                    start_time,
+                    last_seen: now_secs(),
+                })
+                .unwrap_or_default(),
+            );
+        }
+
+        if let Some(client_id) = configured_client_id(client_id)
+            && is_valid_client_id(&client_id)
+        {
+            self.remove_session_holder(session, &format!("lease-{client_id}.json"));
+        }
+    }
+
+    fn nix_profile_path(
+        &self,
+        session: &str,
+        layer_count: usize,
+        action_index: usize,
+        path: &Path,
+        spec: &str,
+    ) -> Option<PathBuf> {
+        if !self.touch_shell_gc_session(session) {
+            return None;
+        }
+        let profiles_dir = self.shell_gc_root_session_dir(session).join("profiles");
+        if let Err(e) = std::fs::create_dir_all(&profiles_dir) {
+            verbosity::log(
+                Verbosity::Trace,
+                format_args!(
+                    "cade: cannot create nix profiles dir at {}: {e}.",
+                    profiles_dir.display()
+                ),
+            );
+            return None;
+        }
+        let key = stable_hash_hex(&format!("{}:{spec}", path.display()));
+        Some(profiles_dir.join(format!("{layer_count}-{action_index}-{key}")))
+    }
+
+    fn root_nix_store_paths(&self, session: &str, paths: &[String]) {
+        if paths.is_empty() || !is_valid_session(session) {
+            return;
+        }
+
+        if !self.touch_shell_gc_session(session) {
+            return;
+        }
+        let session_dir = self.shell_gc_root_session_dir(session);
+
+        let mut unique = paths.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+
+        for store_path in unique {
+            let path = Path::new(&store_path);
+            if !path.exists() {
+                verbosity::log(
+                    Verbosity::Trace,
+                    format_args!("cade: skipping missing nix store path {store_path}."),
+                );
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let root = session_dir.join(name);
+            if std::fs::symlink_metadata(&root).is_ok() {
+                continue;
+            }
+
+            let status = match Command::new("nix-store")
+                .args(["--add-root"])
+                .arg(&root)
+                .args(["--indirect", "-r"])
+                .arg(&store_path)
+                .status()
+            {
+                Ok(status) => status,
+                Err(e) => {
+                    verbosity::log(
+                        Verbosity::Normal,
+                        format_args!("cade: failed to add nix gc root for {store_path}: {e}."),
+                    );
+                    continue;
+                }
+            };
+            if !status.success() {
+                verbosity::log(
+                    Verbosity::Normal,
+                    format_args!(
+                        "cade: nix-store failed to add gc root for {store_path} ({status})."
+                    ),
+                );
             }
         }
     }
@@ -449,8 +995,67 @@ impl Cade {
         Ok(())
     }
 
-    pub fn do_activation(&mut self, shell: &dyn ShellOutput, announce: Announce) -> Result<()> {
-        let plan = self.activation_plan()?;
+    pub fn lease_open(
+        &self,
+        kind: &str,
+        project: Option<&Path>,
+        ttl_seconds: Option<u64>,
+    ) -> Result<()> {
+        if kind.is_empty()
+            || !kind
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        {
+            bail!("lease kind must contain only letters, digits, '-' or '_'")
+        }
+        let ttl = ttl_seconds
+            .map(Duration::from_secs)
+            .unwrap_or_else(shell_gc_root_ttl);
+        let lease = LeaseRecord {
+            client_id: new_client_id(),
+            kind: kind.to_string(),
+            project: project.map(|p| p.to_string_lossy().to_string()),
+            expires_at: now_secs().saturating_add(ttl.as_secs()),
+            last_seen: now_secs(),
+        };
+        self.write_lease_record(&lease)?;
+        let response = LeaseResponse::from(&lease);
+        println!("{}", serde_json::to_string(&response)?);
+        Ok(())
+    }
+
+    pub fn lease_refresh(&self, client_id: &str, ttl_seconds: Option<u64>) -> Result<()> {
+        let lease = self.refresh_lease_record(client_id, ttl_seconds)?;
+        let response = LeaseResponse::from(&lease);
+        println!("{}", serde_json::to_string(&response)?);
+        Ok(())
+    }
+
+    pub fn lease_close(&self, client_id: &str) -> Result<()> {
+        validate_client_id(client_id)?;
+        std::fs::remove_file(self.lease_path(client_id)).ok();
+        if let Ok(entries) = std::fs::read_dir(self.shell_gc_roots_dir()) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(session) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                self.remove_session_holder(session, &format!("lease-{client_id}.json"));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn do_activation(
+        &mut self,
+        shell: &dyn ShellOutput,
+        announce: Announce,
+        client_id: Option<&str>,
+        owner_pid: Option<u32>,
+    ) -> Result<()> {
+        let (activation_env, session, new_session) = self.activation_env_with_snapshot()?;
+        let plan = self.activation_plan(Some(&session))?;
+        self.refresh_session_holders(&session, client_id, owner_pid);
         clear_disallowed_root_marker(shell);
         let rollup = &plan.rollup;
 
@@ -461,8 +1066,8 @@ impl Cade {
             }
         }
 
-        let (activation_env, new_session) = self.activation_env_with_snapshot()?;
-        if let Some(session) = new_session {
+        self.root_nix_store_paths(&session, &plan.nix_store_paths);
+        if new_session {
             print!("{}", shell.set_env("__CADE_SESSION", &session));
         }
 
@@ -546,6 +1151,8 @@ impl Cade {
         shell: &dyn ShellOutput,
         finalise: bool,
         announce: bool,
+        client_id: Option<&str>,
+        owner_pid: Option<u32>,
     ) -> Result<()> {
         let layers = std::env::var("__CADE_LAYERS").ok();
         let session = std::env::var("__CADE_SESSION").ok();
@@ -652,7 +1259,10 @@ impl Cade {
         // nested shells inherit __CADE_SESSION and share this file
         // so deleting it would break the parent's later restore.
         if finalise {
-            self.gc_snapshots();
+            if let Some(session) = session.as_deref() {
+                self.remove_current_session_holders(session, client_id, owner_pid);
+            }
+            self.gc_state(session.as_deref());
             print!("{}", shell.unset_env("__CADE_SESSION"));
         }
 
@@ -670,11 +1280,21 @@ impl Cade {
         Ok(())
     }
 
-    pub fn do_reload(&mut self, shell: &dyn ShellOutput) -> Result<()> {
+    pub fn do_reload(
+        &mut self,
+        shell: &dyn ShellOutput,
+        client_id: Option<&str>,
+        owner_pid: Option<u32>,
+    ) -> Result<()> {
         let root = find_cade_root(&self.cwd);
         let is_active = std::env::var("__CADE_LAYERS").is_ok();
 
         if is_active {
+            if let Ok(session) = std::env::var("__CADE_SESSION")
+                && is_valid_session(&session)
+            {
+                self.refresh_session_holders(&session, client_id, owner_pid);
+            }
             // reload/restore only when the active state is stale
             let watch_state = std::env::var("__CADE_WATCHES")
                 .ok()
@@ -693,7 +1313,13 @@ impl Cade {
                     (Some(state), Some(r)) if reactivating => roots_in_same_cade_tree(state, r),
                     _ => false,
                 };
-                self.do_restore(shell, !reactivating, !reactivating || !same_tree)?;
+                self.do_restore(
+                    shell,
+                    !reactivating,
+                    !reactivating || !same_tree,
+                    client_id,
+                    owner_pid,
+                )?;
                 if reactivating {
                     self.do_activation(
                         shell,
@@ -702,6 +1328,8 @@ impl Cade {
                         } else {
                             Announce::Loaded
                         },
+                        client_id,
+                        owner_pid,
                     )?;
                 } else if let Some(root) = &root {
                     mark_disallowed_root(root, shell);
@@ -710,7 +1338,7 @@ impl Cade {
                 }
             }
         } else {
-            self.activate_if_permitted(&root, shell)?;
+            self.activate_if_permitted(&root, shell, client_id, owner_pid)?;
         }
 
         Ok(())
@@ -735,10 +1363,12 @@ impl Cade {
         &mut self,
         root: &Option<PathBuf>,
         shell: &dyn ShellOutput,
+        client_id: Option<&str>,
+        owner_pid: Option<u32>,
     ) -> Result<()> {
         if let Some(root) = root {
             if self.get_permission(root)? {
-                self.do_activation(shell, Announce::Loaded)?;
+                self.do_activation(shell, Announce::Loaded, client_id, owner_pid)?;
             } else {
                 mark_disallowed_root(root, shell);
             }
@@ -908,6 +1538,7 @@ impl CadeLayer {
             purify: false,
             clears: std::collections::HashSet::new(),
             concat: std::collections::HashSet::new(),
+            nix_store_paths: Vec::new(),
         }
     }
 
@@ -918,6 +1549,7 @@ impl CadeLayer {
                 self.purify = true;
             }
             Environ(env) => {
+                self.nix_store_paths.extend(env.nix_store_paths);
                 self.envs.hard.extend(env.hard);
                 for (k, v) in env.vars {
                     self.envs
@@ -940,25 +1572,68 @@ impl CadeLayer {
     }
 }
 
-fn load_single_layer(layer_count: usize, path: &Path, keywords: &[Keyword]) -> Result<CadeLayer> {
+fn load_single_layer(
+    layer_count: usize,
+    path: &Path,
+    keywords: &[Keyword],
+    cade: &Cade,
+    session: Option<&str>,
+) -> Result<CadeLayer> {
     use crate::loaders::*;
     use Keyword::*;
     use Loadable::*;
 
     let mut layer = CadeLayer::new(layer_count, path);
-    for kw in keywords {
+    for (action_index, kw) in keywords.iter().enumerate() {
         let act = match kw {
             Pure => Ok(CadeAction::Purify),
             Call(argv) => call(path, argv.clone())
                 .context("calling process")
                 .map(CadeAction::Environ),
             Load(loadable) => match loadable {
-                Default => load_flake(path, None).context("loading flake"),
-                Flake(output) => load_flake(path, Some(output.clone())),
-                Shell(filename) => load_shell(path, filename.clone()).context("loading shell"),
+                Default => {
+                    let profile = session.and_then(|session| {
+                        cade.nix_profile_path(session, layer_count, action_index, path, "flake")
+                    });
+                    load_flake(path, None, profile).context("loading flake")
+                }
+                Flake(output) => {
+                    let profile = session.and_then(|session| {
+                        cade.nix_profile_path(
+                            session,
+                            layer_count,
+                            action_index,
+                            path,
+                            &format!("flake:{output}"),
+                        )
+                    });
+                    load_flake(path, Some(output.clone()), profile).context("loading flake")
+                }
+                Shell(filename) => {
+                    let profile = session.and_then(|session| {
+                        cade.nix_profile_path(
+                            session,
+                            layer_count,
+                            action_index,
+                            path,
+                            &format!("shell:{filename}"),
+                        )
+                    });
+                    load_shell(path, filename.clone(), profile).context("loading shell")
+                }
                 Env(filename) => load_env(path, filename.clone()).context("loading env file"),
                 Envrc(filename) => {
-                    crate::envrc::load_envrc(path, filename.clone()).context("loading .envrc")
+                    let profile_dir = session.and_then(|session| {
+                        cade.nix_profile_path(
+                            session,
+                            layer_count,
+                            action_index,
+                            path,
+                            &format!("envrc:{filename}"),
+                        )
+                    });
+                    crate::envrc::load_envrc(path, filename.clone(), profile_dir)
+                        .context("loading .envrc")
                 }
             }
             .map(CadeAction::Environ),
@@ -1154,6 +1829,7 @@ mod tests {
         child.push_action(CadeAction::Environ(EnvSet {
             vars,
             hard: std::collections::HashSet::from(["PATH".to_string()]),
+            nix_store_paths: Vec::new(),
         }));
         let r = rollup_envs(vec![parent, child]);
         // `:=` hard replace: drops the parent value and won't absorb ambient
@@ -1211,18 +1887,6 @@ mod tests {
         // inherited parent-layer var survives pure (pure only discards ambient)
         assert_eq!(r.env["FROM_PARENT"], vec!["kept"]);
         assert_eq!(r.env["FROM_CHILD"], vec!["c"]);
-    }
-
-    #[test]
-    fn extracts_live_session_from_proc_environ() {
-        let raw = b"PATH=/bin\0__CADE_SESSION=123-456\0HOME=/tmp\0";
-        assert_eq!(session_from_environ(raw), Some("123-456".to_string()));
-    }
-
-    #[test]
-    fn ignores_invalid_proc_session_values() {
-        assert_eq!(session_from_environ(b"__CADE_SESSION=../bad\0"), None);
-        assert_eq!(session_from_environ(b"__CADE_SESSION=\xff\0"), None);
     }
 
     #[test]
