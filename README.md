@@ -60,8 +60,15 @@ programs.cade = {
   enableFishIntegration = true;  # default; needs programs.fish.enable
   verbosity = "normal";          # null, quiet, normal, vars, trace
   longRunningWarningMs = 5000;   # null, or a positive integer
+  direnvCompat = false;          # true installs the direnv shim for tools
 };
 ```
+
+`direnvCompat` installs a cade-backed `direnv` on `PATH` for editors and other
+direnv-aware tools (see [direnv compatibility](#direnv-compatibility)). it is
+not the shell integration path; interactive shells should use `cade hook
+<shell>`. the shim collides with a real direnv in `environment.systemPackages`,
+so install only one.
 
 setting `verbosity` or `longRunningWarningMs` makes the module generate a TOML
 config file and pass it to cade with `--config`. alternatively, set
@@ -114,14 +121,15 @@ eval (cade hook elvish | slurp)
 cade hook murex -> source
 ```
 
-for nix users with declarative configs, you may want to dump the hook at build time and source it. 
+for nix users with declarative configs, you may want to dump the hook at build
+time and source it.
 nushell example:
 
 ```nix
 source ${
   (pkgs.runCommand "cade.nu" { } ''${lib.getExe (getFlakePkg inputs.cade)} hook nushell >> "$out"'')
 }
-````
+```
 
 ## usage
 
@@ -260,6 +268,40 @@ an `.envrc` is picked up two ways:
 
 anything cade can't faithfully reproduce (shell expansion, conditionals,
 `layout`, `source_up`, functions, unknown flags) is skipped with a warning.
+
+for Nix dev shells, cade captures the final process environment from
+`nix develop --command` rather than parsing `nix print-dev-env --json`. the JSON
+form misses setup done by bash while entering the shell, including `shellHook`
+and devshell PATH changes. the shell-script form of `print-dev-env` can express
+that setup, but would require cade to evaluate bash itself; `nix develop` keeps
+that responsibility inside Nix.
+
+### the direnv shim
+
+the reverse is also covered: a `direnv` shim maps the direnv cli tools rely on
+(chiefly `direnv export json`) onto cade, so direnv-aware tooling such as
+editors can drive cade unmodified. this shim is only for tool compatibility;
+use `cade hook <shell>` for interactive shells and `cade allow` / `cade
+disallow` for trust decisions. only `export json` is mapped. shell hooks and
+shell export formats are harmless no-ops so login shell environment capture
+keeps working, but they do not activate cade. other direnv commands fail as
+unsupported. the shim maps JSON export to cade's hidden direnv-compatible JSON
+endpoint; `json` is an output format, not a shell accepted by `--shell`.
+
+the JSON exporter carries minimal `DIRENV_DIFF` state containing only previous
+values for variables cade changed. that state lets repeated exports, directory
+leave, and re-enter restore the editor environment without growing `PATH` or
+leaking a full ambient environment snapshot.
+
+enable it in the module with `programs.cade.direnvCompat = true;`, or build it
+from the flake:
+
+```sh
+nix build .#direnv-compat   # produces bin/direnv
+```
+
+put it on `PATH` in place of a real direnv. the packaged shim embeds the cade
+store path, so it does not need to find `cade` through `PATH`.
 
 ## example
 

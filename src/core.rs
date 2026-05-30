@@ -1,9 +1,13 @@
+mod activation;
+
 use crate::{
     config,
+    env_delta::is_shell_managed,
+    shells::ShellOutput,
     types::{CadeAction, CadeLayer, EnvSet, HookType, InnerHook, Keyword, Loadable},
     verbosity::{self, Verbosity},
 };
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use rusqlite::named_params;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -60,7 +64,7 @@ fn log_disallowed_reminder() {
     verbosity::log(Verbosity::Normal, format_args!("{DISALLOWED_REMINDER}"));
 }
 
-fn mark_disallowed_root(root: &Path, shell: &dyn crate::shells::ShellOutput) {
+fn mark_disallowed_root(root: &Path, shell: &dyn ShellOutput) {
     let root = root.to_string_lossy();
     if std::env::var(DISALLOWED_ROOT_MARKER).as_deref() == Ok(root.as_ref()) {
         return;
@@ -70,7 +74,7 @@ fn mark_disallowed_root(root: &Path, shell: &dyn crate::shells::ShellOutput) {
     log_disallowed_reminder();
 }
 
-fn clear_disallowed_root_marker(shell: &dyn crate::shells::ShellOutput) {
+fn clear_disallowed_root_marker(shell: &dyn ShellOutput) {
     if std::env::var_os(DISALLOWED_ROOT_MARKER).is_some() {
         print!("{}", shell.unset_env(DISALLOWED_ROOT_MARKER));
     }
@@ -103,7 +107,7 @@ where
 pub struct RollupResult {
     pub env: HashMap<String, Vec<String>>,
     // vars that concatenate ambient values rather than clobbering them
-    pub absorb: std::collections::HashSet<String>,
+    pub absorb: HashSet<String>,
     pub unset: Vec<String>,
     pub hooks: Vec<InnerHook>,
     pub purified: bool,
@@ -144,20 +148,6 @@ struct WatchState {
     root: String,
     cade_paths: Vec<String>,
     files: Vec<WatchEntry>,
-}
-
-// Keys cade must never set from a layer: the shell owns them, or they're
-// cade's own bookkeeping.
-fn is_shell_managed(key: &str) -> bool {
-    matches!(key, "PWD" | "OLDPWD" | "SHLVL" | "_" | "LAST_EXIT_CODE") || key.starts_with("__CADE_")
-}
-
-fn is_pure_preserved_key(key: &str) -> bool {
-    is_shell_managed(key)
-        || matches!(
-            key,
-            "HOME" | "CADE_VERBOSITY" | "CADE_LONG_RUNNING_WARNING_MS"
-        )
 }
 
 fn has_config(dir: &Path) -> bool {
@@ -277,11 +267,12 @@ impl Cade {
     }
 
     /// Read the pre-activation environment snapshot for a session.
-    fn read_snapshot(&self, session: &str) -> HashMap<String, String> {
+    fn read_snapshot(&self, session: &str) -> Option<HashMap<String, String>> {
         if !is_valid_session(session) {
-            return HashMap::new();
+            return None;
         }
         std::fs::read_to_string(self.snapshot_path(session))
+            .ok()
             .map(|raw| {
                 raw.split('\x1F')
                     .filter_map(|e| {
@@ -290,7 +281,6 @@ impl Cade {
                     })
                     .collect()
             })
-            .unwrap_or_default()
     }
 
     fn write_snapshot(&self, session: &str, env: &HashMap<String, String>) -> Result<()> {
@@ -459,47 +449,10 @@ impl Cade {
         Ok(())
     }
 
-    pub fn do_activation(
-        &mut self,
-        shell: &dyn crate::shells::ShellOutput,
-        announce: Announce,
-    ) -> Result<()> {
-        let root = find_cade_root(&self.cwd)
-            .context("no .cade or .envrc found in this directory or any parent")?;
-
-        let cade_files = self.approved_chain(&root)?;
-        if cade_files.is_empty() {
-            bail!("{DISALLOWED_REMINDER}");
-        }
+    pub fn do_activation(&mut self, shell: &dyn ShellOutput, announce: Announce) -> Result<()> {
+        let plan = self.activation_plan()?;
         clear_disallowed_root_marker(shell);
-
-        let mut cade_layers = Vec::new();
-        let mut all_watch_files: Vec<PathBuf> = Vec::new();
-
-        for (layer_count, (path, keywords)) in cade_files.iter().enumerate() {
-            let watch_files = watched_files_for_keywords(path, keywords);
-            all_watch_files.extend(watch_files.clone());
-
-            let token = compute_layer_key(&watch_files);
-            let dir = path.to_string_lossy();
-            if let Some(cached) = self.get_cached_layer(&dir, &token)? {
-                verbosity::log(
-                    Verbosity::Trace,
-                    format_args!("cade: using cached layer {}.", path.display()),
-                );
-                cade_layers.push(cached);
-            } else {
-                verbosity::log(
-                    Verbosity::Trace,
-                    format_args!("cade: loading layer {}.", path.display()),
-                );
-                let layer = load_single_layer(layer_count, path, keywords)?;
-                self.store_cached_layer(&dir, &token, &layer)?;
-                cade_layers.push(layer);
-            }
-        }
-
-        let rollup = rollup_envs(cade_layers);
+        let rollup = &plan.rollup;
 
         for hook in &rollup.hooks {
             if hook.kind == HookType::LoadPre {
@@ -508,29 +461,13 @@ impl Cade {
             }
         }
 
-        // Baseline ambient environment (for concat and restore)
-        let baseline: HashMap<String, String> = match std::env::var("__CADE_SESSION") {
-            Ok(session) => self.read_snapshot(&session),
-            Err(_) => {
-                let live: HashMap<String, String> = std::env::vars()
-                    .filter(|(k, _)| !k.starts_with("__CADE_"))
-                    .collect();
-                let session = new_session_id();
-                self.gc_snapshots();
-                self.write_snapshot(&session, &live)?;
-                print!("{}", shell.set_env("__CADE_SESSION", &session));
-                live
-            }
-        };
+        let (activation_env, new_session) = self.activation_env_with_snapshot()?;
+        if let Some(session) = new_session {
+            print!("{}", shell.set_env("__CADE_SESSION", &session));
+        }
 
-        output_changes(
-            &rollup.env,
-            &rollup.absorb,
-            &rollup.unset,
-            rollup.purified,
-            &baseline,
-            shell,
-        );
+        let delta = rollup.env_delta(&activation_env);
+        print!("{}", delta.render_shell(shell));
 
         for hook in &rollup.hooks {
             if hook.kind == HookType::LoadPost {
@@ -539,7 +476,8 @@ impl Cade {
             }
         }
 
-        let layer_paths: Vec<String> = cade_files
+        let layer_paths: Vec<String> = plan
+            .cade_files
             .iter()
             .map(|(p, _)| p.to_string_lossy().to_string())
             .collect();
@@ -574,7 +512,7 @@ impl Cade {
         let hooks_json = serde_json::to_string(&rollup.hooks).unwrap_or_default();
         print!("{}", shell.set_env("__CADE_HOOKS", &hooks_json));
 
-        let watch_state = build_watch_state(&root, &all_watch_files);
+        let watch_state = build_watch_state(&plan.root, &plan.all_watch_files);
         let watches_json = serde_json::to_string(&watch_state).unwrap_or_default();
         print!("{}", shell.set_env("__CADE_WATCHES", &watches_json));
 
@@ -584,7 +522,7 @@ impl Cade {
             format_args!(
                 "cade: {} {}{}.",
                 announce.verb(),
-                root.display(),
+                plan.root.display(),
                 if extra > 0 {
                     format!(" (+{extra} parent layer(s))")
                 } else {
@@ -605,7 +543,7 @@ impl Cade {
     /// `announce: false` to suppress the unload message.
     pub fn do_restore(
         &mut self,
-        shell: &dyn crate::shells::ShellOutput,
+        shell: &dyn ShellOutput,
         finalise: bool,
         announce: bool,
     ) -> Result<()> {
@@ -618,7 +556,7 @@ impl Cade {
 
         let prev_env: HashMap<String, String> = session
             .as_deref()
-            .map(|s| self.read_snapshot(s))
+            .and_then(|s| self.read_snapshot(s))
             .unwrap_or_default();
 
         let set_keys = read_keylist("__CADE_SET");
@@ -732,7 +670,7 @@ impl Cade {
         Ok(())
     }
 
-    pub fn do_reload(&mut self, shell: &dyn crate::shells::ShellOutput) -> Result<()> {
+    pub fn do_reload(&mut self, shell: &dyn ShellOutput) -> Result<()> {
         let root = find_cade_root(&self.cwd);
         let is_active = std::env::var("__CADE_LAYERS").is_ok();
 
@@ -796,7 +734,7 @@ impl Cade {
     fn activate_if_permitted(
         &mut self,
         root: &Option<PathBuf>,
-        shell: &dyn crate::shells::ShellOutput,
+        shell: &dyn ShellOutput,
     ) -> Result<()> {
         if let Some(root) = root {
             if self.get_permission(root)? {
@@ -932,38 +870,6 @@ fn rollup_envs(cade_layers: Vec<CadeLayer>) -> RollupResult {
         unset,
         hooks,
         purified,
-    }
-}
-
-fn output_changes(
-    env: &HashMap<String, Vec<String>>,
-    absorb: &std::collections::HashSet<String>,
-    unset: &[String],
-    purified: bool,
-    baseline: &HashMap<String, String>,
-    shell: &dyn crate::shells::ShellOutput,
-) {
-    if purified {
-        for (k, _) in std::env::vars() {
-            if is_pure_preserved_key(&k) {
-                continue;
-            }
-            print!("{}", shell.unset_env(&k));
-        }
-    }
-    for k in unset {
-        print!("{}", shell.unset_env(k));
-    }
-    for (k, v) in env {
-        let mut value = v.join(":");
-        // concat vars keep ambient values, appended after .cade values
-        if !purified
-            && absorb.contains(k)
-            && let Some(amb) = baseline.get(k).filter(|a| !a.is_empty())
-        {
-            value = format!("{value}:{amb}");
-        }
-        print!("{}", shell.set_env(k, &value));
     }
 }
 
@@ -1305,25 +1211,6 @@ mod tests {
         // inherited parent-layer var survives pure (pure only discards ambient)
         assert_eq!(r.env["FROM_PARENT"], vec!["kept"]);
         assert_eq!(r.env["FROM_CHILD"], vec!["c"]);
-    }
-
-    #[test]
-    fn shell_managed_classification() {
-        for k in [
-            "PWD",
-            "OLDPWD",
-            "SHLVL",
-            "_",
-            "LAST_EXIT_CODE",
-            "__CADE_PREV",
-            "__CADE_SET",
-        ] {
-            assert!(is_shell_managed(k), "{k} should be shell-managed");
-        }
-        for k in ["PATH", "HOME", "MY_VAR"] {
-            assert!(!is_shell_managed(k), "{k} should not be shell-managed");
-        }
-        assert!(is_pure_preserved_key("HOME"));
     }
 
     #[test]

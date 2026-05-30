@@ -1,9 +1,12 @@
 mod cli;
 mod config;
 mod core;
+mod direnv_export;
+mod env_delta;
 mod envrc;
 mod envs;
 mod loaders;
+mod nix_dev_env;
 mod shells;
 mod types;
 mod verbosity;
@@ -68,6 +71,12 @@ fn try_main() -> Result<()> {
             cade.do_reload(output.as_ref())
                 .context("reload cade environment")?;
         }
+        Export { format } => match format {
+            cli::clap::CliExportFormat::Json => {
+                let delta = cade.export_env_delta().context("export cade environment")?;
+                print!("{}", delta.to_json());
+            }
+        },
         Allow => cade.allow_here(true)?,
         Disallow => cade.allow_here(false)?,
         Edit => {
