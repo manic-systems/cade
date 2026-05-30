@@ -29,10 +29,21 @@
           };
         };
       });
-      packages = forAllSystems (pkgs: {
-        cade = pkgs.callPackage ./nix/package.nix { };
-        default = self.packages.${pkgs.stdenv.hostPlatform.system}.cade;
-      });
+      packages = forAllSystems (
+        pkgs:
+        let
+          cade = pkgs.callPackage ./nix/package.nix { };
+          direnvShims = pkgs.callPackage ./nix/direnv-compat.nix { inherit cade; };
+        in
+        {
+          inherit cade;
+          default = cade;
+          # cade-backed `direnv` binaries; also wired into the module behind
+          # programs.cade.direnvCompat
+          direnv-compat-bash = direnvShims.bash;
+          direnv-compat-nu = direnvShims.nu;
+        }
+      );
 
       # System modules add the cade package and wire its shell hooks into
       # interactive bash/zsh/fish. The same module works on both platforms.

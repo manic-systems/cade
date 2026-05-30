@@ -60,8 +60,13 @@ programs.cade = {
   enableFishIntegration = true;  # default; needs programs.fish.enable
   verbosity = "normal";          # null, quiet, normal, vars, trace
   longRunningWarningMs = 5000;   # null, or a positive integer
+  direnvCompat = false;          # false/"none", or true/"bash" for the shim
 };
 ```
+
+`direnvCompat` installs a cade-backed `direnv` on `PATH` (see
+[direnv compatibility](#direnv-compatibility)). it collides with a real direnv
+in `environment.systemPackages`, so install only one.
 
 setting `verbosity` or `longRunningWarningMs` makes the module generate a TOML
 config file and pass it to cade with `--config`. alternatively, set
@@ -260,6 +265,21 @@ an `.envrc` is picked up two ways:
 
 anything cade can't faithfully reproduce (shell expansion, conditionals,
 `layout`, `source_up`, functions, unknown flags) is skipped with a warning.
+
+### the direnv shim
+
+the reverse is also covered: a `direnv` shim maps the direnv cli tools rely on
+(chiefly `direnv export json`) onto cade, so direnv-aware tooling drives cade
+unmodified. `export`, `hook`, `allow`/`deny`, and `status` are mapped too.
+
+enable it in the module with `programs.cade.direnvCompat = true;`, or build it
+from the flake (bash and nushell builds exist and behave the same):
+
+```sh
+nix build .#direnv-compat-bash   # produces bin/direnv
+```
+
+put it on `PATH` in place of a real direnv. it requires cade installed too.
 
 ## example
 

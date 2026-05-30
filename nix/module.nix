@@ -32,6 +32,16 @@ let
     ]
   ));
   snippets = import ./snippets.nix { cade = cadeCmd; };
+
+  # normalise the bool/enum direnvCompat to "none" | "bash" | "nu"
+  direnvChoice =
+    if cfg.direnvCompat == true then
+      "bash"
+    else if cfg.direnvCompat == false then
+      "none"
+    else
+      cfg.direnvCompat;
+  direnvShims = pkgs.callPackage "${self}/nix/direnv-compat.nix" { cade = cfg.package; };
 in
 {
   options.programs.cade = {
@@ -85,6 +95,23 @@ in
       description = "Strict TOML config path passed to cade with --config instead of generating one from module options.";
     };
 
+    direnvCompat = lib.mkOption {
+      type = lib.types.either lib.types.bool (lib.types.enum [
+        "none"
+        "bash"
+        "nu"
+      ]);
+      default = false;
+      example = true;
+      description = ''
+        install a cade-backed `direnv` on PATH so direnv-aware tools drive cade.
+        `true`/`"bash"` install the bash shim, `"nu"` the nushell one (they
+        behave identically), `false`/`"none"` install nothing. provides a
+        `direnv` binary, so it collides with a real direnv in
+        environment.systemPackages
+      '';
+    };
+
     # Nushell, Elvish, and Murex have no system-level interactive-init hook on
     # NixOS or nix-darwin, so the module can't wire them automatically. These
     # read-only snippets expose the exact init lines for each, so you can drop
@@ -123,7 +150,10 @@ in
       }
     ];
 
-    environment.systemPackages = [ cfg.package ];
+    environment.systemPackages =
+      [ cfg.package ]
+      ++ lib.optional (direnvChoice == "bash") direnvShims.bash
+      ++ lib.optional (direnvChoice == "nu") direnvShims.nu;
 
     # bash and zsh evaluate the hook; the shell flag must be enabled by the user
     # (programs.zsh.enable / shell installed) for the init file to be sourced.
