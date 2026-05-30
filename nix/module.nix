@@ -76,7 +76,7 @@ in
     longRunningWarningMs = lib.mkOption {
       type = lib.types.nullOr lib.types.ints.positive;
       default = null;
-      description = "External loader warning threshold, in milliseconds, written to cade's generated TOML config.";
+      description = "External loader warning threshold, in milliseconds.";
     };
 
     configFile = lib.mkOption {
