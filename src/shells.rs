@@ -129,10 +129,9 @@ impl ShellOutput for Fish {
     }
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         r#"function __cade_hook --on-event fish_prompt
-    if test "$PWD" != "$__cade_last_pwd"; or set -q __CADE_LAYERS
-        __CADE__ reload --shell fish | source
-        set -g __cade_last_pwd $PWD
-    end
+    set -l __cade_status $status
+    __CADE__ reload --shell fish | source
+    return $__cade_status
 end
 "#
         .replace("__CADE__", &fish_command(cade_exe, cade_args))
@@ -162,10 +161,9 @@ impl ShellOutput for Bash {
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         r#"_cade_hook() {
     local previous_exit_status=$?
-    if [[ "$PWD" != "$__cade_last_pwd" || -n "${__CADE_LAYERS:-}" ]]; then
-        eval "$(__CADE__ reload --shell bash)"
-        __cade_last_pwd="$PWD"
-    fi
+    trap -- '' INT
+    eval "$(__CADE__ reload --shell bash)"
+    trap - INT
     return $previous_exit_status
 }
 if [[ ";${PROMPT_COMMAND[*]:-};" != *";_cade_hook;"* ]]; then
@@ -198,18 +196,15 @@ impl ShellOutput for Zsh {
     }
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         r#"_cade_hook() {
-    if [[ "$PWD" != "$__cade_last_pwd" || -n "${__CADE_LAYERS:-}" ]]; then
-        eval "$(__CADE__ reload --shell zsh)"
-        __cade_last_pwd="$PWD"
-    fi
+    local previous_exit_status=$?
+    trap -- '' INT
+    eval "$(__CADE__ reload --shell zsh)"
+    trap - INT
+    return $previous_exit_status
 }
 typeset -ag precmd_functions
 if (( ! ${precmd_functions[(I)_cade_hook]} )); then
     precmd_functions=(_cade_hook $precmd_functions)
-fi
-typeset -ag chpwd_functions
-if (( ! ${chpwd_functions[(I)_cade_hook]} )); then
-    chpwd_functions=(_cade_hook $chpwd_functions)
 fi
 "#
         .replace("__CADE__", &posix_command(cade_exe, cade_args))
@@ -251,24 +246,23 @@ let nu_exe = (try { which nu | get path.0 } catch { "nu" })
 $env.config.hooks.pre_prompt = (
     ($env.config.hooks?.pre_prompt? | default [])
     | append {||
-        if ($env.PWD != ($env.__cade_last_pwd? | default "")) or ("__CADE_LAYERS" in $env) {
-            for line in (^$cade ...$cade_args reload --shell nushell | lines) {
-                if ($line | str trim | is-empty) { continue }
-                let m = ($line | from json)
-                if "s" in $m { load-env $m.s }
-                if "u" in $m { hide-env --ignore-errors $m.u }
-                if "h" in $m {
-                    # run hook in a child nu, detect env changes by diffing
-                    # pre/post $env in-process. JSON diff goes to stderr via
-                    # print --stderr so hook stdout can't contaminate it.
-                    let prog = ("let __pre = $env\n" + $m.h + "\nlet __post = $env\nlet __set = ($__post | transpose k v | where {|r| ($r.v | describe) == \"string\" and $r.k not-in [PWD OLDPWD] and (($__pre | get --optional $r.k) != $r.v)} | reduce -f {} {|r, a| $a | upsert $r.k $r.v}); {set: $__set, unset: ($__pre | columns | where {|k| $k not-in ($__post | columns)})} | to json | print --stderr")
-                    let d = (^$nu_exe --no-config-file --commands $prog err>| from json)
-                    load-env $d.set
-                    for k in $d.unset { hide-env --ignore-errors $k }
-                }
+        let __cade_last_exit = ($env.LAST_EXIT_CODE? | default 0)
+        for line in (^$cade ...$cade_args reload --shell nushell | lines) {
+            if ($line | str trim | is-empty) { continue }
+            let m = ($line | from json)
+            if "s" in $m { load-env $m.s }
+            if "u" in $m { hide-env --ignore-errors $m.u }
+            if "h" in $m {
+                # run hook in a child nu, detect env changes by diffing
+                # pre/post $env in-process. JSON diff goes to stderr via
+                # print --stderr so hook stdout can't contaminate it.
+                let prog = ("let __pre = $env\n" + $m.h + "\nlet __post = $env\nlet __set = ($__post | transpose k v | where {|r| ($r.v | describe) == \"string\" and $r.k not-in [PWD OLDPWD] and (($__pre | get --optional $r.k) != $r.v)} | reduce -f {} {|r, a| $a | upsert $r.k $r.v}); {set: $__set, unset: ($__pre | columns | where {|k| $k not-in ($__post | columns)})} | to json | print --stderr")
+                let d = (^$nu_exe --no-config-file --commands $prog err>| from json)
+                load-env $d.set
+                for k in $d.unset { hide-env --ignore-errors $k }
             }
-            $env.__cade_last_pwd = $env.PWD
         }
+        $env.LAST_EXIT_CODE = $__cade_last_exit
     }
 )
 "#
@@ -299,13 +293,9 @@ impl ShellOutput for Elvish {
         format!("{command};")
     }
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
-        r#"var cade-last-pwd = ''
-set edit:before-readline = [
+        r#"set edit:before-readline = [
     {||
-        if (or (not-eq $pwd $cade-last-pwd) (has-env __CADE_LAYERS)) {
-            eval (__CADE_CMD__ reload --shell elvish | slurp)
-            set cade-last-pwd = $pwd
-        }
+        eval (__CADE_CMD__ reload --shell elvish | slurp)
     }
 ]
 "#
@@ -396,6 +386,82 @@ mod tests {
                 .hook_init(exe, &args)
                 .contains(r#"let cade_args = ["--config","/tmp/cade config.toml"]"#)
         );
+    }
+
+    #[test]
+    fn prompt_hooks_reload_without_pwd_change_guard() {
+        for hook in [
+            Bash.hook_init("cade", &[]),
+            Zsh.hook_init("cade", &[]),
+            Fish.hook_init("cade", &[]),
+            Nushell.hook_init("cade", &[]),
+            Elvish.hook_init("cade", &[]),
+        ] {
+            assert!(hook.contains("reload --shell"), "{hook}");
+            assert!(!hook.contains("__cade_last_pwd"), "{hook}");
+            assert!(!hook.contains("cade-last-pwd"), "{hook}");
+        }
+    }
+
+    /// Run `script` in `shell` and return trimmed stdout, or [`None`] if the
+    /// interpreter isn't installed.
+    fn run_in_shell(shell: &str, args: &[&str], script: &str) -> Option<String> {
+        let mut full: Vec<&str> = args.to_vec();
+        full.push(script);
+        let out = std::process::Command::new(shell)
+            .args(&full)
+            .output()
+            .ok()?;
+        Some(format!(
+            "{}|stderr:{}",
+            String::from_utf8_lossy(&out.stdout).trim(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+
+    #[test]
+    fn bash_hook_preserves_exit_status() {
+        let hook = Bash.hook_init("true", &[]);
+        let script = format!("{hook}\n(exit 7)\n_cade_hook\necho $?");
+        let Some(out) = run_in_shell("bash", &["-c"], &script) else {
+            return;
+        };
+        assert_eq!(out, "7|stderr:", "bash did not preserve $?: {out}");
+    }
+
+    #[test]
+    fn fish_hook_preserves_exit_status() {
+        let hook = Fish.hook_init("true", &[]);
+        let script = format!("{hook}\nfalse\n__cade_hook\necho $status");
+        let Some(out) = run_in_shell("fish", &["-c"], &script) else {
+            return;
+        };
+        assert_eq!(out, "1|stderr:", "fish did not preserve $status: {out}");
+    }
+
+    #[test]
+    fn nushell_hook_preserves_last_exit_code() {
+        let hook = Nushell.hook_init("true", &[]);
+        // Seed LAST_EXIT_CODE, then run the registered pre_prompt closure.
+        let script = format!(
+            "{hook}\n$env.LAST_EXIT_CODE = 7\ndo ($env.config.hooks.pre_prompt | last)\nprint $env.LAST_EXIT_CODE"
+        );
+        let Some(out) = run_in_shell("nu", &["--no-config-file", "-c"], &script) else {
+            return;
+        };
+        assert_eq!(
+            out, "7|stderr:",
+            "nu did not preserve LAST_EXIT_CODE: {out}"
+        );
+    }
+
+    #[test]
+    fn zsh_hook_registers_only_in_precmd() {
+        // precmd already fires every prompt (including after cd), so a chpwd
+        // registration would just double-run cade reload on directory changes.
+        let zsh = Zsh.hook_init("cade", &[]);
+        assert!(zsh.contains("precmd_functions"), "{zsh}");
+        assert!(!zsh.contains("chpwd_functions"), "{zsh}");
     }
 
     #[test]

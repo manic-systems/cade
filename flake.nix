@@ -25,6 +25,14 @@
               clippy
               just
               sqlite
+
+              # For tests
+              bashInteractive
+              zsh
+              fish
+              nushell
+              elvish
+              murex
               ;
           };
         };
