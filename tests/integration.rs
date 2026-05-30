@@ -978,6 +978,27 @@ fn slow_external_loader_prints_warning() {
 }
 
 #[test]
+fn slow_external_loader_prints_recent_stderr() {
+    let sb = Sandbox::new();
+    sb.write(
+        ".cade",
+        "call sh -c \"for i in 1 2 3 4; do echo line$i >&2; sleep 0.01; done; echo SLOW=ok\"\n",
+    );
+    sb.write_config("long_running_warning_ms = 1\n");
+    sb.allow(&sb.root);
+
+    let path = std::env::var("PATH").unwrap_or_default();
+    let out = sb.enter(&sb.root, &[("PATH", path.as_str())]);
+    assert!(out.status.success(), "{:?}", out);
+    let err = stderr(&out);
+    assert!(err.contains("recent output from call"), "{err}");
+    assert!(err.contains("line2"), "{err}");
+    assert!(err.contains("line3"), "{err}");
+    assert!(err.contains("line4"), "{err}");
+    assert!(!err.contains("line1"), "{err}");
+}
+
+#[test]
 fn zero_env_warning_threshold_is_ignored() {
     let sb = Sandbox::new();
     sb.write(".cade", "call sh -c \"sleep 0.05; echo SLOW=ok\"\n");
