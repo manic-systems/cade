@@ -30,7 +30,8 @@
         };
       });
       packages = forAllSystems (pkgs: {
-        default = pkgs.callPackage ./nix/package.nix { };
+        cade = pkgs.callPackage ./nix/package.nix { };
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.cade;
       });
 
       # System modules add the cade package and wire its shell hooks into
