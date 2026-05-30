@@ -129,9 +129,14 @@ impl ShellOutput for Fish {
     }
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         r#"function __cade_hook --on-event fish_prompt
-    if test "$PWD" != "$__cade_last_pwd"; or set -q __CADE_LAYERS
+    if test "$PWD" != "$__cade_last_pwd"; or set -q __CADE_LAYERS; or set -q __cade_has_file
         __CADE__ reload --shell fish | source
         set -g __cade_last_pwd $PWD
+        if test -f "$PWD/.cade"; or test -f "$PWD/.envrc"
+            set -g __cade_has_file 1
+        else
+            set -e __cade_has_file
+        end
     end
 end
 "#
@@ -162,9 +167,14 @@ impl ShellOutput for Bash {
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         r#"_cade_hook() {
     local previous_exit_status=$?
-    if [[ "$PWD" != "$__cade_last_pwd" || -n "${__CADE_LAYERS:-}" ]]; then
+    if [[ "$PWD" != "$__cade_last_pwd" || -n "${__CADE_LAYERS:-}" || -n "${__cade_has_file:-}" ]]; then
         eval "$(__CADE__ reload --shell bash)"
         __cade_last_pwd="$PWD"
+        if [[ -f "$PWD/.cade" || -f "$PWD/.envrc" ]]; then
+            __cade_has_file=1
+        else
+            __cade_has_file=
+        fi
     fi
     return $previous_exit_status
 }
@@ -198,9 +208,14 @@ impl ShellOutput for Zsh {
     }
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         r#"_cade_hook() {
-    if [[ "$PWD" != "$__cade_last_pwd" || -n "${__CADE_LAYERS:-}" ]]; then
+    if [[ "$PWD" != "$__cade_last_pwd" || -n "${__CADE_LAYERS:-}" || -n "${__cade_has_file:-}" ]]; then
         eval "$(__CADE__ reload --shell zsh)"
         __cade_last_pwd="$PWD"
+        if [[ -f "$PWD/.cade" || -f "$PWD/.envrc" ]]; then
+            __cade_has_file=1
+        else
+            __cade_has_file=
+        fi
     fi
 }
 typeset -ag precmd_functions
@@ -251,7 +266,8 @@ let nu_exe = (try { which nu | get path.0 } catch { "nu" })
 $env.config.hooks.pre_prompt = (
     ($env.config.hooks?.pre_prompt? | default [])
     | append {||
-        if ($env.PWD != ($env.__cade_last_pwd? | default "")) or ("__CADE_LAYERS" in $env) {
+        # Nushell sets $env.__cade_has_file to string or bool, handle both. I can't figure out why.
+        if ($env.PWD != ($env.__cade_last_pwd? | default "")) or ("__CADE_LAYERS" in $env) or (($env.__cade_has_file? in [true "true"]) | default false) {
             for line in (^$cade ...$cade_args reload --shell nushell | lines) {
                 if ($line | str trim | is-empty) { continue }
                 let m = ($line | from json)
@@ -268,6 +284,7 @@ $env.config.hooks.pre_prompt = (
                 }
             }
             $env.__cade_last_pwd = $env.PWD
+            $env.__cade_has_file = (($"($env.PWD)/.cade" | path exists) or ($"($env.PWD)/.envrc" | path exists))
         }
     }
 )
@@ -300,11 +317,13 @@ impl ShellOutput for Elvish {
     }
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         r#"var cade-last-pwd = ''
+var cade-has-file = $false
 set edit:before-readline = [
     {||
-        if (or (not-eq $pwd $cade-last-pwd) (has-env __CADE_LAYERS)) {
+        if (or (not-eq $pwd $cade-last-pwd) (has-env __CADE_LAYERS) $cade-has-file) {
             eval (__CADE_CMD__ reload --shell elvish | slurp)
             set cade-last-pwd = $pwd
+            set cade-has-file = (or ?(test -f $pwd/.cade) ?(test -f $pwd/.envrc))
         }
     }
 ]
