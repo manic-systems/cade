@@ -110,6 +110,7 @@ fn merge(out: &mut EnvSet, other: EnvSet) {
             .or_insert(v);
     }
     out.hard.extend(other.hard);
+    out.nix_store_paths.extend(other.nix_store_paths);
 }
 
 fn envrc_path(dir: &Path, filename: &str) -> PathBuf {
