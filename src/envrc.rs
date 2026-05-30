@@ -110,6 +110,7 @@ fn merge(out: &mut EnvSet, other: EnvSet) {
             .or_insert(v);
     }
     out.hard.extend(other.hard);
+    out.nix_store_paths.extend(other.nix_store_paths);
 }
 
 fn envrc_path(dir: &Path, filename: &str) -> PathBuf {
@@ -121,7 +122,7 @@ fn envrc_path(dir: &Path, filename: &str) -> PathBuf {
 }
 
 /// Compose an .envrc's recognized directives into a single EnvSet
-pub fn load_envrc(dir: &Path, filename: String) -> Result<EnvSet> {
+pub fn load_envrc(dir: &Path, filename: String, profile_dir: Option<PathBuf>) -> Result<EnvSet> {
     let path = envrc_path(dir, &filename);
     let contents = std::fs::read_to_string(&path)
         .with_context(|| format!("reading .envrc at {}", path.display()))?;
@@ -129,12 +130,23 @@ pub fn load_envrc(dir: &Path, filename: String) -> Result<EnvSet> {
     let mut out = EnvSet::new();
 
     let mut warnings = Vec::new();
-    for directive in parse(&contents) {
+    for (idx, directive) in parse(&contents).into_iter().enumerate() {
         match directive {
             Directive::UseFlake(output) => {
-                merge(&mut out, load_flake(dir, output).context("use flake")?)
+                let profile = profile_dir
+                    .as_ref()
+                    .map(|base| base.join(format!("{idx}-flake")));
+                merge(
+                    &mut out,
+                    load_flake(dir, output, profile).context("use flake")?,
+                )
             }
-            Directive::UseNix(file) => merge(&mut out, load_shell(dir, file).context("use nix")?),
+            Directive::UseNix(file) => {
+                let profile = profile_dir
+                    .as_ref()
+                    .map(|base| base.join(format!("{idx}-nix")));
+                merge(&mut out, load_shell(dir, file, profile).context("use nix")?)
+            }
             Directive::Dotenv { file, if_exists } => {
                 let p = if file.is_empty() {
                     dir.join(".env")

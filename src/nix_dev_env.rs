@@ -90,19 +90,33 @@ const IGNORED_ENV_KEYS: &[&str] = &[
     "dontAddDisableDepTrack",
 ];
 
-pub(crate) fn load_flake(path: &Path, output: Option<String>) -> Result<EnvSet> {
+pub(crate) fn load_flake(
+    path: &Path,
+    output: Option<String>,
+    profile: Option<PathBuf>,
+) -> Result<EnvSet> {
     let mut proc = Command::new("nix");
     proc.arg("develop");
     // A named output is a flake installable.
     if let Some(flake_output) = output.filter(|o| !o.is_empty()) {
         proc.arg(format!(".#{flake_output}"));
     }
+    add_profile(&mut proc, profile.as_deref());
     add_env_command(&mut proc);
 
-    load_nix_dev_env(proc, path, &format!("at {}", path.display()))
+    load_nix_dev_env(
+        proc,
+        path,
+        &format!("at {}", path.display()),
+        profile.as_deref(),
+    )
 }
 
-pub(crate) fn load_shell(path: &Path, filename: String) -> Result<EnvSet> {
+pub(crate) fn load_shell(
+    path: &Path,
+    filename: String,
+    profile: Option<PathBuf>,
+) -> Result<EnvSet> {
     let file = if filename.is_empty() {
         "./shell.nix".to_string()
     } else {
@@ -110,16 +124,38 @@ pub(crate) fn load_shell(path: &Path, filename: String) -> Result<EnvSet> {
     };
     let mut proc = Command::new("nix");
     proc.args(["develop", "-f", &file]);
+    add_profile(&mut proc, profile.as_deref());
     add_env_command(&mut proc);
-    load_nix_dev_env(proc, path, &format!("-f {file} at {}", path.display()))
+    load_nix_dev_env(
+        proc,
+        path,
+        &format!("-f {file} at {}", path.display()),
+        profile.as_deref(),
+    )
 }
 
-fn load_nix_dev_env(mut proc: Command, path: &Path, what: &str) -> Result<EnvSet> {
+fn load_nix_dev_env(
+    mut proc: Command,
+    path: &Path,
+    what: &str,
+    profile: Option<&Path>,
+) -> Result<EnvSet> {
     let previous_env: HashMap<_, _> = std::env::vars().collect();
     proc.current_dir(path);
     let stdout = run_checked(proc, &format!("nix develop {what}"))?;
     let stdout = captured_env_stdout(&stdout, what)?;
-    env_set_from_captured_env(stdout, &previous_env)
+    let mut env = env_set_from_captured_env(stdout, &previous_env)?;
+    if let Some(profile) = profile {
+        env.nix_store_paths.clear();
+        wipe_profile_history(profile);
+    }
+    Ok(env)
+}
+
+fn add_profile(proc: &mut Command, profile: Option<&Path>) {
+    if let Some(profile) = profile {
+        proc.args(["--profile"]).arg(profile);
+    }
 }
 
 fn add_env_command(proc: &mut Command) {
@@ -188,7 +224,33 @@ fn env_set_from_captured_env(raw: &[u8], previous: &HashMap<String, String>) -> 
         );
     }
 
-    Ok(EnvSet::from_vars(vars))
+    let mut env = EnvSet::from_vars(vars);
+    env.nix_store_paths = crate::envs::nix_store_paths_from_env_values(&env);
+    Ok(env)
+}
+
+fn wipe_profile_history(profile: &Path) {
+    let status = Command::new("nix")
+        .args(["profile", "wipe-history", "--profile"])
+        .arg(profile)
+        .status();
+    match status {
+        Ok(status) if status.success() => {}
+        Ok(status) => crate::verbosity::log(
+            crate::verbosity::Verbosity::Trace,
+            format_args!(
+                "cade: failed to wipe nix profile history for {} ({status}).",
+                profile.display()
+            ),
+        ),
+        Err(e) => crate::verbosity::log(
+            crate::verbosity::Verbosity::Trace,
+            format_args!(
+                "cade: failed to run nix profile wipe-history for {}: {e}.",
+                profile.display()
+            ),
+        ),
+    }
 }
 
 fn keep_loaded_env_var(var: &str) -> bool {
@@ -302,7 +364,7 @@ exec "$@"
 
         let mut proc = Command::new(&fake_nix);
         add_env_command(&mut proc);
-        let env = load_nix_dev_env(proc, &root, "fake nix").unwrap();
+        let env = load_nix_dev_env(proc, &root, "fake nix", None).unwrap();
         std::fs::remove_dir_all(&root).ok();
 
         assert_eq!(env.vars["FROM_HOOK"], vec!["ok"]);

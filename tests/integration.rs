@@ -28,6 +28,10 @@ impl Sandbox {
     }
 }
 
+fn cade_state(sb: &Sandbox) -> PathBuf {
+    sb.state.join("cade")
+}
+
 #[test]
 fn nested_layers_compose_child_first() {
     let sb = Sandbox::new();
@@ -495,6 +499,285 @@ fn exit_with_no_cade_state_is_a_noop() {
     assert!(
         !s.contains("export") && !s.contains("unset"),
         "expected no-op: {s}"
+    );
+}
+
+#[test]
+fn lease_open_refresh_and_close_manage_client_record() {
+    let sb = Sandbox::new();
+    let project = sb.root.to_string_lossy().to_string();
+    let open = sb.run(
+        &sb.root,
+        &[
+            "lease",
+            "open",
+            "--kind",
+            "ide",
+            "--project",
+            project.as_str(),
+            "--ttl-seconds",
+            "60",
+        ],
+        &[],
+    );
+    assert!(open.status.success(), "{:?}", open);
+    let response: serde_json::Value = serde_json::from_str(&stdout(&open)).unwrap();
+    let client_id = response["client_id"].as_str().unwrap();
+    assert_eq!(response["kind"], "ide");
+    assert_eq!(response["project"], project);
+
+    let lease_path = cade_state(&sb)
+        .join("leases")
+        .join(format!("{client_id}.json"));
+    assert!(lease_path.exists(), "lease file missing");
+    let before_refresh: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&lease_path).unwrap()).unwrap();
+
+    let refresh = sb.run(
+        &sb.root,
+        &[
+            "lease",
+            "refresh",
+            "--client-id",
+            client_id,
+            "--ttl-seconds",
+            "120",
+        ],
+        &[],
+    );
+    assert!(refresh.status.success(), "{:?}", refresh);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stdout(&refresh)).unwrap()["client_id"],
+        client_id
+    );
+    let after_refresh: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&lease_path).unwrap()).unwrap();
+    assert!(
+        after_refresh["expires_at"].as_u64().unwrap()
+            > before_refresh["expires_at"].as_u64().unwrap(),
+        "explicit lease refresh should extend the canonical lease"
+    );
+
+    let close = sb.run(&sb.root, &["lease", "close", "--client-id", client_id], &[]);
+    assert!(close.status.success(), "{:?}", close);
+    assert!(!lease_path.exists(), "lease file not removed");
+}
+
+#[test]
+fn json_shell_emits_machine_readable_directives_for_client_reload() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    sb.allow(&sb.root);
+
+    let open = sb.run(&sb.root, &["lease", "open", "--ttl-seconds", "60"], &[]);
+    assert!(open.status.success(), "{:?}", open);
+    let response: serde_json::Value = serde_json::from_str(&stdout(&open)).unwrap();
+    let client_id = response["client_id"].as_str().unwrap();
+    let lease_path = cade_state(&sb)
+        .join("leases")
+        .join(format!("{client_id}.json"));
+    let before_reload: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&lease_path).unwrap()).unwrap();
+
+    let out = sb.run(
+        &sb.root,
+        &["--client-id", client_id, "reload", "--shell", "json"],
+        &[],
+    );
+    assert!(out.status.success(), "{:?}", out);
+
+    let directives: Vec<serde_json::Value> = stdout(&out)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+
+    assert!(
+        directives.iter().any(|d| d["s"]["A"] == "1"),
+        "missing A set directive: {directives:?}"
+    );
+    assert!(
+        directives
+            .iter()
+            .all(|d| d.get("s").is_some() || d.get("u").is_some() || d.get("h").is_some()),
+        "unexpected directive shape: {directives:?}"
+    );
+    let after_reload: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&lease_path).unwrap()).unwrap();
+    assert_eq!(
+        after_reload, before_reload,
+        "reload --client-id should attach to the lease without extending it"
+    );
+}
+
+#[test]
+fn activation_with_client_id_writes_session_lease_holder() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    sb.allow(&sb.root);
+
+    let open = sb.run(&sb.root, &["lease", "open", "--ttl-seconds", "60"], &[]);
+    assert!(open.status.success(), "{:?}", open);
+    let response: serde_json::Value = serde_json::from_str(&stdout(&open)).unwrap();
+    let client_id = response["client_id"].as_str().unwrap();
+    let lease_path = cade_state(&sb)
+        .join("leases")
+        .join(format!("{client_id}.json"));
+    let before_enter: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&lease_path).unwrap()).unwrap();
+
+    let out = sb.run(
+        &sb.root,
+        &["--client-id", client_id, "enter", "--shell", "bash"],
+        &[],
+    );
+    assert!(out.status.success(), "{:?}", out);
+
+    let shell_roots = cade_state(&sb).join("gcroots").join("shells");
+    let holders: Vec<PathBuf> = std::fs::read_dir(shell_roots)
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry
+                .ok()?
+                .path()
+                .join("holders")
+                .join(format!("lease-{client_id}.json"));
+            path.exists().then_some(path)
+        })
+        .collect();
+    assert_eq!(holders.len(), 1, "expected one session lease holder");
+    let session_holder: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&holders[0]).unwrap()).unwrap();
+    assert_eq!(
+        session_holder,
+        serde_json::json!({ "type": "lease", "client_id": client_id }),
+        "session lease holder should only reference the canonical lease"
+    );
+    let after_enter: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&lease_path).unwrap()).unwrap();
+    assert_eq!(
+        after_enter, before_enter,
+        "enter --client-id should attach to the lease without extending it"
+    );
+}
+
+#[test]
+fn reload_with_stale_client_id_env_still_activates() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    sb.allow(&sb.root);
+
+    let out = sb.run(
+        &sb.root,
+        &["reload", "--shell", "bash"],
+        &[("CADE_CLIENT_ID", "deadbeefdeadbeef")],
+    );
+    assert!(
+        out.status.success(),
+        "stale CADE_CLIENT_ID must not abort activation: {:?}",
+        out
+    );
+    assert!(
+        stdout(&out).contains("export A='1'"),
+        "missing activation despite stale lease: {}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn activation_with_owner_pid_writes_process_holder() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    sb.allow(&sb.root);
+
+    let owner = std::process::id().to_string();
+    let out = sb.run(
+        &sb.root,
+        &["--owner-pid", owner.as_str(), "enter", "--shell", "bash"],
+        &[],
+    );
+    assert!(out.status.success(), "{:?}", out);
+
+    let shell_roots = cade_state(&sb).join("gcroots").join("shells");
+    let process_holders = std::fs::read_dir(shell_roots)
+        .unwrap()
+        .flat_map(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .join("holders")
+                .read_dir()
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("process-"))
+        .count();
+    assert_eq!(process_holders, 1, "expected one process holder");
+}
+
+#[test]
+fn direnv_export_with_owner_pid_writes_session_holder() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    sb.allow(&sb.root);
+
+    let owner = std::process::id().to_string();
+    let out = sb.run(
+        &sb.root,
+        &["--owner-pid", owner.as_str(), "export", "json"],
+        &[],
+    );
+    assert!(out.status.success(), "{:?}", out);
+
+    // the direnv export path must scope a session and hold it, so the nix gc
+    // roots it creates survive until the holder is gone.
+    let shell_roots = cade_state(&sb).join("gcroots").join("shells");
+    let process_holders = std::fs::read_dir(shell_roots)
+        .unwrap()
+        .flat_map(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .join("holders")
+                .read_dir()
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("process-"))
+        .count();
+    assert_eq!(
+        process_holders, 1,
+        "direnv export should write one process holder"
+    );
+}
+
+#[test]
+fn final_restore_keeps_shared_session_snapshot_through_gc() {
+    let sb = Sandbox::new();
+    let session = "shared";
+    sb.write_snapshot(session, "PARENT=original");
+
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    let out = sb.run(
+        &sb.root,
+        &["exit", "--shell", "bash"],
+        &[
+            ("__CADE_SESSION", session),
+            ("__CADE_LAYERS", sb.root.to_str().unwrap()),
+            ("__CADE_SET", "PARENT"),
+            ("CADE_SHELL_GC_ROOT_TTL_SECONDS", "1"),
+        ],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    assert!(
+        cade_state(&sb)
+            .join("snapshots")
+            .join(format!("{session}.env"))
+            .exists(),
+        "final restore must protect the shared session snapshot while GC runs"
     );
 }
 

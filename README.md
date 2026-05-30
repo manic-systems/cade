@@ -60,6 +60,7 @@ programs.cade = {
   enableFishIntegration = true;  # default; needs programs.fish.enable
   verbosity = "normal";          # null, quiet, normal, vars, trace
   longRunningWarningMs = 5000;   # null, or a positive integer
+  shellGcRootTtlSeconds = 2592000; # null, or a positive integer
   direnvCompat = false;          # true installs the direnv shim for tools
 };
 ```
@@ -70,9 +71,10 @@ not the shell integration path; interactive shells should use `cade hook
 <shell>`. the shim collides with a real direnv in `environment.systemPackages`,
 so install only one.
 
-setting `verbosity` or `longRunningWarningMs` makes the module generate a TOML
-config file and pass it to cade with `--config`. alternatively, set
-`programs.cade.configFile` to pass your own strict config path.
+setting `verbosity`, `longRunningWarningMs`, or `shellGcRootTtlSeconds` makes
+the module generate a TOML config file and pass it to cade with `--config`.
+alternatively, set `programs.cade.configFile` to pass your own strict config
+path.
 
 for **nushell**, **elvish**, or **murex**, add the hook to your user shell config; see
 [Manual setup](#manual-setup) below. the ready-made init lines are also exposed
@@ -144,6 +146,10 @@ cade hook <SHELL>             # print the shell hook initialization code
 cade enter --shell <SHELL>    # activate the environment (used by the hook)
 cade exit --shell <SHELL>     # deactivate and restore the previous environment
 cade reload --shell <SHELL>   # re-evaluate on directory change (called by the hook)
+cade lease open --kind ide --project "$PWD"  # open a non-shell client lease
+cade --client-id <ID> reload --shell json    # attach a lease while exporting env
+cade lease refresh --client-id <ID>          # extend a lease
+cade lease close --client-id <ID>            # close a lease
 cade --config /nix/store/cade.toml status  # strict config file override
 cade --verbosity vars status  # quiet | normal | vars | trace
 ```
@@ -156,6 +162,7 @@ error. this is intended for wrappers and declarative systems.
 ```toml
 verbosity = "normal"           # quiet | normal | vars | trace
 long_running_warning_ms = 5000
+shell_gc_root_ttl_seconds = 2592000
 ```
 
 CLI flags override environment variables, which override the config file.
@@ -172,6 +179,12 @@ set `CADE_VERBOSITY` to apply a level to shell hooks without a config file.
 external loaders (`load flake`, `load shell`, and `call`) print a warning if
 they run for more than 5 seconds. set `long_running_warning_ms` in the config
 or `CADE_LONG_RUNNING_WARNING_MS` in the environment to adjust that threshold.
+
+shell GC roots and snapshots are retained for 30 days by default. set
+`shell_gc_root_ttl_seconds` in the config or `CADE_SHELL_GC_ROOT_TTL_SECONDS`
+in the environment to adjust that retention. for non-shell clients such as
+editors, open a lease and pass `--client-id` or `CADE_CLIENT_ID` when calling
+`cade`; the lease keeps associated roots alive until it is closed or expires.
 ## permissions
 
 cade only composes layers from directories you've **explicitly allowed**.

@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use crate::types::EnvSet;
 use anyhow::{Result, bail};
 
+const NIX_STORE_PREFIX: &str = "/nix/store/";
+const NIX_STORE_HASH_LEN: usize = 32;
+
 /// Normalize a raw .env value
 fn clean_env_value(raw: &str) -> String {
     let v = raw.trim();
@@ -51,8 +54,53 @@ impl EnvSet {
                 .and_modify(|v: &mut Vec<String>| v.extend(values.clone()))
                 .or_insert(values);
         }
-        Ok(EnvSet { vars, hard })
+        let mut env = EnvSet {
+            vars,
+            hard,
+            nix_store_paths: Vec::new(),
+        };
+        env.nix_store_paths = nix_store_paths_from_env_values(&env);
+        Ok(env)
     }
+}
+
+fn is_store_name_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
+}
+
+fn collect_store_paths_from_str(text: &str, out: &mut std::collections::HashSet<String>) {
+    let mut offset = 0;
+    while let Some(relative_start) = text[offset..].find(NIX_STORE_PREFIX) {
+        let start = offset + relative_start;
+        let hash_start = start + NIX_STORE_PREFIX.len();
+        let hash_end = hash_start + NIX_STORE_HASH_LEN;
+        let bytes = text.as_bytes();
+        if bytes.len() <= hash_end || bytes.get(hash_end) != Some(&b'-') {
+            offset = hash_start;
+            continue;
+        }
+
+        let mut end = hash_end + 1;
+        while end < bytes.len() && is_store_name_char(bytes[end]) {
+            end += 1;
+        }
+        if end > hash_end + 1 {
+            out.insert(text[start..end].to_string());
+        }
+        offset = end;
+    }
+}
+
+pub fn nix_store_paths_from_env_values(env: &EnvSet) -> Vec<String> {
+    let mut paths = std::collections::HashSet::new();
+    for values in env.vars.values() {
+        for value in values {
+            collect_store_paths_from_str(value, &mut paths);
+        }
+    }
+    let mut paths: Vec<String> = paths.into_iter().collect();
+    paths.sort_unstable();
+    paths
 }
 
 #[cfg(test)]
