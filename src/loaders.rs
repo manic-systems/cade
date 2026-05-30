@@ -4,7 +4,13 @@ use crate::{
     verbosity::{self, Verbosity},
 };
 use anyhow::{Context, Result, bail};
-use std::{io::Read, path::Path, process::Command, sync::mpsc::RecvTimeoutError, time::Duration};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::mpsc::RecvTimeoutError,
+    time::Duration,
+};
 
 const DEFAULT_LONG_RUNNING_WARNING_AFTER: Duration = Duration::from_secs(5);
 
@@ -59,32 +65,124 @@ fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
-pub fn load_flake(path: &Path, output: Option<String>) -> Result<EnvSet> {
-    let mut proc = Command::new("nix");
-    proc.args(["print-dev-env", "--json"]);
-    // A named output is a flake installable
-    if let Some(flake_output) = output.filter(|o| !o.is_empty()) {
-        proc.arg(format!(".#{flake_output}"));
+fn wipe_profile_history(profile: &Path) {
+    let status = Command::new("nix")
+        .args(["profile", "wipe-history", "--profile"])
+        .arg(profile)
+        .status();
+    match status {
+        Ok(status) if status.success() => {}
+        Ok(status) => verbosity::log(
+            Verbosity::Trace,
+            format_args!(
+                "cade: failed to wipe nix profile history for {} ({status}).",
+                profile.display()
+            ),
+        ),
+        Err(e) => verbosity::log(
+            Verbosity::Trace,
+            format_args!(
+                "cade: failed to run nix profile wipe-history for {}: {e}.",
+                profile.display()
+            ),
+        ),
     }
+}
+
+fn nix_print_dev_env(
+    path: &Path,
+    args: &[String],
+    what: &str,
+    profile: Option<&Path>,
+) -> Result<EnvSet> {
+    if let Some(profile) = profile {
+        match profile.parent() {
+            Some(parent) => {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    verbosity::log(
+                        Verbosity::Normal,
+                        format_args!(
+                            "cade: cannot create nix profile root at {}; activation will continue with env-scanned store roots: {e}.",
+                            profile.display()
+                        ),
+                    );
+                } else {
+                    let mut proc = Command::new("nix");
+                    if let Some((subcommand, rest)) = args.split_first() {
+                        proc.arg(subcommand)
+                            .args(["--profile"])
+                            .arg(profile)
+                            .args(rest);
+                    } else {
+                        proc.args(args).args(["--profile"]).arg(profile);
+                    }
+                    proc.current_dir(path);
+                    match run_checked(proc, what) {
+                        Ok(stdout) => {
+                            let mut env = EnvSet::from_json(&stdout)?;
+                            env.nix_store_paths.clear();
+                            wipe_profile_history(profile);
+                            return Ok(env);
+                        }
+                        Err(e) => verbosity::log(
+                            Verbosity::Normal,
+                            format_args!(
+                                "cade: nix profile root at {} failed; retrying without a closure-complete root: {e:#}.",
+                                profile.display()
+                            ),
+                        ),
+                    }
+                }
+            }
+            None => verbosity::log(
+                Verbosity::Normal,
+                format_args!(
+                    "cade: invalid nix profile root {}; activation will continue with env-scanned store roots.",
+                    profile.display()
+                ),
+            ),
+        }
+    }
+
+    let mut proc = Command::new("nix");
+    proc.args(args);
     proc.current_dir(path);
-    let stdout = run_checked(proc, &format!("nix print-dev-env at {}", path.display()))?;
+    let stdout = run_checked(proc, what)?;
     EnvSet::from_json(&stdout)
 }
 
-pub fn load_shell(path: &Path, filename: String) -> Result<EnvSet> {
+pub fn load_flake(path: &Path, output: Option<String>, profile: Option<PathBuf>) -> Result<EnvSet> {
+    let mut args = vec!["print-dev-env".to_string(), "--json".to_string()];
+    // A named output is a flake installable
+    if let Some(flake_output) = output.filter(|o| !o.is_empty()) {
+        args.push(format!(".#{flake_output}"));
+    }
+    nix_print_dev_env(
+        path,
+        &args,
+        &format!("nix print-dev-env at {}", path.display()),
+        profile.as_deref(),
+    )
+}
+
+pub fn load_shell(path: &Path, filename: String, profile: Option<PathBuf>) -> Result<EnvSet> {
     let file = if filename.is_empty() {
         "./shell.nix".to_string()
     } else {
         filename
     };
-    let mut proc = Command::new("nix");
-    proc.args(["print-dev-env", "--json", "-f", &file]);
-    proc.current_dir(path);
-    let stdout = run_checked(
-        proc,
+    let args = vec![
+        "print-dev-env".to_string(),
+        "--json".to_string(),
+        "-f".to_string(),
+        file.clone(),
+    ];
+    nix_print_dev_env(
+        path,
+        &args,
         &format!("nix print-dev-env -f {file} at {}", path.display()),
-    )?;
-    EnvSet::from_json(&stdout)
+        profile.as_deref(),
+    )
 }
 
 pub fn load_env(path: &Path, filename: String) -> Result<EnvSet> {

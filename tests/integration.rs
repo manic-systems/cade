@@ -760,6 +760,93 @@ fn vars_verbosity_prints_variable_names() {
 }
 
 #[test]
+fn nix_loaders_root_with_session_profile() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "load flake\n");
+    sb.allow(&sb.root);
+
+    let bin = sb.state.join("fake-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = sb.state.join("nix-args.log");
+    let nix = bin.join("nix");
+    std::fs::write(
+        &nix,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> '{}'
+if [ "$1" = "print-dev-env" ]; then
+  profile=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--profile" ]; then
+      shift
+      profile="$1"
+    fi
+    shift
+  done
+  if [ -n "$profile" ]; then
+    mkdir -p "$(dirname "$profile")"
+    ln -sfn /nix/store/11111111111111111111111111111111-dev-env "$profile"
+  fi
+  printf '%s\n' '{{"variables":{{"PATH":{{"type":"exported","value":"/nix/store/22222222222222222222222222222222-tool/bin"}}}}}}'
+  exit 0
+fi
+if [ "$1" = "profile" ] && [ "$2" = "wipe-history" ]; then
+  exit 0
+fi
+exit 1
+"#,
+            log.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&nix).unwrap().permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+    }
+    std::fs::set_permissions(&nix, perms).unwrap();
+
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = sb.enter(&sb.root, &[("PATH", path.as_str())]);
+    assert!(out.status.success(), "{:?}", out);
+    assert!(
+        stdout(&out).contains("/nix/store/22222222222222222222222222222222-tool/bin"),
+        "{}",
+        stdout(&out)
+    );
+
+    let nix_args = std::fs::read_to_string(log).unwrap();
+    assert!(
+        nix_args.contains("print-dev-env --profile"),
+        "nix print-dev-env was not given a profile root: {nix_args}"
+    );
+    assert!(
+        nix_args.contains("/gcroots/shells/") && nix_args.contains("/profiles/"),
+        "profile root should live under cade's session gcroots: {nix_args}"
+    );
+
+    let shell_roots = sb.state.join("cade").join("gcroots").join("shells");
+    let profiles = std::fs::read_dir(shell_roots)
+        .unwrap()
+        .flat_map(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .join("profiles")
+                .read_dir()
+                .into_iter()
+                .flatten()
+        })
+        .count();
+    assert!(profiles > 0, "expected a session profile root");
+}
+
+#[test]
 fn trace_verbosity_prints_hook_details() {
     let sb = Sandbox::new();
     sb.write(".cade", "hook load echo ready\n");

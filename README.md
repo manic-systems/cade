@@ -60,12 +60,12 @@ programs.cade = {
   enableFishIntegration = true;  # default; needs programs.fish.enable
   verbosity = "normal";          # null, quiet, normal, vars, trace
   longRunningWarningMs = 5000;   # null, or a positive integer
+  shellGcRootTtlSeconds = 2592000; # null, or a positive integer
 };
 ```
 
-setting `verbosity` or `longRunningWarningMs` makes the module generate a TOML
-config file and pass it to cade with `--config`. alternatively, set
-`programs.cade.configFile` to pass your own strict config path.
+set `verbosity` or `longRunningWarningMs` unless you provide
+`programs.cade.configFile`.
 
 for **nushell**, **elvish**, or **murex**, add the hook to your user shell config; see
 [Manual setup](#manual-setup) below. the ready-made init lines are also exposed
@@ -148,6 +148,7 @@ error. this is intended for wrappers and declarative systems.
 ```toml
 verbosity = "normal"           # quiet | normal | vars | trace
 long_running_warning_ms = 5000
+shell_gc_root_ttl_seconds = 2592000
 ```
 
 CLI flags override environment variables, which override the config file.
@@ -164,6 +165,14 @@ set `CADE_VERBOSITY` to apply a level to shell hooks without a config file.
 external loaders (`load flake`, `load shell`, and `call`) print a warning if
 they run for more than 5 seconds. set `long_running_warning_ms` in the config
 or `CADE_LONG_RUNNING_WARNING_MS` in the environment to adjust that threshold.
+
+shell roots stay alive while a session is active, then are pruned after 30
+days by default. nix-derived loaders (`load flake`, `load shell`, and matching
+`.envrc` directives) root the full dev environment closure with a session-scoped
+nix profile. non-nix sources fall back to rooting nix store paths that appear in
+their environment values. set `shell_gc_root_ttl_seconds` in the config or
+`CADE_SHELL_GC_ROOT_TTL_SECONDS` in the environment to adjust the retention
+window for inactive roots.
 ## permissions
 
 cade only composes layers from directories you've **explicitly allowed**.

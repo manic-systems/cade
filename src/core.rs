@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    process::Command,
+    time::Duration,
 };
 
 pub struct Cade {
@@ -107,6 +109,13 @@ const PATH_LIKE: &[&str] = &[
     "XDG_CONFIG_DIRS",
     "TERMINFO_DIRS",
 ];
+const DEFAULT_SHELL_GC_ROOT_TTL_SECS: u64 = 30 * 24 * 3600;
+
+fn shell_gc_root_ttl() -> Duration {
+    Duration::from_secs(
+        config::shell_gc_root_ttl_seconds().unwrap_or(DEFAULT_SHELL_GC_ROOT_TTL_SECS),
+    )
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct WatchEntry {
@@ -188,6 +197,26 @@ fn read_keylist(var: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn stable_hash_hex(text: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn layer_uses_nix_loader(keywords: &[Keyword]) -> bool {
+    keywords.iter().any(|kw| {
+        matches!(
+            kw,
+            Keyword::Load(
+                Loadable::Default | Loadable::Flake(_) | Loadable::Shell(_) | Loadable::Envrc(_)
+            )
+        )
+    })
 }
 
 fn session_from_environ(raw: &[u8]) -> Option<String> {
@@ -281,9 +310,22 @@ impl Cade {
         std::fs::write(self.snapshot_path(session), body).context("write snapshot")
     }
 
-    fn gc_snapshots(&self) {
-        let max_age = std::time::Duration::from_secs(30 * 24 * 3600);
+    fn shell_gc_roots_dir(&self) -> PathBuf {
+        self.state_dir.join("gcroots").join("shells")
+    }
+
+    fn shell_gc_root_session_dir(&self, session: &str) -> PathBuf {
+        self.shell_gc_roots_dir().join(session)
+    }
+
+    fn gc_state(&self) {
         let live_sessions = live_cade_sessions();
+        self.gc_snapshots(&live_sessions);
+        self.gc_shell_roots(&live_sessions);
+    }
+
+    fn gc_snapshots(&self, live_sessions: &HashSet<String>) {
+        let max_age = shell_gc_root_ttl();
         let Ok(entries) = std::fs::read_dir(self.state_dir.join("snapshots")) else {
             return;
         };
@@ -305,6 +347,137 @@ impl Cade {
                 .unwrap_or(false);
             if stale {
                 std::fs::remove_file(path).ok();
+            }
+        }
+    }
+
+    fn gc_shell_roots(&self, live_sessions: &HashSet<String>) {
+        let max_age = shell_gc_root_ttl();
+        let Ok(entries) = std::fs::read_dir(self.shell_gc_roots_dir()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(session) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if live_sessions.contains(session) {
+                continue;
+            }
+            let marker = path.join(".last-used");
+            let stale = marker
+                .metadata()
+                .or_else(|_| entry.metadata())
+                .and_then(|m| m.modified())
+                .map(|t| t.elapsed().map(|e| e > max_age).unwrap_or(false))
+                .unwrap_or(false);
+            if stale {
+                std::fs::remove_dir_all(path).ok();
+            }
+        }
+    }
+
+    fn touch_shell_gc_session(&self, session: &str) -> bool {
+        if !is_valid_session(session) {
+            return false;
+        }
+        let session_dir = self.shell_gc_root_session_dir(session);
+        if let Err(e) = std::fs::create_dir_all(&session_dir) {
+            verbosity::log(
+                Verbosity::Normal,
+                format_args!(
+                    "cade: cannot create nix gc root dir at {}: {e}.",
+                    session_dir.display()
+                ),
+            );
+            return false;
+        }
+        if let Err(e) = std::fs::write(session_dir.join(".last-used"), b"") {
+            verbosity::log(
+                Verbosity::Normal,
+                format_args!(
+                    "cade: cannot refresh nix gc root marker at {}: {e}.",
+                    session_dir.display()
+                ),
+            );
+            return false;
+        }
+        true
+    }
+
+    fn nix_profile_path(
+        &self,
+        session: &str,
+        layer_count: usize,
+        action_index: usize,
+        path: &Path,
+        spec: &str,
+    ) -> Option<PathBuf> {
+        if !self.touch_shell_gc_session(session) {
+            return None;
+        }
+        let key = stable_hash_hex(&format!("{}:{spec}", path.display()));
+        Some(
+            self.shell_gc_root_session_dir(session)
+                .join("profiles")
+                .join(format!("{layer_count}-{action_index}-{key}")),
+        )
+    }
+
+    fn root_nix_store_paths(&self, session: &str, paths: &[String]) {
+        if paths.is_empty() || !is_valid_session(session) {
+            return;
+        }
+
+        if !self.touch_shell_gc_session(session) {
+            return;
+        }
+        let session_dir = self.shell_gc_root_session_dir(session);
+
+        let mut unique = paths.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+
+        for store_path in unique {
+            let path = Path::new(&store_path);
+            if !path.exists() {
+                verbosity::log(
+                    Verbosity::Trace,
+                    format_args!("cade: skipping missing nix store path {store_path}."),
+                );
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let root = session_dir.join(name);
+            if std::fs::symlink_metadata(&root).is_ok() {
+                continue;
+            }
+
+            let status = match Command::new("nix-store")
+                .args(["--add-root"])
+                .arg(&root)
+                .args(["--indirect", "-r"])
+                .arg(&store_path)
+                .status()
+            {
+                Ok(status) => status,
+                Err(e) => {
+                    verbosity::log(
+                        Verbosity::Normal,
+                        format_args!("cade: failed to add nix gc root for {store_path}: {e}."),
+                    );
+                    continue;
+                }
+            };
+            if !status.success() {
+                verbosity::log(
+                    Verbosity::Normal,
+                    format_args!(
+                        "cade: nix-store failed to add gc root for {store_path} ({status})."
+                    ),
+                );
             }
         }
     }
@@ -454,6 +627,26 @@ impl Cade {
 
         let mut cade_layers = Vec::new();
         let mut all_watch_files: Vec<PathBuf> = Vec::new();
+        let mut nix_store_paths: Vec<String> = Vec::new();
+
+        // Snapshot the ambient env before activation and allocate any session
+        // roots before Nix loaders run, so they can root their full closures.
+        self.gc_state();
+        let (session, baseline, new_session): (String, HashMap<String, String>, bool) =
+            match std::env::var("__CADE_SESSION") {
+                Ok(session) if is_valid_session(&session) => {
+                    let baseline = self.read_snapshot(&session);
+                    (session, baseline, false)
+                }
+                _ => {
+                    let live: HashMap<String, String> = std::env::vars()
+                        .filter(|(k, _)| !k.starts_with("__CADE_"))
+                        .collect();
+                    let session = new_session_id();
+                    self.write_snapshot(&session, &live)?;
+                    (session, live, true)
+                }
+            };
 
         for (layer_count, (path, keywords)) in cade_files.iter().enumerate() {
             let watch_files = watched_files_for_keywords(path, keywords);
@@ -461,19 +654,28 @@ impl Cade {
 
             let token = compute_layer_key(&watch_files);
             let dir = path.to_string_lossy();
-            if let Some(cached) = self.get_cached_layer(&dir, &token)? {
+            let cacheable = !layer_uses_nix_loader(keywords);
+            if cacheable && let Some(cached) = self.get_cached_layer(&dir, &token)? {
                 verbosity::log(
                     Verbosity::Trace,
                     format_args!("cade: using cached layer {}.", path.display()),
                 );
+                nix_store_paths.extend(cached.nix_store_paths.iter().cloned());
+                if cached.nix_store_paths.is_empty() {
+                    nix_store_paths
+                        .extend(crate::envs::nix_store_paths_from_env_values(&cached.envs));
+                }
                 cade_layers.push(cached);
             } else {
                 verbosity::log(
                     Verbosity::Trace,
                     format_args!("cade: loading layer {}.", path.display()),
                 );
-                let layer = load_single_layer(layer_count, path, keywords)?;
-                self.store_cached_layer(&dir, &token, &layer)?;
+                let layer = load_single_layer(layer_count, path, keywords, self, &session)?;
+                nix_store_paths.extend(layer.nix_store_paths.iter().cloned());
+                if cacheable {
+                    self.store_cached_layer(&dir, &token, &layer)?;
+                }
                 cade_layers.push(layer);
             }
         }
@@ -487,20 +689,10 @@ impl Cade {
             }
         }
 
-        // Baseline ambient environment (for concat and restore)
-        let baseline: HashMap<String, String> = match std::env::var("__CADE_SESSION") {
-            Ok(session) => self.read_snapshot(&session),
-            Err(_) => {
-                let live: HashMap<String, String> = std::env::vars()
-                    .filter(|(k, _)| !k.starts_with("__CADE_"))
-                    .collect();
-                let session = new_session_id();
-                self.gc_snapshots();
-                self.write_snapshot(&session, &live)?;
-                print!("{}", shell.set_env("__CADE_SESSION", &session));
-                live
-            }
-        };
+        self.root_nix_store_paths(&session, &nix_store_paths);
+        if new_session {
+            print!("{}", shell.set_env("__CADE_SESSION", &session));
+        }
 
         output_changes(
             &rollup.env,
@@ -693,7 +885,7 @@ impl Cade {
         // nested shells inherit __CADE_SESSION and share this file
         // so deleting it would break the parent's later restore.
         if finalise {
-            self.gc_snapshots();
+            self.gc_state();
             print!("{}", shell.unset_env("__CADE_SESSION"));
         }
 
@@ -973,6 +1165,7 @@ impl CadeLayer {
             purify: false,
             clears: std::collections::HashSet::new(),
             concat: std::collections::HashSet::new(),
+            nix_store_paths: Vec::new(),
         }
     }
 
@@ -983,6 +1176,7 @@ impl CadeLayer {
                 self.purify = true;
             }
             Environ(env) => {
+                self.nix_store_paths.extend(env.nix_store_paths);
                 self.envs.hard.extend(env.hard);
                 for (k, v) in env.vars {
                     self.envs
@@ -1005,25 +1199,61 @@ impl CadeLayer {
     }
 }
 
-fn load_single_layer(layer_count: usize, path: &Path, keywords: &[Keyword]) -> Result<CadeLayer> {
+fn load_single_layer(
+    layer_count: usize,
+    path: &Path,
+    keywords: &[Keyword],
+    cade: &Cade,
+    session: &str,
+) -> Result<CadeLayer> {
     use crate::loaders::*;
     use Keyword::*;
     use Loadable::*;
 
     let mut layer = CadeLayer::new(layer_count, path);
-    for kw in keywords {
+    for (action_index, kw) in keywords.iter().enumerate() {
         let act = match kw {
             Pure => Ok(CadeAction::Purify),
             Call(argv) => call(path, argv.clone())
                 .context("calling process")
                 .map(CadeAction::Environ),
             Load(loadable) => match loadable {
-                Default => load_flake(path, None).context("loading flake"),
-                Flake(output) => load_flake(path, Some(output.clone())),
-                Shell(filename) => load_shell(path, filename.clone()).context("loading shell"),
+                Default => {
+                    let profile =
+                        cade.nix_profile_path(session, layer_count, action_index, path, "flake");
+                    load_flake(path, None, profile).context("loading flake")
+                }
+                Flake(output) => {
+                    let profile = cade.nix_profile_path(
+                        session,
+                        layer_count,
+                        action_index,
+                        path,
+                        &format!("flake:{output}"),
+                    );
+                    load_flake(path, Some(output.clone()), profile).context("loading flake")
+                }
+                Shell(filename) => {
+                    let profile = cade.nix_profile_path(
+                        session,
+                        layer_count,
+                        action_index,
+                        path,
+                        &format!("shell:{filename}"),
+                    );
+                    load_shell(path, filename.clone(), profile).context("loading shell")
+                }
                 Env(filename) => load_env(path, filename.clone()).context("loading env file"),
                 Envrc(filename) => {
-                    crate::envrc::load_envrc(path, filename.clone()).context("loading .envrc")
+                    let profile_dir = cade.nix_profile_path(
+                        session,
+                        layer_count,
+                        action_index,
+                        path,
+                        &format!("envrc:{filename}"),
+                    );
+                    crate::envrc::load_envrc(path, filename.clone(), profile_dir)
+                        .context("loading .envrc")
                 }
             }
             .map(CadeAction::Environ),
@@ -1219,6 +1449,7 @@ mod tests {
         child.push_action(CadeAction::Environ(EnvSet {
             vars,
             hard: std::collections::HashSet::from(["PATH".to_string()]),
+            nix_store_paths: Vec::new(),
         }));
         let r = rollup_envs(vec![parent, child]);
         // `:=` hard replace: drops the parent value and won't absorb ambient
