@@ -1304,11 +1304,25 @@ impl Cade {
                 .map(|state| watches_are_stale(state, root.as_deref()))
                 .unwrap_or(true);
 
-            if stale {
-                let reactivating = match &root {
-                    Some(r) => self.get_permission(r)?,
-                    None => false,
-                };
+            // Check whether any layer in the active chain lost permission
+            // (e.g. disallow a parent dir while in child dir).
+            let permission_revoked = watch_state
+                .as_ref()
+                .map(|state| {
+                    state
+                        .cade_paths
+                        .iter()
+                        .any(|dir| !self.get_permission(Path::new(dir)).unwrap_or(false))
+                })
+                .unwrap_or(false);
+
+            let root_permitted = root
+                .as_ref()
+                .and_then(|r| self.get_permission(r).ok())
+                .unwrap_or(false);
+
+            if stale || permission_revoked {
+                let reactivating = !permission_revoked && root_permitted;
                 let same_tree = match (&watch_state, &root) {
                     (Some(state), Some(r)) if reactivating => roots_in_same_cade_tree(state, r),
                     _ => false,
