@@ -119,7 +119,11 @@ struct WatchEntry {
 struct WatchState {
     /// Activation root: the innermost config directory in the hierarchy.
     root: String,
+    /// Candidate contiguous config dirs, tip-first. Used to detect ancestry changes.
     cade_paths: Vec<String>,
+    /// Active approved layer dirs, parent-first. Used for permission checks.
+    #[serde(default)]
+    active_paths: Vec<String>,
     files: Vec<WatchEntry>,
 }
 
@@ -553,7 +557,7 @@ impl Cade {
         let hooks_json = serde_json::to_string(&rollup.hooks).unwrap_or_default();
         print!("{}", shell.set_env("__CADE_HOOKS", &hooks_json));
 
-        let watch_state = build_watch_state(&root, &all_watch_files);
+        let watch_state = build_watch_state(&root, &layer_paths, &all_watch_files);
         let watches_json = serde_json::to_string(&watch_state).unwrap_or_default();
         print!("{}", shell.set_env("__CADE_WATCHES", &watches_json));
 
@@ -727,15 +731,19 @@ impl Cade {
 
             // Check whether any layer in the active chain lost permission
             // (e.g. disallow a parent dir while in child dir).
-            let permission_revoked = watch_state
+            let active_paths = watch_state
                 .as_ref()
                 .map(|state| {
-                    state
-                        .cade_paths
-                        .iter()
-                        .any(|dir| !self.get_permission(Path::new(dir)).unwrap_or(false))
+                    if state.active_paths.is_empty() {
+                        read_keylist("__CADE_LAYERS")
+                    } else {
+                        state.active_paths.clone()
+                    }
                 })
-                .unwrap_or(false);
+                .unwrap_or_else(|| read_keylist("__CADE_LAYERS"));
+            let permission_revoked = active_paths
+                .iter()
+                .any(|dir| !self.get_permission(Path::new(dir)).unwrap_or(false));
 
             let root_permitted = root
                 .as_ref()
@@ -743,7 +751,7 @@ impl Cade {
                 .unwrap_or(false);
 
             if stale || permission_revoked {
-                let reactivating = !permission_revoked && root_permitted;
+                let reactivating = root_permitted;
                 let same_tree = match (&watch_state, &root) {
                     (Some(state), Some(r)) if reactivating => roots_in_same_cade_tree(state, r),
                     _ => false,
@@ -1101,7 +1109,11 @@ fn compute_layer_key(watched_files: &[PathBuf]) -> String {
     parts.join("\n")
 }
 
-fn build_watch_state(root: &Path, watched_files: &[PathBuf]) -> WatchState {
+fn build_watch_state(
+    root: &Path,
+    active_paths: &[String],
+    watched_files: &[PathBuf],
+) -> WatchState {
     let cade_paths = collect_cade_paths(root);
     let files = watched_files
         .iter()
@@ -1118,6 +1130,7 @@ fn build_watch_state(root: &Path, watched_files: &[PathBuf]) -> WatchState {
     WatchState {
         root: root.to_string_lossy().to_string(),
         cade_paths,
+        active_paths: active_paths.to_vec(),
         files,
     }
 }

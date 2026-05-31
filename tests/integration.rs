@@ -524,6 +524,121 @@ fn disallowing_a_layer_caps_the_run_below_it() {
 }
 
 #[test]
+fn reload_keeps_tip_only_activation_capped_by_unapproved_parent() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    let sub = sb.dir("sub");
+    sb.write("sub/.cade", "B=2\n");
+
+    sb.allow(&sub);
+    sb.write_snapshot("s6", "PATH=/orig");
+
+    let root_str = sb.root.to_string_lossy().to_string();
+    let sub_str = sub.to_string_lossy().to_string();
+    let watches = serde_json::json!({
+        "root": sub_str,
+        "cade_paths": [sub_str, root_str],
+        "files": []
+    })
+    .to_string();
+
+    let out = sb.run(
+        &sub,
+        &["reload", "--shell", "bash"],
+        &[
+            ("__CADE_SESSION", "s6"),
+            ("__CADE_SET", "B"),
+            ("__CADE_UNSET", ""),
+            ("__CADE_PURE", "0"),
+            ("__CADE_HOOKS", "[]"),
+            ("__CADE_LAYERS", sub_str.as_str()),
+            ("__CADE_WATCHES", watches.as_str()),
+            ("B", "2"),
+        ],
+    );
+
+    assert!(out.status.success(), "{:?}", out);
+    assert!(stdout(&out).trim().is_empty(), "{}", stdout(&out));
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+}
+
+#[test]
+fn activation_watch_state_distinguishes_candidate_and_active_layers() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    let sub = sb.dir("sub");
+    sb.write("sub/.cade", "B=2\n");
+
+    sb.allow(&sub);
+    let out = sb.enter(&sub, &[]);
+    assert!(out.status.success(), "{:?}", out);
+
+    let root_str = sb.root.to_string_lossy();
+    let sub_str = sub.to_string_lossy();
+    let s = stdout(&out);
+    assert!(
+        s.contains(&format!("\"cade_paths\":[\"{sub_str}\",\"{root_str}\"]")),
+        "{s}"
+    );
+    assert!(
+        s.contains(&format!("\"active_paths\":[\"{sub_str}\"]")),
+        "{s}"
+    );
+}
+
+#[test]
+fn reload_reactivates_permitted_child_after_active_parent_is_disallowed() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    let sub = sb.dir("sub");
+    sb.write("sub/.cade", "B=2\n");
+
+    sb.allow(&sb.root);
+    sb.allow(&sub);
+    let disallow_parent = sb.run(&sb.root, &["disallow"], &[]);
+    assert!(disallow_parent.status.success(), "{:?}", disallow_parent);
+    sb.write_snapshot("s7", "PATH=/orig");
+
+    let root_str = sb.root.to_string_lossy().to_string();
+    let sub_str = sub.to_string_lossy().to_string();
+    let watches = serde_json::json!({
+        "root": sub_str,
+        "cade_paths": [sub_str, root_str],
+        "active_paths": [root_str, sub_str],
+        "files": []
+    })
+    .to_string();
+    let layers = format!("{root_str}\x1F{sub_str}");
+
+    let out = sb.run(
+        &sub,
+        &["reload", "--shell", "bash"],
+        &[
+            ("__CADE_SESSION", "s7"),
+            ("__CADE_SET", "A\x1FB"),
+            ("__CADE_UNSET", ""),
+            ("__CADE_PURE", "0"),
+            ("__CADE_HOOKS", "[]"),
+            ("__CADE_LAYERS", layers.as_str()),
+            ("__CADE_WATCHES", watches.as_str()),
+            ("A", "1"),
+            ("B", "2"),
+        ],
+    );
+
+    assert!(out.status.success(), "{:?}", out);
+    let s = stdout(&out);
+    assert!(s.contains("unset A;"), "{s}");
+    assert!(s.contains("export B='2';"), "{s}");
+    assert!(!s.contains("export A='1';"), "{s}");
+    assert!(!s.contains("unset __CADE_SESSION;"), "{s}");
+
+    let err = stderr(&out);
+    assert!(!err.contains("cade: unloaded"), "{err}");
+    assert!(err.contains(&format!("cade: reloaded {sub_str}.")), "{err}");
+}
+
+#[test]
 fn restore_tolerates_missing_prev_snapshot() {
     let sb = Sandbox::new();
     // active per __CADE_LAYERS, session id present, but its snapshot file is
