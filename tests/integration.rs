@@ -188,6 +188,7 @@ fn pure_preserves_shell_runtime_vars() {
             ("HOME", "/home/tester"),
             ("LAST_EXIT_CODE", "7"),
             ("CADE_VERBOSITY", "quiet"),
+            ("CADE_SHELL_GC_ROOT_TTL_SECONDS", "60"),
         ],
     );
     assert!(out.status.success(), "enter failed: {:?}", out);
@@ -204,6 +205,10 @@ fn pure_preserves_shell_runtime_vars() {
     assert!(
         !s.contains("unset CADE_VERBOSITY;"),
         "pure must keep cade verbosity usable: {s}"
+    );
+    assert!(
+        !s.contains("unset CADE_SHELL_GC_ROOT_TTL_SECONDS;"),
+        "pure must keep shell gc ttl usable: {s}"
     );
 }
 

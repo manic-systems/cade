@@ -142,7 +142,10 @@ fn is_pure_preserved_key(key: &str) -> bool {
     is_shell_managed(key)
         || matches!(
             key,
-            "HOME" | "CADE_VERBOSITY" | "CADE_LONG_RUNNING_WARNING_MS"
+            "HOME"
+                | "CADE_VERBOSITY"
+                | "CADE_LONG_RUNNING_WARNING_MS"
+                | "CADE_SHELL_GC_ROOT_TTL_SECONDS"
         )
 }
 
@@ -1526,6 +1529,7 @@ mod tests {
             assert!(!is_shell_managed(k), "{k} should not be shell-managed");
         }
         assert!(is_pure_preserved_key("HOME"));
+        assert!(is_pure_preserved_key("CADE_SHELL_GC_ROOT_TTL_SECONDS"));
     }
 
     #[test]
