@@ -130,7 +130,7 @@ impl ShellOutput for Fish {
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         r#"function __cade_hook --on-event fish_prompt
     if test "$PWD" != "$__cade_last_pwd"; or set -q __CADE_LAYERS
-        __CADE__ reload --shell fish | source
+        __CADE__ --owner-pid $fish_pid reload --shell fish | source
         set -g __cade_last_pwd $PWD
     end
 end
@@ -163,7 +163,7 @@ impl ShellOutput for Bash {
         r#"_cade_hook() {
     local previous_exit_status=$?
     if [[ "$PWD" != "$__cade_last_pwd" || -n "${__CADE_LAYERS:-}" ]]; then
-        eval "$(__CADE__ reload --shell bash)"
+        eval "$(__CADE__ --owner-pid $$ reload --shell bash)"
         __cade_last_pwd="$PWD"
     fi
     return $previous_exit_status
@@ -199,7 +199,7 @@ impl ShellOutput for Zsh {
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
         r#"_cade_hook() {
     if [[ "$PWD" != "$__cade_last_pwd" || -n "${__CADE_LAYERS:-}" ]]; then
-        eval "$(__CADE__ reload --shell zsh)"
+        eval "$(__CADE__ --owner-pid $$ reload --shell zsh)"
         __cade_last_pwd="$PWD"
     fi
 }
@@ -252,7 +252,7 @@ $env.config.hooks.pre_prompt = (
     ($env.config.hooks?.pre_prompt? | default [])
     | append {||
         if ($env.PWD != ($env.__cade_last_pwd? | default "")) or ("__CADE_LAYERS" in $env) {
-            for line in (^$cade ...$cade_args reload --shell nushell | lines) {
+            for line in (^$cade ...$cade_args --owner-pid $nu.pid reload --shell nushell | lines) {
                 if ($line | str trim | is-empty) { continue }
                 let m = ($line | from json)
                 if "s" in $m { load-env $m.s }
@@ -378,13 +378,13 @@ mod tests {
         let exe = "/tmp/cade bin/cade";
         let args = vec!["--config".to_string(), "/tmp/cade config.toml".to_string()];
         assert!(Bash.hook_init(exe, &args).contains(
-            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' reload --shell bash"
+            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' --owner-pid $$ reload --shell bash"
         ));
         assert!(Zsh.hook_init(exe, &args).contains(
-            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' reload --shell zsh"
+            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' --owner-pid $$ reload --shell zsh"
         ));
         assert!(Fish.hook_init(exe, &args).contains(
-            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' reload --shell fish"
+            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' --owner-pid $fish_pid reload --shell fish"
         ));
         assert!(
             Nushell

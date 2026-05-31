@@ -53,19 +53,30 @@ fn try_main() -> Result<()> {
         Enter { shell } => {
             let shell_name: ShellName = shell.parse().map_err(|e: String| anyhow::anyhow!(e))?;
             let output = shell_name.get_output();
-            cade.do_activation(output.as_ref(), Announce::Loaded)
-                .context("activate cade environment")?;
+            cade.do_activation(
+                output.as_ref(),
+                Announce::Loaded,
+                args.client_id.as_deref(),
+                args.owner_pid,
+            )
+            .context("activate cade environment")?;
         }
         Exit { shell } => {
             let shell_name: ShellName = shell.parse().map_err(|e: String| anyhow::anyhow!(e))?;
             let output = shell_name.get_output();
-            cade.do_restore(output.as_ref(), true, true)
-                .context("deactivate cade environment")?;
+            cade.do_restore(
+                output.as_ref(),
+                true,
+                true,
+                args.client_id.as_deref(),
+                args.owner_pid,
+            )
+            .context("deactivate cade environment")?;
         }
         Reload { shell } => {
             let shell_name: ShellName = shell.parse().map_err(|e: String| anyhow::anyhow!(e))?;
             let output = shell_name.get_output();
-            cade.do_reload(output.as_ref())
+            cade.do_reload(output.as_ref(), args.client_id.as_deref(), args.owner_pid)
                 .context("reload cade environment")?;
         }
         Allow => cade.allow_here(true)?,
@@ -85,6 +96,21 @@ fn try_main() -> Result<()> {
             cade.set_permission(&cwd, true)?;
         }
         Hook { .. } => unreachable!("handled before Cade::init()"),
+        Lease { action } => {
+            use cli::clap::LeaseAction::*;
+            match action {
+                Open {
+                    kind,
+                    project,
+                    ttl_seconds,
+                } => cade.lease_open(&kind, project.as_deref(), ttl_seconds)?,
+                Refresh {
+                    client_id,
+                    ttl_seconds,
+                } => cade.lease_refresh(&client_id, ttl_seconds)?,
+                Close { client_id } => cade.lease_close(&client_id)?,
+            }
+        }
         Status => cade.do_status().context("report status")?,
     };
     Ok(())

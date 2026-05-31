@@ -136,6 +136,10 @@ cade hook <SHELL>             # print the shell hook initialization code
 cade enter --shell <SHELL>    # activate the environment (used by the hook)
 cade exit --shell <SHELL>     # deactivate and restore the previous environment
 cade reload --shell <SHELL>   # re-evaluate on directory change (called by the hook)
+cade lease open --kind ide --project "$PWD"  # open a non-shell client lease
+cade --client-id <ID> reload --shell json    # refresh a lease while exporting env
+cade lease refresh --client-id <ID>          # extend a lease
+cade lease close --client-id <ID>            # close a lease
 cade --config /nix/store/cade.toml status  # strict config file override
 cade --verbosity vars status  # quiet | normal | vars | trace
 ```
@@ -173,6 +177,11 @@ nix profile. non-nix sources fall back to rooting nix store paths that appear in
 their environment values. set `shell_gc_root_ttl_seconds` in the config or
 `CADE_SHELL_GC_ROOT_TTL_SECONDS` in the environment to adjust the retention
 window for inactive roots.
+
+shell hooks register a process holder so long-running shells keep their session
+roots alive without scanning process environments. non-shell integrations can
+open a lease and pass `--client-id` or `CADE_CLIENT_ID` when calling `cade`; the
+lease keeps associated roots alive until it is closed or expires.
 ## permissions
 
 cade only composes layers from directories you've **explicitly allowed**.

@@ -10,7 +10,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 pub struct Cade {
@@ -117,6 +117,38 @@ fn shell_gc_root_ttl() -> Duration {
     )
 }
 
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Holder {
+    Process {
+        pid: u32,
+        start_time: String,
+        last_seen: u64,
+    },
+    Lease {
+        client_id: String,
+        kind: String,
+        project: Option<String>,
+        expires_at: u64,
+        last_seen: u64,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct LeaseResponse {
+    client_id: String,
+    kind: String,
+    project: Option<String>,
+    expires_at: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct WatchEntry {
     path: String,
@@ -146,6 +178,7 @@ fn is_pure_preserved_key(key: &str) -> bool {
                 | "CADE_VERBOSITY"
                 | "CADE_LONG_RUNNING_WARNING_MS"
                 | "CADE_SHELL_GC_ROOT_TTL_SECONDS"
+                | "CADE_CLIENT_ID"
         )
 }
 
@@ -178,6 +211,40 @@ fn find_cade_root(start: &Path) -> Option<PathBuf> {
 // Reject session ids that could escape the snapshots dir when used as a path.
 fn is_valid_session(s: &str) -> bool {
     !s.is_empty() && !s.contains('/') && !s.contains('\\') && !s.contains("..")
+}
+
+fn is_valid_client_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
+fn validate_client_id(s: &str) -> Result<()> {
+    if is_valid_client_id(s) {
+        Ok(())
+    } else {
+        bail!("invalid cade lease client id")
+    }
+}
+
+fn random_hex(bytes: usize) -> String {
+    let mut buf = vec![0u8; bytes];
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut buf))
+        .is_err()
+    {
+        let seed = format!("{}-{}-{}", std::process::id(), now_secs(), new_session_id());
+        for (i, byte) in seed.as_bytes().iter().enumerate() {
+            buf[i % bytes] ^= *byte;
+            buf[(i * 7 + 3) % bytes] = buf[(i * 7 + 3) % bytes].wrapping_add(*byte);
+        }
+    }
+    buf.into_iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn new_client_id() -> String {
+    random_hex(16)
 }
 
 /// Per-shell-session id, generated at first activation.
@@ -222,42 +289,96 @@ fn layer_uses_nix_loader(keywords: &[Keyword]) -> bool {
     })
 }
 
-fn session_from_environ(raw: &[u8]) -> Option<String> {
-    const PREFIX: &[u8] = b"__CADE_SESSION=";
-    raw.split(|&b| b == 0).find_map(|entry| {
-        let value = entry.strip_prefix(PREFIX)?;
-        let session = std::str::from_utf8(value).ok()?;
-        is_valid_session(session).then(|| session.to_string())
-    })
+#[cfg(target_os = "linux")]
+fn parse_proc_stat(raw: &str) -> Option<(u32, String)> {
+    let end = raw.rfind(") ")?;
+    let fields: Vec<&str> = raw[end + 2..].split_whitespace().collect();
+    let ppid = fields.get(1)?.parse::<u32>().ok()?;
+    let start_time = fields.get(19)?.to_string();
+    Some((ppid, start_time))
 }
 
 #[cfg(target_os = "linux")]
-fn live_cade_sessions() -> HashSet<String> {
-    let mut sessions = HashSet::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return sessions;
-    };
-
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !name.bytes().all(|b| b.is_ascii_digit()) {
-            continue;
-        }
-        let Ok(environ) = std::fs::read(entry.path().join("environ")) else {
-            continue;
-        };
-        if let Some(session) = session_from_environ(&environ) {
-            sessions.insert(session);
-        }
-    }
-
-    sessions
+fn process_start_time(pid: u32) -> Option<String> {
+    let raw = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_proc_stat(&raw).map(|(_, start)| start)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn live_cade_sessions() -> HashSet<String> {
-    HashSet::new()
+fn process_start_time(_pid: u32) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn parent_pid() -> Option<u32> {
+    let raw = std::fs::read_to_string("/proc/self/stat").ok()?;
+    parse_proc_stat(&raw).map(|(ppid, _)| ppid)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn parent_pid() -> Option<u32> {
+    None
+}
+
+fn process_holder_is_live(pid: u32, start_time: &str) -> bool {
+    process_start_time(pid)
+        .map(|current| current == start_time)
+        .unwrap_or(false)
+}
+
+fn holder_is_live(holder: &Holder) -> bool {
+    match holder {
+        Holder::Process {
+            pid, start_time, ..
+        } => process_holder_is_live(*pid, start_time),
+        Holder::Lease { expires_at, .. } => *expires_at > now_secs(),
+    }
+}
+
+fn holder_file_name(holder: &Holder) -> Result<String> {
+    match holder {
+        Holder::Process {
+            pid, start_time, ..
+        } => {
+            if start_time
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+            {
+                Ok(format!("process-{pid}-{start_time}.json"))
+            } else {
+                bail!("invalid process start time")
+            }
+        }
+        Holder::Lease { client_id, .. } => {
+            validate_client_id(client_id)?;
+            Ok(format!("lease-{client_id}.json"))
+        }
+    }
+}
+
+fn configured_client_id(explicit: Option<&str>) -> Option<String> {
+    explicit
+        .map(str::to_owned)
+        .or_else(|| std::env::var("CADE_CLIENT_ID").ok())
+        .filter(|id| !id.is_empty())
+}
+
+fn lease_response(holder: &Holder) -> Option<LeaseResponse> {
+    match holder {
+        Holder::Lease {
+            client_id,
+            kind,
+            project,
+            expires_at,
+            ..
+        } => Some(LeaseResponse {
+            client_id: client_id.clone(),
+            kind: kind.clone(),
+            project: project.clone(),
+            expires_at: *expires_at,
+        }),
+        Holder::Process { .. } => None,
+    }
 }
 
 impl Cade {
@@ -321,10 +442,21 @@ impl Cade {
         self.shell_gc_roots_dir().join(session)
     }
 
+    fn lease_dir(&self) -> PathBuf {
+        self.state_dir.join("leases")
+    }
+
+    fn lease_path(&self, client_id: &str) -> PathBuf {
+        self.lease_dir().join(format!("{client_id}.json"))
+    }
+
+    fn holders_dir(&self, session: &str) -> PathBuf {
+        self.shell_gc_root_session_dir(session).join("holders")
+    }
+
     fn gc_state(&self) {
-        let live_sessions = live_cade_sessions();
+        let live_sessions = self.gc_shell_roots();
         self.gc_snapshots(&live_sessions);
-        self.gc_shell_roots(&live_sessions);
     }
 
     fn gc_snapshots(&self, live_sessions: &HashSet<String>) {
@@ -354,17 +486,20 @@ impl Cade {
         }
     }
 
-    fn gc_shell_roots(&self, live_sessions: &HashSet<String>) {
+    fn gc_shell_roots(&self) -> HashSet<String> {
+        let mut live_sessions = HashSet::new();
         let max_age = shell_gc_root_ttl();
         let Ok(entries) = std::fs::read_dir(self.shell_gc_roots_dir()) else {
-            return;
+            return live_sessions;
         };
         for entry in entries.flatten() {
             let path = entry.path();
             let Some(session) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if live_sessions.contains(session) {
+            let live = self.session_has_live_holder(session);
+            if live {
+                live_sessions.insert(session.to_string());
                 continue;
             }
             let marker = path.join(".last-used");
@@ -378,6 +513,29 @@ impl Cade {
                 std::fs::remove_dir_all(path).ok();
             }
         }
+        live_sessions
+    }
+
+    fn session_has_live_holder(&self, session: &str) -> bool {
+        let holders_dir = self.holders_dir(session);
+        let Ok(entries) = std::fs::read_dir(&holders_dir) else {
+            return false;
+        };
+
+        let mut live = false;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let holder = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<Holder>(&raw).ok());
+            match holder {
+                Some(holder) if holder_is_live(&holder) => live = true,
+                _ => {
+                    std::fs::remove_file(path).ok();
+                }
+            }
+        }
+        live
     }
 
     fn touch_shell_gc_session(&self, session: &str) -> bool {
@@ -406,6 +564,132 @@ impl Cade {
             return false;
         }
         true
+    }
+
+    fn write_session_holder(&self, session: &str, holder: &Holder) -> Result<()> {
+        if !is_valid_session(session) {
+            bail!("invalid cade session id")
+        }
+        if !self.touch_shell_gc_session(session) {
+            bail!("cannot refresh cade session holder")
+        }
+        let holders_dir = self.holders_dir(session);
+        std::fs::create_dir_all(&holders_dir).context("create cade session holders dir")?;
+        let path = holders_dir.join(holder_file_name(holder)?);
+        let body = serde_json::to_vec(holder).context("serialise cade session holder")?;
+        std::fs::write(path, body).context("write cade session holder")
+    }
+
+    fn remove_session_holder(&self, session: &str, holder_name: &str) {
+        if !is_valid_session(session) {
+            return;
+        }
+        std::fs::remove_file(self.holders_dir(session).join(holder_name)).ok();
+        self.touch_shell_gc_session(session);
+    }
+
+    fn refresh_process_holder(&self, session: &str, owner_pid: Option<u32>) -> Result<()> {
+        let Some(pid) = owner_pid.or_else(parent_pid) else {
+            return Ok(());
+        };
+        let Some(start_time) = process_start_time(pid) else {
+            return Ok(());
+        };
+        self.write_session_holder(
+            session,
+            &Holder::Process {
+                pid,
+                start_time,
+                last_seen: now_secs(),
+            },
+        )
+    }
+
+    fn refresh_session_holders(
+        &self,
+        session: &str,
+        client_id: Option<&str>,
+        owner_pid: Option<u32>,
+    ) -> Result<()> {
+        self.refresh_process_holder(session, owner_pid)?;
+        if let Some(client_id) = configured_client_id(client_id) {
+            let holder = self.refresh_lease_record(&client_id, None)?;
+            self.write_session_holder(session, &holder)?;
+        }
+        Ok(())
+    }
+
+    fn read_lease_record(&self, client_id: &str) -> Result<Holder> {
+        validate_client_id(client_id)?;
+        let raw = std::fs::read_to_string(self.lease_path(client_id))
+            .with_context(|| format!("reading cade lease {client_id}"))?;
+        let holder: Holder = serde_json::from_str(&raw).context("parse cade lease")?;
+        match holder {
+            Holder::Lease { .. } => Ok(holder),
+            Holder::Process { .. } => bail!("cade lease {client_id} is not a lease holder"),
+        }
+    }
+
+    fn write_lease_record(&self, holder: &Holder) -> Result<()> {
+        let Holder::Lease { client_id, .. } = holder else {
+            bail!("process holders cannot be written as leases")
+        };
+        validate_client_id(client_id)?;
+        std::fs::create_dir_all(self.lease_dir()).context("create cade leases dir")?;
+        let body = serde_json::to_vec(holder).context("serialise cade lease")?;
+        std::fs::write(self.lease_path(client_id), body).context("write cade lease")
+    }
+
+    fn refresh_lease_record(&self, client_id: &str, ttl_seconds: Option<u64>) -> Result<Holder> {
+        let existing = self.read_lease_record(client_id)?;
+        let Holder::Lease {
+            client_id,
+            kind,
+            project,
+            ..
+        } = existing
+        else {
+            unreachable!()
+        };
+        let ttl = ttl_seconds
+            .map(Duration::from_secs)
+            .unwrap_or_else(shell_gc_root_ttl);
+        let holder = Holder::Lease {
+            client_id,
+            kind,
+            project,
+            expires_at: now_secs().saturating_add(ttl.as_secs()),
+            last_seen: now_secs(),
+        };
+        self.write_lease_record(&holder)?;
+        Ok(holder)
+    }
+
+    fn remove_current_session_holders(
+        &self,
+        session: &str,
+        client_id: Option<&str>,
+        owner_pid: Option<u32>,
+    ) {
+        if let Some(pid) = owner_pid.or_else(parent_pid)
+            && let Some(start_time) = process_start_time(pid)
+        {
+            self.remove_session_holder(
+                session,
+                &holder_file_name(&Holder::Process {
+                    pid,
+                    start_time,
+                    last_seen: now_secs(),
+                })
+                .unwrap_or_default(),
+            );
+        }
+
+        if let Some(client_id) = configured_client_id(client_id)
+            && is_valid_client_id(&client_id)
+        {
+            self.remove_session_holder(session, &format!("lease-{client_id}.json"));
+        }
     }
 
     fn nix_profile_path(
@@ -612,10 +896,63 @@ impl Cade {
         Ok(())
     }
 
+    pub fn lease_open(
+        &self,
+        kind: &str,
+        project: Option<&Path>,
+        ttl_seconds: Option<u64>,
+    ) -> Result<()> {
+        if kind.is_empty()
+            || !kind
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        {
+            bail!("lease kind must contain only letters, digits, '-' or '_'")
+        }
+        let ttl = ttl_seconds
+            .map(Duration::from_secs)
+            .unwrap_or_else(shell_gc_root_ttl);
+        let holder = Holder::Lease {
+            client_id: new_client_id(),
+            kind: kind.to_string(),
+            project: project.map(|p| p.to_string_lossy().to_string()),
+            expires_at: now_secs().saturating_add(ttl.as_secs()),
+            last_seen: now_secs(),
+        };
+        self.write_lease_record(&holder)?;
+        let response = lease_response(&holder).expect("lease response");
+        println!("{}", serde_json::to_string(&response)?);
+        Ok(())
+    }
+
+    pub fn lease_refresh(&self, client_id: &str, ttl_seconds: Option<u64>) -> Result<()> {
+        let holder = self.refresh_lease_record(client_id, ttl_seconds)?;
+        let response = lease_response(&holder).expect("lease response");
+        println!("{}", serde_json::to_string(&response)?);
+        Ok(())
+    }
+
+    pub fn lease_close(&self, client_id: &str) -> Result<()> {
+        validate_client_id(client_id)?;
+        std::fs::remove_file(self.lease_path(client_id)).ok();
+        if let Ok(entries) = std::fs::read_dir(self.shell_gc_roots_dir()) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(session) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                self.remove_session_holder(session, &format!("lease-{client_id}.json"));
+            }
+        }
+        Ok(())
+    }
+
     pub fn do_activation(
         &mut self,
         shell: &dyn crate::shells::ShellOutput,
         announce: Announce,
+        client_id: Option<&str>,
+        owner_pid: Option<u32>,
     ) -> Result<()> {
         let root = find_cade_root(&self.cwd)
             .context("no .cade or .envrc found in this directory or any parent")?;
@@ -650,6 +987,7 @@ impl Cade {
                     (session, live, true)
                 }
             };
+        self.refresh_session_holders(&session, client_id, owner_pid)?;
 
         for (layer_count, (path, keywords)) in cade_files.iter().enumerate() {
             let watch_files = watched_files_for_keywords(path, keywords);
@@ -782,6 +1120,8 @@ impl Cade {
         shell: &dyn crate::shells::ShellOutput,
         finalise: bool,
         announce: bool,
+        client_id: Option<&str>,
+        owner_pid: Option<u32>,
     ) -> Result<()> {
         let layers = std::env::var("__CADE_LAYERS").ok();
         let session = std::env::var("__CADE_SESSION").ok();
@@ -888,6 +1228,9 @@ impl Cade {
         // nested shells inherit __CADE_SESSION and share this file
         // so deleting it would break the parent's later restore.
         if finalise {
+            if let Some(session) = session.as_deref() {
+                self.remove_current_session_holders(session, client_id, owner_pid);
+            }
             self.gc_state();
             print!("{}", shell.unset_env("__CADE_SESSION"));
         }
@@ -906,11 +1249,21 @@ impl Cade {
         Ok(())
     }
 
-    pub fn do_reload(&mut self, shell: &dyn crate::shells::ShellOutput) -> Result<()> {
+    pub fn do_reload(
+        &mut self,
+        shell: &dyn crate::shells::ShellOutput,
+        client_id: Option<&str>,
+        owner_pid: Option<u32>,
+    ) -> Result<()> {
         let root = find_cade_root(&self.cwd);
         let is_active = std::env::var("__CADE_LAYERS").is_ok();
 
         if is_active {
+            if let Ok(session) = std::env::var("__CADE_SESSION")
+                && is_valid_session(&session)
+            {
+                self.refresh_session_holders(&session, client_id, owner_pid)?;
+            }
             // reload/restore only when the active state is stale
             let watch_state = std::env::var("__CADE_WATCHES")
                 .ok()
@@ -929,7 +1282,13 @@ impl Cade {
                     (Some(state), Some(r)) if reactivating => roots_in_same_cade_tree(state, r),
                     _ => false,
                 };
-                self.do_restore(shell, !reactivating, !reactivating || !same_tree)?;
+                self.do_restore(
+                    shell,
+                    !reactivating,
+                    !reactivating || !same_tree,
+                    client_id,
+                    owner_pid,
+                )?;
                 if reactivating {
                     self.do_activation(
                         shell,
@@ -938,11 +1297,13 @@ impl Cade {
                         } else {
                             Announce::Loaded
                         },
+                        client_id,
+                        owner_pid,
                     )?;
                 }
             }
         } else {
-            self.activate_if_permitted(&root, shell)?;
+            self.activate_if_permitted(&root, shell, client_id, owner_pid)?;
         }
 
         Ok(())
@@ -967,11 +1328,13 @@ impl Cade {
         &mut self,
         root: &Option<PathBuf>,
         shell: &dyn crate::shells::ShellOutput,
+        client_id: Option<&str>,
+        owner_pid: Option<u32>,
     ) -> Result<()> {
         if let Some(root) = root
             && self.get_permission(root)?
         {
-            self.do_activation(shell, Announce::Loaded)?;
+            self.do_activation(shell, Announce::Loaded, client_id, owner_pid)?;
         }
         Ok(())
     }
@@ -1532,16 +1895,31 @@ mod tests {
         assert!(is_pure_preserved_key("CADE_SHELL_GC_ROOT_TTL_SECONDS"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn extracts_live_session_from_proc_environ() {
-        let raw = b"PATH=/bin\0__CADE_SESSION=123-456\0HOME=/tmp\0";
-        assert_eq!(session_from_environ(raw), Some("123-456".to_string()));
+    fn parses_proc_stat_with_spaces_in_comm() {
+        let raw = "123 (shell with spaces) S 42 1 1 0 -1 0 0 0 0 0 0 0 0 20 0 1 0 0 98765 0";
+        assert_eq!(parse_proc_stat(raw), Some((42, "98765".to_string())));
     }
 
     #[test]
-    fn ignores_invalid_proc_session_values() {
-        assert_eq!(session_from_environ(b"__CADE_SESSION=../bad\0"), None);
-        assert_eq!(session_from_environ(b"__CADE_SESSION=\xff\0"), None);
+    fn lease_holder_liveness_uses_expiry() {
+        let live = Holder::Lease {
+            client_id: "client".into(),
+            kind: "test".into(),
+            project: None,
+            expires_at: now_secs() + 60,
+            last_seen: now_secs(),
+        };
+        let expired = Holder::Lease {
+            client_id: "client".into(),
+            kind: "test".into(),
+            project: None,
+            expires_at: now_secs().saturating_sub(1),
+            last_seen: now_secs().saturating_sub(2),
+        };
+        assert!(holder_is_live(&live));
+        assert!(!holder_is_live(&expired));
     }
 
     #[test]

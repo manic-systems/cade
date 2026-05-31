@@ -98,6 +98,10 @@ fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+fn cade_state(sb: &Sandbox) -> PathBuf {
+    sb.state.join("cade")
+}
+
 #[test]
 fn nested_layers_compose_child_first() {
     let sb = Sandbox::new();
@@ -180,6 +184,10 @@ fn pure_preserves_shell_runtime_vars() {
     let sb = Sandbox::new();
     sb.write(".cade", "pure\n");
     sb.allow(&sb.root);
+    let lease = sb.run(&sb.root, &["lease", "open", "--ttl-seconds", "60"], &[]);
+    assert!(lease.status.success(), "lease open failed: {:?}", lease);
+    let lease: serde_json::Value = serde_json::from_str(&stdout(&lease)).unwrap();
+    let client_id = lease["client_id"].as_str().unwrap();
 
     let out = sb.enter(
         &sb.root,
@@ -189,6 +197,7 @@ fn pure_preserves_shell_runtime_vars() {
             ("LAST_EXIT_CODE", "7"),
             ("CADE_VERBOSITY", "quiet"),
             ("CADE_SHELL_GC_ROOT_TTL_SECONDS", "60"),
+            ("CADE_CLIENT_ID", client_id),
         ],
     );
     assert!(out.status.success(), "enter failed: {:?}", out);
@@ -208,7 +217,11 @@ fn pure_preserves_shell_runtime_vars() {
     );
     assert!(
         !s.contains("unset CADE_SHELL_GC_ROOT_TTL_SECONDS;"),
-        "pure must keep shell gc ttl usable: {s}"
+        "pure must keep cade GC TTL override usable: {s}"
+    );
+    assert!(
+        !s.contains("unset CADE_CLIENT_ID;"),
+        "pure must keep cade lease client id usable: {s}"
     );
 }
 
@@ -307,6 +320,123 @@ fn first_activation_emits_session_id_not_an_env_blob() {
         !s.contains("SOMESECRET"),
         "ambient must not be duplicated into the env: {s}"
     );
+}
+
+#[test]
+fn lease_open_refresh_and_close_manage_client_record() {
+    let sb = Sandbox::new();
+    let project = sb.root.to_string_lossy().to_string();
+    let open = sb.run(
+        &sb.root,
+        &[
+            "lease",
+            "open",
+            "--kind",
+            "ide",
+            "--project",
+            project.as_str(),
+            "--ttl-seconds",
+            "60",
+        ],
+        &[],
+    );
+    assert!(open.status.success(), "{:?}", open);
+    let response: serde_json::Value = serde_json::from_str(&stdout(&open)).unwrap();
+    let client_id = response["client_id"].as_str().unwrap();
+    assert_eq!(response["kind"], "ide");
+    assert_eq!(response["project"], project);
+
+    let lease_path = cade_state(&sb)
+        .join("leases")
+        .join(format!("{client_id}.json"));
+    assert!(lease_path.exists(), "lease file missing");
+
+    let refresh = sb.run(
+        &sb.root,
+        &[
+            "lease",
+            "refresh",
+            "--client-id",
+            client_id,
+            "--ttl-seconds",
+            "120",
+        ],
+        &[],
+    );
+    assert!(refresh.status.success(), "{:?}", refresh);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stdout(&refresh)).unwrap()["client_id"],
+        client_id
+    );
+
+    let close = sb.run(&sb.root, &["lease", "close", "--client-id", client_id], &[]);
+    assert!(close.status.success(), "{:?}", close);
+    assert!(!lease_path.exists(), "lease file not removed");
+}
+
+#[test]
+fn activation_with_client_id_writes_session_lease_holder() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    sb.allow(&sb.root);
+
+    let open = sb.run(&sb.root, &["lease", "open", "--ttl-seconds", "60"], &[]);
+    assert!(open.status.success(), "{:?}", open);
+    let response: serde_json::Value = serde_json::from_str(&stdout(&open)).unwrap();
+    let client_id = response["client_id"].as_str().unwrap();
+
+    let out = sb.run(
+        &sb.root,
+        &["--client-id", client_id, "enter", "--shell", "bash"],
+        &[],
+    );
+    assert!(out.status.success(), "{:?}", out);
+
+    let shell_roots = cade_state(&sb).join("gcroots").join("shells");
+    let holders = std::fs::read_dir(shell_roots)
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry
+                .ok()?
+                .path()
+                .join("holders")
+                .join(format!("lease-{client_id}.json"));
+            path.exists().then_some(path)
+        })
+        .count();
+    assert_eq!(holders, 1, "expected one session lease holder");
+}
+
+#[test]
+fn activation_with_owner_pid_writes_process_holder() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    sb.allow(&sb.root);
+
+    let owner = std::process::id().to_string();
+    let out = sb.run(
+        &sb.root,
+        &["--owner-pid", owner.as_str(), "enter", "--shell", "bash"],
+        &[],
+    );
+    assert!(out.status.success(), "{:?}", out);
+
+    let shell_roots = cade_state(&sb).join("gcroots").join("shells");
+    let process_holders = std::fs::read_dir(shell_roots)
+        .unwrap()
+        .flat_map(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .join("holders")
+                .read_dir()
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("process-"))
+        .count();
+    assert_eq!(process_holders, 1, "expected one process holder");
 }
 
 #[test]
