@@ -132,7 +132,10 @@ fn activation_requires_permission() {
     let out = sb.enter(&sb.root, &[]);
     assert!(!out.status.success(), "should fail without permission");
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("not permitted"), "unexpected stderr: {err}");
+    assert!(
+        err.contains("cade: disallowed - use \"cade allow\" to load this shell."),
+        "unexpected stderr: {err}"
+    );
 }
 
 #[test]
@@ -587,6 +590,66 @@ fn cache_invalidates_when_env_file_changes() {
 
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[test]
+fn reload_in_inactive_shell_reminds_for_disallowed_root() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+
+    let out = sb.run(&sb.root, &["reload", "--shell", "bash"], &[]);
+    assert!(out.status.success(), "{:?}", out);
+    assert!(
+        stderr(&out).contains("cade: disallowed - use \"cade allow\" to load this shell."),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+}
+
+#[test]
+fn reload_to_disallowed_root_unloads_and_reminds() {
+    let sb = Sandbox::new();
+    let allowed = sb.dir("allowed");
+    let blocked = sb.dir("blocked");
+    sb.write("allowed/.cade", "A=1\n");
+    sb.write("blocked/.cade", "B=2\n");
+    sb.allow(&allowed);
+    sb.write_snapshot("reload-disallowed", "PATH=/orig");
+
+    let allowed_str = allowed.to_string_lossy().to_string();
+    let watches = serde_json::json!({
+        "root": allowed_str,
+        "cade_paths": [allowed_str],
+        "files": []
+    })
+    .to_string();
+
+    let out = sb.run(
+        &blocked,
+        &["reload", "--shell", "bash"],
+        &[
+            ("__CADE_SESSION", "reload-disallowed"),
+            ("__CADE_SET", "A"),
+            ("__CADE_UNSET", ""),
+            ("__CADE_PURE", "0"),
+            ("__CADE_HOOKS", "[]"),
+            ("__CADE_LAYERS", allowed_str.as_str()),
+            ("__CADE_WATCHES", watches.as_str()),
+            ("A", "1"),
+        ],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    let err = stderr(&out);
+    assert!(
+        err.contains(&format!("cade: unloaded {allowed_str}.")),
+        "{err}"
+    );
+    assert!(
+        err.contains("cade: disallowed - use \"cade allow\" to load this shell."),
+        "{err}"
+    );
+    assert!(stdout(&out).contains("unset A;"), "{}", stdout(&out));
 }
 
 #[test]

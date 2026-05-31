@@ -17,6 +17,8 @@ pub struct Cade {
     state_dir: PathBuf,
 }
 
+const DISALLOWED_REMINDER: &str = "cade: disallowed - use \"cade allow\" to load this shell.";
+
 // Distinguishes reloads, so we don't double print "unloaded / loaded"
 #[derive(Clone, Copy)]
 pub enum Announce {
@@ -51,6 +53,10 @@ fn log_hook(hook: &InnerHook) {
             hook.content
         ),
     );
+}
+
+fn log_disallowed_reminder() {
+    verbosity::log(Verbosity::Normal, format_args!("{DISALLOWED_REMINDER}"));
 }
 
 fn log_key_list<I, S>(label: &str, keys: I)
@@ -446,10 +452,7 @@ impl Cade {
 
         let cade_files = self.approved_chain(&root)?;
         if cade_files.is_empty() {
-            bail!(
-                "cade is not permitted in {}; use 'cade allow'.",
-                root.display()
-            );
+            bail!("{DISALLOWED_REMINDER}");
         }
 
         let mut cade_layers = Vec::new();
@@ -744,6 +747,8 @@ impl Cade {
                             Announce::Loaded
                         },
                     )?;
+                } else if root.is_some() {
+                    log_disallowed_reminder();
                 }
             }
         } else {
@@ -773,10 +778,12 @@ impl Cade {
         root: &Option<PathBuf>,
         shell: &dyn crate::shells::ShellOutput,
     ) -> Result<()> {
-        if let Some(root) = root
-            && self.get_permission(root)?
-        {
-            self.do_activation(shell, Announce::Loaded)?;
+        if let Some(root) = root {
+            if self.get_permission(root)? {
+                self.do_activation(shell, Announce::Loaded)?;
+            } else {
+                log_disallowed_reminder();
+            }
         }
         Ok(())
     }
