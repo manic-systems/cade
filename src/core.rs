@@ -18,6 +18,7 @@ pub struct Cade {
 }
 
 const DISALLOWED_REMINDER: &str = "cade: disallowed - use \"cade allow\" to load this shell.";
+const DISALLOWED_ROOT_MARKER: &str = "__CADE_DISALLOWED_ROOT";
 
 // Distinguishes reloads, so we don't double print "unloaded / loaded"
 #[derive(Clone, Copy)]
@@ -57,6 +58,22 @@ fn log_hook(hook: &InnerHook) {
 
 fn log_disallowed_reminder() {
     verbosity::log(Verbosity::Normal, format_args!("{DISALLOWED_REMINDER}"));
+}
+
+fn mark_disallowed_root(root: &Path, shell: &dyn crate::shells::ShellOutput) {
+    let root = root.to_string_lossy();
+    if std::env::var(DISALLOWED_ROOT_MARKER).as_deref() == Ok(root.as_ref()) {
+        return;
+    }
+
+    print!("{}", shell.set_env(DISALLOWED_ROOT_MARKER, &root));
+    log_disallowed_reminder();
+}
+
+fn clear_disallowed_root_marker(shell: &dyn crate::shells::ShellOutput) {
+    if std::env::var_os(DISALLOWED_ROOT_MARKER).is_some() {
+        print!("{}", shell.unset_env(DISALLOWED_ROOT_MARKER));
+    }
 }
 
 fn log_key_list<I, S>(label: &str, keys: I)
@@ -454,6 +471,7 @@ impl Cade {
         if cade_files.is_empty() {
             bail!("{DISALLOWED_REMINDER}");
         }
+        clear_disallowed_root_marker(shell);
 
         let mut cade_layers = Vec::new();
         let mut all_watch_files: Vec<PathBuf> = Vec::new();
@@ -747,8 +765,10 @@ impl Cade {
                             Announce::Loaded
                         },
                     )?;
-                } else if root.is_some() {
-                    log_disallowed_reminder();
+                } else if let Some(root) = &root {
+                    mark_disallowed_root(root, shell);
+                } else {
+                    clear_disallowed_root_marker(shell);
                 }
             }
         } else {
@@ -782,8 +802,10 @@ impl Cade {
             if self.get_permission(root)? {
                 self.do_activation(shell, Announce::Loaded)?;
             } else {
-                log_disallowed_reminder();
+                mark_disallowed_root(root, shell);
             }
+        } else {
+            clear_disallowed_root_marker(shell);
         }
         Ok(())
     }
