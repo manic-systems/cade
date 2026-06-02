@@ -1287,7 +1287,7 @@ fn reload_within_same_cade_tree_stays_reload() {
     let err = stderr(&out);
     assert!(!err.contains("cade: unloaded"), "{err}");
     assert!(
-        err.contains(&format!("cade: reloaded {sub_str} (+1 parent layer(s)).")),
+        err.contains(&format!("cade: reloaded {sub_str} (2).")),
         "{err}"
     );
 }
@@ -1353,7 +1353,7 @@ fn slow_external_loader_prints_recent_stderr() {
     let sb = Sandbox::new();
     sb.write(
         ".cade",
-        "call sh -c \"for i in 1 2 3 4; do echo line$i >&2; sleep 0.01; done; echo SLOW=ok\"\n",
+        "call sh -c \"for i in 1 2 3 4 5 6; do echo line$i >&2; sleep 0.01; done; echo SLOW=ok\"\n",
     );
     sb.write_config("long_running_warning_ms = 1\n");
     sb.allow(&sb.root);
@@ -1363,9 +1363,9 @@ fn slow_external_loader_prints_recent_stderr() {
     assert!(out.status.success(), "{:?}", out);
     let err = stderr(&out);
     assert!(err.contains("recent output from call"), "{err}");
+    // the recent-output tail keeps the last five lines
     assert!(err.contains("line2"), "{err}");
-    assert!(err.contains("line3"), "{err}");
-    assert!(err.contains("line4"), "{err}");
+    assert!(err.contains("line6"), "{err}");
     assert!(!err.contains("line1"), "{err}");
 }
 
