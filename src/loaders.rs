@@ -360,14 +360,8 @@ pub(crate) fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
-pub fn load_env(path: &Path, filename: String) -> Result<EnvSet> {
-    let mut p = path.to_path_buf();
-    if filename.is_empty() {
-        p.push(".env");
-    } else {
-        p.push(filename);
-    }
-    let mut file = std::fs::File::open(p)
+pub fn load_env(path: &Path) -> Result<EnvSet> {
+    let mut file = std::fs::File::open(path)
         .with_context(|| format!("opening env file at {}", path.display()))?;
     let mut buf = String::new();
     file.read_to_string(&mut buf).context("reading env file")?;

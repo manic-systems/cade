@@ -7,6 +7,7 @@ mod envrc;
 mod envs;
 mod loaders;
 mod nix_dev_env;
+mod path_resolve;
 mod progress;
 mod shells;
 mod types;
@@ -130,7 +131,9 @@ fn try_main() -> Result<()> {
 
 fn main() {
     if let Err(e) = try_main() {
-        eprintln!("failed to {e}\n{}", e.root_cause());
+        // `{e:#}` prints the whole context chain, so which directive/path
+        // failed to resolve is not lost between top-level action and root cause
+        eprintln!("failed to {e:#}");
         std::process::exit(1);
     }
 }
