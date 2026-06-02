@@ -1,17 +1,9 @@
 {
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
-  inputs.fenix.url = "github:nix-community/fenix";
-  inputs.fenix.inputs.nixpkgs.follows = "nixpkgs";
-  inputs.systems.url = "github:nix-systems/default-linux";
-
+  # nixpkgs, systems, and fenix are pinned with tack (see ./.tack), not flake inputs
   outputs =
-    {
-      self,
-      nixpkgs,
-      systems,
-      fenix,
-    }:
+    { self }:
     let
+      inherit (import ./.tack) nixpkgs systems fenix;
       forAllSystems =
         function:
         nixpkgs.lib.genAttrs (import systems) (system: function nixpkgs.legacyPackages.${system} system);

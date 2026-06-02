@@ -1,0 +1,24 @@
+{
+  "fenix": {
+    "type": "github",
+    "owner": "nix-community",
+    "repo": "fenix",
+    "rev": "26ddad7ab014ac49bf02fc52e76f801963d684ae",
+    "narHash": "sha256-7JhNLs5O+FgXmU8FFP9DMug5xv3y4no+n4Kn94pkFGU=",
+    "lastModified": 1780485330
+  },
+  "nixpkgs": {
+    "type": "tarball",
+    "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1008784.4df1b885d76a/nixexprs.tar.xz",
+    "narHash": "sha256-bWVU1JP9hCYZzQjMLdMzr/FINF+UvpZGvCJcnNY616k=",
+    "lastModified": 1780362082
+  },
+  "systems": {
+    "type": "github",
+    "owner": "nix-systems",
+    "repo": "default-linux",
+    "rev": "31732fcf5e8fea42e59c2488ad31a0e651500f68",
+    "narHash": "sha256-12tWmuL2zgBgZkdoB6qXZsgJEH9LR3oUgpaQq2RbI80=",
+    "lastModified": 1689347949
+  }
+}
