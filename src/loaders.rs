@@ -17,7 +17,7 @@ pub(crate) use crate::nix_dev_env::{load_flake, load_shell};
 
 const DEFAULT_LONG_RUNNING_WARNING_AFTER: Duration = Duration::from_secs(5);
 const LONG_RUNNING_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const RECENT_OUTPUT_LINES: usize = 3;
+const RECENT_OUTPUT_LINES: usize = 5;
 const RECENT_OUTPUT_LINE_BYTES: usize = 4 * 1024;
 const DISPLAY_LINE_CHARS: usize = 200;
 
@@ -243,15 +243,19 @@ fn handle_stream_event(
     stdout: &mut Vec<u8>,
     stderr: &mut Vec<u8>,
     recent_stderr: &mut RecentLines,
-    progress: &mut LongRunningProgress<'_>,
+    progress: Option<&mut LongRunningProgress<'_>>,
 ) {
     match event.kind {
         StreamKind::Stdout => stdout.extend(event.data),
         StreamKind::Stderr => {
             stderr.extend(&event.data);
             recent_stderr.push(&event.data);
-            if progress.wants_live() {
-                progress.update(&recent_stderr.lines());
+            match progress {
+                // No spinner owns the terminal: drive the standalone widget.
+                Some(progress) if progress.wants_live() => progress.update(&recent_stderr.lines()),
+                Some(_) => {}
+                // Feed the active activation spinner instead.
+                None => crate::progress::set_recent(recent_stderr.lines()),
             }
         }
     }
@@ -279,7 +283,9 @@ pub(crate) fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut recent_stderr = RecentLines::new();
-    let mut progress = LongRunningProgress::new(what);
+    // The activation spinner, when present, subsumes the standalone widget.
+    let mut progress = (!crate::progress::is_active()).then(|| LongRunningProgress::new(what));
+    let mut warned = false;
     let start = Instant::now();
     let warn_after = long_running_warning_after();
     let status = loop {
@@ -287,11 +293,17 @@ pub(crate) fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
             break status;
         }
 
-        if !progress.shown && start.elapsed() >= warn_after {
-            progress.show(&recent_stderr.lines());
+        if !warned && start.elapsed() >= warn_after {
+            warned = true;
+            match &mut progress {
+                Some(progress) => progress.show(&recent_stderr.lines()),
+                None => crate::progress::mark_long_running(format!(
+                    "cade: {what} is taking a long time; press Ctrl-C to stop and inspect the command."
+                )),
+            }
         }
 
-        let wait_for = if progress.shown {
+        let wait_for = if warned {
             LONG_RUNNING_POLL_INTERVAL
         } else {
             warn_after
@@ -305,7 +317,7 @@ pub(crate) fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
                 &mut stdout,
                 &mut stderr,
                 &mut recent_stderr,
-                &mut progress,
+                progress.as_mut(),
             ),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
@@ -323,10 +335,12 @@ pub(crate) fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
             &mut stdout,
             &mut stderr,
             &mut recent_stderr,
-            &mut progress,
+            progress.as_mut(),
         );
     }
-    progress.finish(&recent_stderr.lines());
+    if let Some(mut progress) = progress {
+        progress.finish(&recent_stderr.lines());
+    }
 
     let out = Output {
         status,

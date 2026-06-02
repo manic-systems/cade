@@ -106,6 +106,16 @@ where
     }
 }
 
+/// Compact ` (n)` stack-depth badge for load/unload notices: the tip is the
+/// nth layer applied. Empty for a lone layer.
+fn layer_count_suffix(total: usize) -> String {
+    if total > 1 {
+        format!(" ({total})")
+    } else {
+        String::new()
+    }
+}
+
 pub struct RollupResult {
     pub env: HashMap<String, Vec<String>>,
     // vars that concatenate ambient values rather than clobbering them
@@ -1053,6 +1063,9 @@ impl Cade {
         client_id: Option<&str>,
         owner_pid: Option<u32>,
     ) -> Result<()> {
+        let root_hint = find_cade_root(&self.cwd).unwrap_or_else(|| self.cwd.clone());
+        let spinner = crate::progress::start(&root_hint.display().to_string());
+
         let (activation_env, session, new_session) = self.activation_env_with_snapshot()?;
         let plan = self.activation_plan(Some(&session))?;
         self.refresh_session_holders(&session, client_id, owner_pid);
@@ -1121,20 +1134,12 @@ impl Cade {
         let watches_json = serde_json::to_string(&watch_state).unwrap_or_default();
         print!("{}", shell.set_env("__CADE_WATCHES", &watches_json));
 
-        let extra = layer_paths.len().saturating_sub(1);
-        verbosity::log(
-            Verbosity::Normal,
-            format_args!(
-                "cade: {} {}{}.",
-                announce.verb(),
-                plan.root.display(),
-                if extra > 0 {
-                    format!(" (+{extra} parent layer(s))")
-                } else {
-                    String::new()
-                }
-            ),
-        );
+        spinner.success(&format!(
+            "cade: {} {}{}.",
+            announce.verb(),
+            plan.root.display(),
+            layer_count_suffix(layer_paths.len())
+        ));
         log_key_list("set", set_keys);
         log_key_list("cleared", &rollup.unset);
 
@@ -1183,17 +1188,13 @@ impl Cade {
         {
             let paths: Vec<&str> = layers.split('\x1F').filter(|s| !s.is_empty()).collect();
             if let Some(tip) = paths.last() {
-                let extra = paths.len().saturating_sub(1);
                 verbosity::log(
                     Verbosity::Normal,
                     format_args!(
-                        "cade: unloaded {}{}.",
+                        "{}cade: unloaded {}{}.",
+                        crate::progress::eviction_marker(),
                         tip,
-                        if extra > 0 {
-                            format!(" (+{extra} parent layer(s))")
-                        } else {
-                            String::new()
-                        }
+                        layer_count_suffix(paths.len())
                     ),
                 );
             }

@@ -47,6 +47,7 @@ pub fn enabled(level: Verbosity) -> bool {
 
 pub fn log(level: Verbosity, args: fmt::Arguments<'_>) {
     if enabled(level) {
-        eprintln!("{args}");
+        // Route through the spinner so messages never collide with a live render.
+        crate::progress::log_line(&args.to_string());
     }
 }

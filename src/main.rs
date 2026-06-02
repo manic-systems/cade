@@ -7,6 +7,7 @@ mod envrc;
 mod envs;
 mod loaders;
 mod nix_dev_env;
+mod progress;
 mod shells;
 mod types;
 mod verbosity;
