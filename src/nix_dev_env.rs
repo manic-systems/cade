@@ -154,6 +154,11 @@ fn load_nix_dev_env(
     let stdout = captured_env_stdout(&stdout, what)?;
     let mut env = env_set_from_captured_env(stdout, &previous_env)?;
     if let Some(profile) = profile {
+        // `nix develop --profile` already registered the dev-shell closure as a
+        // gc root, so the per-path store list is redundant on this (cold) path
+        // and is dropped to skip cade's manual add-root loop. The cache's warm
+        // path has no profile, so it re-derives these from the env values to
+        // root them itself (see reusable_cached_layer).
         env.nix_store_paths.clear();
         wipe_profile_history(profile);
     }
@@ -241,6 +246,9 @@ fn wipe_profile_history(profile: &Path) {
     let status = Command::new("nix")
         .args(["profile", "wipe-history", "--profile"])
         .arg(profile)
+        // Like nix-store --add-root, keep nix's output off cade's stdout, which
+        // on the activation path is the shell-directive stream the shell evals.
+        .stdout(std::process::Stdio::null())
         .status();
     match status {
         Ok(status) if status.success() => {}
