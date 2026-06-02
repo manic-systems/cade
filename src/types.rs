@@ -19,7 +19,11 @@ pub struct CadeLayer {
     pub clears: HashSet<String>,
     #[serde(default)]
     pub concat: HashSet<String>,
-    #[serde(default)]
+    /// Store paths to gc-root on the cold (just-loaded) path: the env-referenced
+    /// paths a `nix develop --profile` did not already root. Recomputed on every
+    /// load and never trusted across the cache boundary (the warm path has no
+    /// profile and re-derives the full set from env values), so it is not cached.
+    #[serde(skip)]
     pub nix_store_paths: Vec<String>,
 }
 

@@ -334,17 +334,6 @@ fn stable_hash_hex(text: &str) -> String {
     format!("{hash:016x}")
 }
 
-fn layer_uses_nix_loader(keywords: &[Keyword]) -> bool {
-    keywords.iter().any(|kw| {
-        matches!(
-            kw,
-            Keyword::Load(
-                Loadable::Default | Loadable::Flake(_) | Loadable::Shell(_) | Loadable::Envrc(_)
-            )
-        )
-    })
-}
-
 /// Read a unit-separated key list
 fn read_keylist(var: &str) -> Vec<String> {
     std::env::var(var)
@@ -862,6 +851,10 @@ impl Cade {
                 .arg(&root)
                 .args(["--indirect", "-r"])
                 .arg(&store_path)
+                // nix-store prints the created root path to stdout, which during
+                // `enter`/`hook` is the shell-directive stream the shell evals,
+                // and during `export` is parsed output. Keep it off both.
+                .stdout(std::process::Stdio::null())
                 .status()
             {
                 Ok(status) => status,
