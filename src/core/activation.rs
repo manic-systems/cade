@@ -118,8 +118,8 @@ impl Cade {
     /// (enforced by `get_cached_layer`) and every nix store path it references
     /// still exists. Nix loaders are cached like any other layer, but their
     /// outputs can be collected between sessions while the inputs (and so the
-    /// token) are unchanged; a missing path forces a reload that re-realizes and
-    /// re-roots them.
+    /// token) are unchanged; a missing path forces a reload that re-realizes the
+    /// closure (via the nix profile) and re-roots it.
     ///
     /// The returned store paths are derived from the layer's env values rather
     /// than its cached `nix_store_paths`: the warm path has no

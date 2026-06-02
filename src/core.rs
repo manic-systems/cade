@@ -334,6 +334,28 @@ fn stable_hash_hex(text: &str) -> String {
     format!("{hash:016x}")
 }
 
+/// Store paths already rooted under a session dir, read from the gc-root
+/// symlinks' targets so repeated rooting (e.g. one per direnv export) is a
+/// no-op without spawning nix-store.
+fn rooted_store_paths(session_dir: &Path) -> HashSet<String> {
+    let mut rooted = HashSet::new();
+    let Ok(entries) = std::fs::read_dir(session_dir) else {
+        return rooted;
+    };
+    for entry in entries.flatten() {
+        let is_symlink = entry.file_type().map(|t| t.is_symlink()).unwrap_or(false);
+        if !is_symlink {
+            continue;
+        }
+        if let Ok(target) = std::fs::read_link(entry.path())
+            && let Some(target) = target.to_str()
+        {
+            rooted.insert(target.to_string());
+        }
+    }
+    rooted
+}
+
 /// Read a unit-separated key list
 fn read_keylist(var: &str) -> Vec<String> {
     std::env::var(var)
@@ -825,55 +847,59 @@ impl Cade {
         }
         let session_dir = self.shell_gc_root_session_dir(session);
 
-        let mut unique = paths.to_vec();
-        unique.sort_unstable();
-        unique.dedup();
+        // Skip paths already rooted in this session, matched by symlink target
+        // rather than name: a batched add-root names its roots positionally, so
+        // name matching would re-root every call and spawn nix-store on the
+        // per-prompt direnv export path.
+        let already_rooted = rooted_store_paths(&session_dir);
 
-        for store_path in unique {
-            let path = Path::new(&store_path);
-            if !path.exists() {
+        let mut seen = HashSet::new();
+        let mut to_root: Vec<String> = Vec::new();
+        for store_path in paths {
+            if !seen.insert(store_path.as_str()) || already_rooted.contains(store_path) {
+                continue;
+            }
+            if !Path::new(store_path).exists() {
                 verbosity::log(
                     Verbosity::Trace,
                     format_args!("cade: skipping missing nix store path {store_path}."),
                 );
                 continue;
             }
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            let root = session_dir.join(name);
-            if std::fs::symlink_metadata(&root).is_ok() {
-                continue;
-            }
+            to_root.push(store_path.clone());
+        }
+        if to_root.is_empty() {
+            return;
+        }
+        to_root.sort_unstable();
 
-            let status = match Command::new("nix-store")
-                .args(["--add-root"])
-                .arg(&root)
-                .args(["--indirect", "-r"])
-                .arg(&store_path)
-                // nix-store prints the created root path to stdout, which during
-                // `enter`/`hook` is the shell-directive stream the shell evals,
-                // and during `export` is parsed output. Keep it off both.
-                .stdout(std::process::Stdio::null())
-                .status()
-            {
-                Ok(status) => status,
-                Err(e) => {
-                    verbosity::log(
-                        Verbosity::Normal,
-                        format_args!("cade: failed to add nix gc root for {store_path}: {e}."),
-                    );
-                    continue;
-                }
-            };
-            if !status.success() {
-                verbosity::log(
-                    Verbosity::Normal,
-                    format_args!(
-                        "cade: nix-store failed to add gc root for {store_path} ({status})."
-                    ),
-                );
-            }
+        // One call roots the whole set (NAME, NAME-2, ...). The base name is
+        // keyed on the set so re-rooting the same set reuses the same names,
+        // while a different set never reassigns an existing root's target.
+        let base = session_dir.join(format!("cade-{}", stable_hash_hex(&to_root.join("\n"))));
+        let status = Command::new("nix-store")
+            .args(["--add-root"])
+            .arg(&base)
+            .args(["--indirect", "-r"])
+            .args(&to_root)
+            // nix-store prints the created root paths to stdout, which during
+            // `enter`/`hook` is the shell-directive stream the shell evals, and
+            // during `export` is parsed output. Keep it off both.
+            .stdout(std::process::Stdio::null())
+            .status();
+        match status {
+            Ok(status) if status.success() => {}
+            Ok(status) => verbosity::log(
+                Verbosity::Normal,
+                format_args!(
+                    "cade: nix-store failed to add {} gc root(s) ({status}).",
+                    to_root.len()
+                ),
+            ),
+            Err(e) => verbosity::log(
+                Verbosity::Normal,
+                format_args!("cade: failed to add nix gc roots: {e}."),
+            ),
         }
     }
 
@@ -1909,5 +1935,25 @@ mod tests {
         );
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rooted_store_paths_collects_symlink_targets_only() {
+        let dir = std::env::temp_dir().join(format!("cade-rooted-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // a gc-root-style symlink pointing straight at a store path
+        let target = format!("/nix/store/{}-pkg", "a".repeat(32));
+        std::os::unix::fs::symlink(&target, dir.join("cade-deadbeef")).unwrap();
+        // a regular file and a subdir (holders/, profiles/, .last-used) must be
+        // ignored, not mistaken for roots
+        std::fs::write(dir.join(".last-used"), b"").unwrap();
+        std::fs::create_dir_all(dir.join("profiles")).unwrap();
+
+        let rooted = rooted_store_paths(&dir);
+        assert!(rooted.contains(&target));
+        assert_eq!(rooted.len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
