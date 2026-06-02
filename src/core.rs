@@ -1,4 +1,7 @@
 mod activation;
+mod participants;
+
+use participants::{find_cade_root, participant_dirs};
 
 use crate::{
     config,
@@ -11,7 +14,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::named_params;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     process::Command,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -106,14 +109,34 @@ where
     }
 }
 
-/// Compact ` (n)` stack-depth badge for load/unload notices: the tip is the
-/// nth layer applied. Empty for a lone layer.
+/// ` (n)` stack-depth badge; empty for a lone layer
 fn layer_count_suffix(total: usize) -> String {
     if total > 1 {
         format!(" ({total})")
     } else {
         String::new()
     }
+}
+
+/// yellow `[←]` unloaded notice; `total` sizes the badge
+fn announce_unloaded(dir: &str, total: usize) {
+    verbosity::log(
+        Verbosity::Normal,
+        format_args!(
+            "{}cade: unloaded {}{}.",
+            crate::progress::eviction_marker(),
+            dir,
+            layer_count_suffix(total)
+        ),
+    );
+}
+
+/// green `[→]` loaded notice for an in-place single-layer change
+fn announce_loaded(dir: &str) {
+    verbosity::log(
+        Verbosity::Normal,
+        format_args!("{}cade: loaded {}.", crate::progress::load_marker(), dir),
+    );
 }
 
 pub struct RollupResult {
@@ -242,29 +265,12 @@ struct WatchState {
     files: Vec<WatchEntry>,
 }
 
-fn has_config(dir: &Path) -> bool {
-    std::fs::exists(dir.join(".cade")).unwrap_or(false)
-        || std::fs::exists(dir.join(".envrc")).unwrap_or(false)
-}
-
 // Falls back to an implicit `load envrc` when a dir has no .cade.
 fn config_keywords(dir: &Path) -> Result<Vec<Keyword>> {
     if std::fs::exists(dir.join(".cade")).unwrap_or(false) {
         read_cade(&dir.join(".cade")).context("reading cade file")
     } else {
         Ok(vec![Keyword::Load(Loadable::Envrc(String::new()))])
-    }
-}
-
-fn find_cade_root(start: &Path) -> Option<PathBuf> {
-    let mut dir = start.to_path_buf();
-    loop {
-        if has_config(&dir) {
-            return Some(dir);
-        }
-        if !dir.pop() {
-            return None;
-        }
     }
 }
 
@@ -912,22 +918,22 @@ impl Cade {
         if !permission {
             return self.set_permission(&root, false);
         }
-        let chain = collect_cade_paths(&root); // tip-first contiguous config dirs
+        // participants may be non-contiguous, so gap-fill walks them, not raw parents
+        let chain = participant_dirs(&root);
         if chain.is_empty() {
-            // if there's no .cade, ignore the request
             return Ok(());
         }
-        // the base is the nearest already-approved ancestor; fill from tip to it
+        // fill from the tip up to the nearest already-approved participant
         let mut base = None;
         for (i, dir) in chain.iter().enumerate() {
-            if self.get_permission(Path::new(dir))? {
+            if self.get_permission(dir)? {
                 base = Some(i);
                 break;
             }
         }
         let upto = base.unwrap_or(1);
         for dir in &chain[0..upto] {
-            self.record_permission(Path::new(dir), true)?;
+            self.record_permission(dir, true)?;
         }
         verbosity::log(
             Verbosity::Normal,
@@ -1059,7 +1065,7 @@ impl Cade {
     pub fn do_activation(
         &mut self,
         shell: &dyn ShellOutput,
-        announce: Announce,
+        announce: Option<Announce>,
         client_id: Option<&str>,
         owner_pid: Option<u32>,
     ) -> Result<()> {
@@ -1130,16 +1136,19 @@ impl Cade {
         let hooks_json = serde_json::to_string(&rollup.hooks).unwrap_or_default();
         print!("{}", shell.set_env("__CADE_HOOKS", &hooks_json));
 
-        let watch_state = build_watch_state(&plan.root, &plan.all_watch_files);
+        let watch_state = build_watch_state(&plan.root, layer_paths.clone(), &plan.all_watch_files);
         let watches_json = serde_json::to_string(&watch_state).unwrap_or_default();
         print!("{}", shell.set_env("__CADE_WATCHES", &watches_json));
 
-        spinner.success(&format!(
-            "cade: {} {}{}.",
-            announce.verb(),
-            plan.root.display(),
-            layer_count_suffix(layer_paths.len())
-        ));
+        match announce {
+            Some(announce) => spinner.success(&format!(
+                "cade: {} {}{}.",
+                announce.verb(),
+                plan.root.display(),
+                layer_count_suffix(layer_paths.len())
+            )),
+            None => spinner.done(),
+        }
         log_key_list("set", set_keys);
         log_key_list("cleared", &rollup.unset);
 
@@ -1182,21 +1191,10 @@ impl Cade {
             .and_then(|h| serde_json::from_str(&h).ok())
             .unwrap_or_default();
 
-        if announce
-            && verbosity::enabled(Verbosity::Normal)
-            && let Some(layers) = &layers
-        {
+        if announce && let Some(layers) = &layers {
             let paths: Vec<&str> = layers.split('\x1F').filter(|s| !s.is_empty()).collect();
             if let Some(tip) = paths.last() {
-                verbosity::log(
-                    Verbosity::Normal,
-                    format_args!(
-                        "{}cade: unloaded {}{}.",
-                        crate::progress::eviction_marker(),
-                        tip,
-                        layer_count_suffix(paths.len())
-                    ),
-                );
+                announce_unloaded(tip, paths.len());
             }
         }
 
@@ -1287,86 +1285,124 @@ impl Cade {
         client_id: Option<&str>,
         owner_pid: Option<u32>,
     ) -> Result<()> {
-        let root = find_cade_root(&self.cwd);
+        let cwd = self.cwd.clone();
+        let (active, disallowed_tip) = self.resolve_active(&cwd)?;
+        let new_root = active.first().cloned();
+        let new_set: BTreeSet<String> = active
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
         let is_active = std::env::var("__CADE_LAYERS").is_ok();
 
-        if is_active {
-            if let Ok(session) = std::env::var("__CADE_SESSION")
-                && is_valid_session(&session)
-            {
-                self.refresh_session_holders(&session, client_id, owner_pid);
+        // not active yet
+        if !is_active {
+            if new_root.is_some() {
+                self.do_activation(shell, Some(Announce::Loaded), client_id, owner_pid)?;
+                self.sync_disallowed_prompt(disallowed_tip.as_deref(), shell);
+            } else {
+                self.sync_disallowed_prompt(disallowed_tip.as_deref(), shell);
             }
-            // reload/restore only when the active state is stale
-            let watch_state = std::env::var("__CADE_WATCHES")
-                .ok()
-                .and_then(|w| serde_json::from_str::<WatchState>(&w).ok());
-            let stale = watch_state
-                .as_ref()
-                .map(|state| watches_are_stale(state, root.as_deref()))
-                .unwrap_or(true);
-
-            // Check whether any layer in the active chain lost permission
-            // (e.g. disallow a parent dir while in child dir).
-            let permission_revoked = watch_state
-                .as_ref()
-                .map(|state| {
-                    state
-                        .cade_paths
-                        .iter()
-                        .any(|dir| !self.get_permission(Path::new(dir)).unwrap_or(false))
-                })
-                .unwrap_or(false);
-
-            let root_permitted = root
-                .as_ref()
-                .and_then(|r| self.get_permission(r).ok())
-                .unwrap_or(false);
-
-            if stale || permission_revoked {
-                let reactivating = !permission_revoked && root_permitted;
-                let same_tree = match (&watch_state, &root) {
-                    (Some(state), Some(r)) if reactivating => roots_in_same_cade_tree(state, r),
-                    _ => false,
-                };
-                self.do_restore(
-                    shell,
-                    !reactivating,
-                    !reactivating || !same_tree,
-                    client_id,
-                    owner_pid,
-                )?;
-                if reactivating {
-                    self.do_activation(
-                        shell,
-                        if same_tree {
-                            Announce::Reloaded
-                        } else {
-                            Announce::Loaded
-                        },
-                        client_id,
-                        owner_pid,
-                    )?;
-                } else if let Some(root) = &root {
-                    mark_disallowed_root(root, shell);
-                } else {
-                    clear_disallowed_root_marker(shell);
-                }
-            }
-        } else {
-            self.activate_if_permitted(&root, shell, client_id, owner_pid)?;
+            return Ok(());
         }
 
+        if let Ok(session) = std::env::var("__CADE_SESSION")
+            && is_valid_session(&session)
+        {
+            self.refresh_session_holders(&session, client_id, owner_pid);
+        }
+
+        let state = std::env::var("__CADE_WATCHES")
+            .ok()
+            .and_then(|w| serde_json::from_str::<WatchState>(&w).ok());
+        let old_set: BTreeSet<String> = state
+            .as_ref()
+            .map(|s| s.cade_paths.iter().cloned().collect())
+            .unwrap_or_default();
+        let old_root = state.as_ref().map(|s| s.root.clone());
+        let files_stale = state.as_ref().map(files_changed).unwrap_or(true);
+
+        // unchanged; only keep the disallowed-child prompt in sync
+        if new_set == old_set && !files_stale {
+            self.sync_disallowed_prompt(disallowed_tip.as_deref(), shell);
+            return Ok(());
+        }
+
+        match &new_root {
+            // left every approved layer
+            None => {
+                self.do_restore(shell, true, true, client_id, owner_pid)?;
+            }
+            Some(new_root) => {
+                // The transition is two orthogonal decisions, not four topologies:
+                //   - the old tip leaving (restore announces it) iff it is no
+                //     longer in the new set;
+                //   - the reactivation verb: reloaded if the root is unchanged,
+                //     silent if we only dropped to a tip that already composed,
+                //     loaded otherwise (a genuinely new tip).
+                // The parents in between join/leave via the set-difference loop;
+                // it skips the two tips, which the restore and activation own.
+                let new_tip = new_root.to_string_lossy().to_string();
+                let old_tip = old_root.as_deref();
+
+                let unload_old_tip = old_tip.is_none_or(|t| !new_set.contains(t));
+                let verb = if old_tip == Some(new_tip.as_str()) {
+                    Some(Announce::Reloaded)
+                } else if old_set.contains(&new_tip) {
+                    None // dropped to a tip that already composed
+                } else {
+                    Some(Announce::Loaded)
+                };
+
+                self.do_restore(shell, false, unload_old_tip, client_id, owner_pid)?;
+                for dir in old_set.difference(&new_set) {
+                    if Some(dir.as_str()) != old_tip {
+                        announce_unloaded(dir, 1);
+                    }
+                }
+                for dir in new_set.difference(&old_set) {
+                    if *dir != new_tip {
+                        announce_loaded(dir);
+                    }
+                }
+                self.do_activation(shell, verb, client_id, owner_pid)?;
+            }
+        }
+        self.sync_disallowed_prompt(disallowed_tip.as_deref(), shell);
         Ok(())
     }
 
-    /// Layers to compose, returned parent-first
-    fn approved_chain(&mut self, root: &Path) -> Result<Vec<(PathBuf, Vec<Keyword>)>> {
-        let mut chain = Vec::new();
-        for dir in collect_cade_paths(root) {
-            let path = PathBuf::from(&dir);
-            if !self.get_permission(&path)? {
+    /// prompt to allow a disallowed tip, or clear a stale prompt; leaves the parent env alone
+    fn sync_disallowed_prompt(&self, disallowed_tip: Option<&Path>, shell: &dyn ShellOutput) {
+        match disallowed_tip {
+            Some(tip) => mark_disallowed_root(tip, shell),
+            None => clear_disallowed_root_marker(shell),
+        }
+    }
+
+    /// The anchored-permission rule, owned in one place: from a tip-first
+    /// participant list, keep the contiguous approved run anchored on the
+    /// deepest approved participant (a disallowed tip is skipped, not refused)
+    /// and cap at the first unapproved dir above it. Stays tip-first.
+    fn approved_participants(&mut self, participants: &[PathBuf]) -> Result<Vec<PathBuf>> {
+        let mut active = Vec::new();
+        let mut anchored = false;
+        for p in participants {
+            if self.get_permission(p)? {
+                anchored = true;
+                active.push(p.clone());
+            } else if anchored {
                 break;
             }
+        }
+        Ok(active)
+    }
+
+    /// layers to compose, parent-first; anchors on the deepest approved participant
+    /// (a disallowed tip is skipped, not refused) and caps at the first unapproved above it
+    fn approved_chain(&mut self, root: &Path) -> Result<Vec<(PathBuf, Vec<Keyword>)>> {
+        let approved = self.approved_participants(&participant_dirs(root))?;
+        let mut chain = Vec::with_capacity(approved.len());
+        for path in approved {
             let keywords = config_keywords(&path)?;
             chain.push((path, keywords));
         }
@@ -1374,23 +1410,16 @@ impl Cade {
         Ok(chain)
     }
 
-    fn activate_if_permitted(
-        &mut self,
-        root: &Option<PathBuf>,
-        shell: &dyn ShellOutput,
-        client_id: Option<&str>,
-        owner_pid: Option<u32>,
-    ) -> Result<()> {
-        if let Some(root) = root {
-            if self.get_permission(root)? {
-                self.do_activation(shell, Announce::Loaded, client_id, owner_pid)?;
-            } else {
-                mark_disallowed_root(root, shell);
-            }
-        } else {
-            clear_disallowed_root_marker(shell);
-        }
-        Ok(())
+    /// participants that will compose at `cwd`, tip-first (anchored on the deepest
+    /// approved), plus the deepest participant if it is disallowed (to prompt for it)
+    fn resolve_active(&mut self, cwd: &Path) -> Result<(Vec<PathBuf>, Option<PathBuf>)> {
+        let participants = participant_dirs(cwd);
+        let active = self.approved_participants(&participants)?;
+        let disallowed_tip = match participants.first() {
+            Some(tip) if active.first() != Some(tip) => Some(tip.clone()),
+            _ => None,
+        };
+        Ok((active, disallowed_tip))
     }
 
     pub fn do_status(&mut self) -> Result<()> {
@@ -1403,8 +1432,8 @@ impl Cade {
                 println!("root:    {}", r.display());
                 println!("layers (inner \u{2192} outer):");
                 let mut capped = false;
-                for dir in collect_cade_paths(r) {
-                    let allowed = self.get_permission(Path::new(&dir))?;
+                for dir in participant_dirs(r) {
+                    let allowed = self.get_permission(&dir)?;
                     if !allowed {
                         capped = true;
                     }
@@ -1415,7 +1444,7 @@ impl Cade {
                     } else {
                         "allowed, composed"
                     };
-                    println!("  {dir}  [{mark}]");
+                    println!("  {}  [{mark}]", dir.display());
                 }
             }
             None => println!("root:    none (not in a cade project)"),
@@ -1656,6 +1685,7 @@ fn load_single_layer(
             Clear(vars) => Ok(CadeAction::Clear(vars.clone())),
             Concat(vars) => Ok(CadeAction::Concat(vars.clone())),
             Set(env) => Ok(CadeAction::Environ(env.clone())),
+            // affects only chain construction, not the loaded environment
             Watch(_) => continue,
         }?;
         layer.push_action(act);
@@ -1712,8 +1742,11 @@ fn compute_layer_key(watched_files: &[PathBuf]) -> String {
     parts.join("\n")
 }
 
-fn build_watch_state(root: &Path, watched_files: &[PathBuf]) -> WatchState {
-    let cade_paths = collect_cade_paths(root);
+fn build_watch_state(
+    root: &Path,
+    cade_paths: Vec<String>,
+    watched_files: &[PathBuf],
+) -> WatchState {
     let files = watched_files
         .iter()
         .filter_map(|f| {
@@ -1733,22 +1766,8 @@ fn build_watch_state(root: &Path, watched_files: &[PathBuf]) -> WatchState {
     }
 }
 
-/// check if watched files are stale, current_root is the innermost .cade
-fn watches_are_stale(state: &WatchState, current_root: Option<&Path>) -> bool {
-    let current_root = match current_root {
-        Some(r) => r,
-        None => return true, // left the cade tree
-    };
-    if current_root.to_string_lossy() != state.root {
-        return true;
-    }
-
-    // a .cade added/removed in the ancestry changes the layer set
-    if collect_cade_paths(current_root) != state.cade_paths {
-        return true;
-    }
-
-    // check file mtimes/sizes
+/// any watched file changed (mtime, size, or gone); the layer-set change is checked separately
+fn files_changed(state: &WatchState) -> bool {
     for entry in &state.files {
         match std::fs::metadata(&entry.path) {
             Ok(meta) => {
@@ -1759,31 +1778,7 @@ fn watches_are_stale(state: &WatchState, current_root: Option<&Path>) -> bool {
             Err(_) => return true, // file disappeared
         }
     }
-
     false
-}
-
-fn roots_in_same_cade_tree(state: &WatchState, current_root: &Path) -> bool {
-    let current = current_root.to_string_lossy();
-    state.root == current
-        || state.cade_paths.iter().any(|p| p == current.as_ref())
-        || collect_cade_paths(current_root)
-            .iter()
-            .any(|p| p == &state.root)
-}
-
-/// chain of .cade or .envrcs from root upward (tip-first)
-fn collect_cade_paths(root: &Path) -> Vec<String> {
-    let mut paths = Vec::new();
-    let mut dir = Some(root.to_path_buf());
-    while let Some(d) = dir {
-        if !has_config(&d) {
-            break;
-        }
-        paths.push(d.to_string_lossy().to_string());
-        dir = d.parent().map(Path::to_path_buf);
-    }
-    paths
 }
 
 fn mtime_nanos(meta: &std::fs::Metadata) -> u128 {
@@ -1902,22 +1897,6 @@ mod tests {
         // inherited parent-layer var survives pure (pure only discards ambient)
         assert_eq!(r.env["FROM_PARENT"], vec!["kept"]);
         assert_eq!(r.env["FROM_CHILD"], vec!["c"]);
-    }
-
-    #[test]
-    fn find_cade_root_walks_up_to_innermost() {
-        let base = std::env::temp_dir().join(format!("cade-root-{}", std::process::id()));
-        let nested = base.join("a/b/c");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(base.join("a").join(".cade"), b"").unwrap();
-
-        // from c (no .cade), the innermost ancestor with .cade is a/
-        assert_eq!(find_cade_root(&nested), Some(base.join("a")));
-        // adding a deeper .cade changes the root
-        std::fs::write(base.join("a/b").join(".cade"), b"").unwrap();
-        assert_eq!(find_cade_root(&nested), Some(base.join("a/b")));
-
-        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
