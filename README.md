@@ -219,16 +219,22 @@ disinherit
 load
 load flake
 load flake devShells.default
+# a directed flake elsewhere as `path[#output]`. relative paths resolve against
+# this .cade's dir; `..`, absolute paths, and a leading `~/` are all allowed
+load flake ../svc
+load flake ./sub#dev
 
-# load from shell.nix
+# load from shell.nix (path resolves against this .cade's dir; ../, abs, ~/ ok)
 load shell
 load shell custom-shell.nix
+load shell ../tools/shell.nix
 
-# load from .env file
+# load from .env file (path resolves against this .cade's dir)
 load env
 load env .env.development
+load env ../shared/.env
 
-# load a direnv .envrc (declarative subset only)
+# load a direnv .envrc (declarative subset only; path resolves against this dir)
 load envrc
 load envrc .envrc.local
 

@@ -1635,6 +1635,91 @@ impl CadeLayer {
     }
 }
 
+/// what to actually load, with paths already resolved
+enum LoadRun {
+    Flake(crate::nix_dev_env::FlakeTarget),
+    Shell(PathBuf),
+    Env(PathBuf),
+    Envrc(PathBuf),
+}
+
+/// single source of truth for a `Load` directive: resolve once, then both the
+/// load path and the watch path read the same target and file set
+struct ResolvedLoad {
+    run: LoadRun,
+    /// profile/gc-root key for this resolved target
+    spec: String,
+    /// files whose change reloads this layer
+    watch: Vec<PathBuf>,
+}
+
+impl Loadable {
+    /// effective single-file arg for a non-flake directive, applying the
+    /// empty-arg default. the one place these defaults live. flake returns
+    /// `None` (its target is a dir of two files, not a single path)
+    fn file_arg(&self) -> Option<&str> {
+        match self {
+            Loadable::Shell(f) => Some(if f.is_empty() { "./shell.nix" } else { f }),
+            Loadable::Env(f) => Some(if f.is_empty() { ".env" } else { f }),
+            Loadable::Envrc(f) => Some(crate::envrc::envrc_arg(f)),
+            Loadable::Default | Loadable::Flake(_) => None,
+        }
+    }
+
+    /// resolve this directive against `layer_dir` into one target that owns both
+    /// the canonical load path and the watch identity. paths resolve canonically
+    /// when they exist and lexically when not, so a not-yet-created (possibly
+    /// directed) target still watches its real files; the loaders surface a
+    /// genuinely missing target as an error at load time. spec and watch both
+    /// key off the resolved path, so the same physical file spelled differently
+    /// (relative, `..`, or a symlink) shares one profile/gc-root identity
+    fn resolve(&self, layer_dir: &Path) -> ResolvedLoad {
+        use crate::path_resolve::resolve_for_watch;
+        match self {
+            Loadable::Default | Loadable::Flake(_) => {
+                let arg = match self {
+                    Loadable::Flake(a) => Some(a.as_str()),
+                    _ => None,
+                };
+                // resolve_flake_target resolves the (possibly directed) dir for
+                // watch, deferring a missing dir to `nix develop` at load time
+                let target = crate::nix_dev_env::resolve_flake_target(layer_dir, arg);
+                let watch = vec![target.cwd.join("flake.nix"), target.cwd.join("flake.lock")];
+                ResolvedLoad {
+                    spec: target.spec.clone(),
+                    watch,
+                    run: LoadRun::Flake(target),
+                }
+            }
+            Loadable::Shell(_) => {
+                let file = resolve_for_watch(layer_dir, self.file_arg().unwrap());
+                ResolvedLoad {
+                    spec: format!("shell:{}", file.display()),
+                    watch: vec![file.clone()],
+                    run: LoadRun::Shell(file),
+                }
+            }
+            Loadable::Env(_) => {
+                let file = resolve_for_watch(layer_dir, self.file_arg().unwrap());
+                ResolvedLoad {
+                    spec: format!("env:{}", file.display()),
+                    watch: vec![file.clone()],
+                    run: LoadRun::Env(file),
+                }
+            }
+            Loadable::Envrc(_) => {
+                let path = resolve_for_watch(layer_dir, self.file_arg().unwrap());
+                let watch = crate::envrc::envrc_watch_files(&path);
+                ResolvedLoad {
+                    spec: format!("envrc:{}", path.display()),
+                    watch,
+                    run: LoadRun::Envrc(path),
+                }
+            }
+        }
+    }
+}
+
 fn load_single_layer(
     layer_count: usize,
     path: &Path,
@@ -1644,7 +1729,6 @@ fn load_single_layer(
 ) -> Result<CadeLayer> {
     use crate::loaders::*;
     use Keyword::*;
-    use Loadable::*;
 
     let mut layer = CadeLayer::new(layer_count, path);
     for (action_index, kw) in keywords.iter().enumerate() {
@@ -1653,53 +1737,21 @@ fn load_single_layer(
             Call(argv) => call(path, argv.clone())
                 .context("calling process")
                 .map(CadeAction::Environ),
-            Load(loadable) => match loadable {
-                Default => {
-                    let profile = session.and_then(|session| {
-                        cade.nix_profile_path(session, layer_count, action_index, path, "flake")
-                    });
-                    load_flake(path, None, profile).context("loading flake")
+            Load(loadable) => {
+                let resolved = loadable.resolve(path);
+                let profile = session.and_then(|session| {
+                    cade.nix_profile_path(session, layer_count, action_index, path, &resolved.spec)
+                });
+                match resolved.run {
+                    LoadRun::Flake(target) => load_flake(&target, profile).context("loading flake"),
+                    LoadRun::Shell(file) => load_shell(&file, profile).context("loading shell"),
+                    LoadRun::Env(file) => load_env(&file).context("loading env file"),
+                    LoadRun::Envrc(p) => {
+                        crate::envrc::load_envrc(&p, profile).context("loading .envrc")
+                    }
                 }
-                Flake(output) => {
-                    let profile = session.and_then(|session| {
-                        cade.nix_profile_path(
-                            session,
-                            layer_count,
-                            action_index,
-                            path,
-                            &format!("flake:{output}"),
-                        )
-                    });
-                    load_flake(path, Some(output.clone()), profile).context("loading flake")
-                }
-                Shell(filename) => {
-                    let profile = session.and_then(|session| {
-                        cade.nix_profile_path(
-                            session,
-                            layer_count,
-                            action_index,
-                            path,
-                            &format!("shell:{filename}"),
-                        )
-                    });
-                    load_shell(path, filename.clone(), profile).context("loading shell")
-                }
-                Env(filename) => load_env(path, filename.clone()).context("loading env file"),
-                Envrc(filename) => {
-                    let profile_dir = session.and_then(|session| {
-                        cade.nix_profile_path(
-                            session,
-                            layer_count,
-                            action_index,
-                            path,
-                            &format!("envrc:{filename}"),
-                        )
-                    });
-                    crate::envrc::load_envrc(path, filename.clone(), profile_dir)
-                        .context("loading .envrc")
-                }
+                .map(CadeAction::Environ)
             }
-            .map(CadeAction::Environ),
             Hook(hook) => Ok(CadeAction::Hook(hook.clone())),
             Clear(vars) => Ok(CadeAction::Clear(vars.clone())),
             Concat(vars) => Ok(CadeAction::Concat(vars.clone())),
@@ -1717,27 +1769,10 @@ fn watched_files_for_keywords(dir: &Path, keywords: &[Keyword]) -> Vec<PathBuf> 
     let mut files = vec![dir.join(".cade")];
     for kw in keywords {
         match kw {
-            Keyword::Load(loadable) => match loadable {
-                Loadable::Default | Loadable::Flake(_) => {
-                    files.push(dir.join("flake.nix"));
-                    files.push(dir.join("flake.lock"));
-                }
-                Loadable::Shell(f) => {
-                    let name = if f.is_empty() {
-                        "shell.nix"
-                    } else {
-                        f.as_str()
-                    };
-                    files.push(dir.join(name));
-                }
-                Loadable::Env(f) => {
-                    let name = if f.is_empty() { ".env" } else { f.as_str() };
-                    files.push(dir.join(name));
-                }
-                Loadable::Envrc(f) => {
-                    files.extend(crate::envrc::envrc_watch_files(dir, f.clone()));
-                }
-            },
+            // same resolver the load path uses, so we never watch a different
+            // file than we load; the resolver tracks a not-yet-created target's
+            // real files lexically, so creating it trips the watcher
+            Keyword::Load(loadable) => files.extend(loadable.resolve(dir).watch),
             // explicit user-declared dependencies
             Keyword::Watch(ws) => files.extend(ws.iter().map(|w| dir.join(w))),
             _ => {}
