@@ -183,6 +183,15 @@ pub fn eviction_marker() -> String {
     }
 }
 
+/// green `[→]` marker for layer notices emitted outside the spinner; empty off-terminal
+pub fn load_marker() -> String {
+    if std::io::stderr().is_terminal() {
+        format!("[{GREEN}{LOADED}{RESET}] ")
+    } else {
+        String::new()
+    }
+}
+
 /// Replace the spinner's recent-output tail (shown once long-running).
 pub fn set_recent(lines: Vec<String>) {
     if !is_active() {
@@ -281,6 +290,28 @@ impl Spinner {
         } else {
             verbosity::log(Verbosity::Normal, format_args!("{message}"));
         }
+    }
+
+    /// resolve with no message; for a silent recompose where another notice carries the news
+    pub fn done(mut self) {
+        self.resolved = true;
+        if !self.active {
+            return;
+        }
+        ACTIVE.store(false, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
+        let visible = STATE
+            .lock()
+            .unwrap()
+            .take()
+            .map(|state| state.visible_rows)
+            .unwrap_or(0);
+        let mut err = std::io::stderr().lock();
+        rewind(&mut err, visible);
+        let _ = err.flush();
     }
 
     fn finish(&mut self, colour: &str, symbol: char, message: String) {

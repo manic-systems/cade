@@ -65,6 +65,11 @@ impl Cade {
         if cade_files.is_empty() {
             return Ok(None);
         }
+        // effective root = deepest approved participant, so messages and watches track what composed
+        let root = cade_files
+            .last()
+            .map(|(p, _)| p.clone())
+            .expect("cade_files non-empty: checked above");
 
         let mut cade_layers = Vec::new();
         let mut all_watch_files: Vec<PathBuf> = Vec::new();
