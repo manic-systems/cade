@@ -26,6 +26,8 @@ pub struct CadeLayer {
 #[derive(Debug)]
 pub enum Keyword {
     Pure,
+    /// stop the `.cade` cascade at this dir; nothing above it loads
+    Disinherit,
     Call(Vec<String>),
     Load(Loadable),
     Hook(InnerHook),

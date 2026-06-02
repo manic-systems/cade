@@ -2,6 +2,7 @@
 //! activation at a given cwd, and which one is the root. No db, no env, no
 //! shell output - just the filesystem layout of `.cade` and `.envrc` markers.
 
+use crate::types::Keyword;
 use std::path::{Path, PathBuf};
 
 /// what a dir contributes; a co-located `.envrc` yields to `.cade`, so at most one kind
@@ -21,9 +22,22 @@ fn dir_kind(dir: &Path) -> Option<DirKind> {
     }
 }
 
+/// true when `dir`'s `.cade` carries a `disinherit` directive (caps the cascade)
+fn reads_disinherit(dir: &Path) -> bool {
+    matches!(
+        super::read_cade(&dir.join(".cade")),
+        Ok(kws) if kws.iter().any(|kw| matches!(kw, Keyword::Disinherit))
+    )
+}
+
 /// the active layer set, tip-first: every `.cade` ancestor (the cascade stacks
 /// across gaps; an empty intermediate dir does not sever it) unioned with
-/// direnv's single nearest `.envrc`. only the permission layer caps it
+/// direnv's single nearest `.envrc`. `disinherit` halts the cascade; otherwise
+/// only the permission layer caps it
+//
+// note: a `disinherit` dir is parsed here and re-parsed at activation via
+// `config_keywords`; a single-parse pass shared across both is a deferred
+// cross-cutting refactor (touches the composition-branch callers)
 pub(super) fn participant_dirs(start: &Path) -> Vec<PathBuf> {
     let mut cade_chain: Vec<PathBuf> = Vec::new();
     let mut nearest_envrc: Option<PathBuf> = None;
@@ -32,7 +46,11 @@ pub(super) fn participant_dirs(start: &Path) -> Vec<PathBuf> {
     while let Some(d) = dir {
         match dir_kind(&d) {
             Some(DirKind::Cade) => {
+                // include this dir, then stop the cascade if it disinherits
                 cade_chain.push(d.clone());
+                if reads_disinherit(&d) {
+                    break;
+                }
             }
             Some(DirKind::Envrc) => {
                 // only the nearest .envrc
@@ -188,6 +206,58 @@ mod tests {
         std::fs::write(a.join(".cade"), b"").unwrap();
         std::fs::write(a.join(".envrc"), b"").unwrap();
         assert_eq!(parts(&participant_dirs(&a), &base), vec!["a".to_string()]);
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Build a temp tree from (rel-dir, filename, contents) entries.
+    fn build_tree(spec: &[(&str, &str, &str)], tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static SALT: AtomicU32 = AtomicU32::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "cade-{tag}-{}-{}",
+            std::process::id(),
+            SALT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::remove_dir_all(&base).ok();
+        for (rel, file, contents) in spec {
+            let dir = base.join(rel);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(file), contents.as_bytes()).unwrap();
+        }
+        base
+    }
+
+    #[test]
+    fn disinherit_truncates_the_cade_cascade() {
+        // child .cade disinherits, so its .cade parent never joins the chain.
+        let base = build_tree(
+            &[("a", ".cade", ""), ("a/b", ".cade", "disinherit\n")],
+            "disinherit",
+        );
+        let cwd = base.join("a/b");
+        assert_eq!(
+            parts(&participant_dirs(&cwd), &base),
+            vec!["a/b".to_string()]
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn disinherit_still_unions_the_nearest_envrc() {
+        // disinherit drops the parent .cade, but a nearer .envrc still composes.
+        let base = build_tree(
+            &[
+                ("a", ".cade", ""),
+                ("a/b", ".cade", "disinherit\n"),
+                ("a/b/c", ".envrc", "export X=1\n"),
+            ],
+            "disinherit-envrc",
+        );
+        let cwd = base.join("a/b/c");
+        assert_eq!(
+            parts(&participant_dirs(&cwd), &base),
+            vec!["a/b/c".to_string(), "a/b".to_string()]
+        );
         std::fs::remove_dir_all(&base).ok();
     }
 }

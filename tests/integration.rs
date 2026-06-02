@@ -1749,3 +1749,70 @@ fn s6_colocated_envrc_is_ignored() {
         "a co-located .envrc must be ignored when .cade is present: {s}"
     );
 }
+
+#[test]
+fn disinherit_stops_the_parent_cascade() {
+    // child .cade disinherits -> its parent .cade never composes
+    let sb = Sandbox::new();
+    sb.write("a/.cade", "A_CADE=1\n");
+    let b = sb.dir("a/b");
+    sb.write("a/b/.cade", "disinherit\nB_CADE=1\n");
+    sb.allow(&sb.dir("a"));
+    sb.allow(&b);
+
+    let out = sb.enter(&b, &[]);
+    assert!(out.status.success(), "{out:?}");
+    let s = stdout(&out);
+    assert!(s.contains("export B_CADE='1';"), "{s}");
+    assert!(
+        !s.contains("A_CADE"),
+        "disinherit must drop the parent .cade layer: {s}"
+    );
+}
+
+#[test]
+fn disinherit_composes_with_nearest_envrc() {
+    // disinherit truncates the .cade cascade, but a nearer .envrc still joins
+    let sb = Sandbox::new();
+    sb.write("a/.cade", "A_CADE=1\n");
+    sb.write("a/b/.cade", "disinherit\nB_CADE=1\n");
+    let c = sb.dir("a/b/c");
+    sb.write("a/b/c/.envrc", "export C_ENVRC=ok\n");
+    sb.allow(&sb.dir("a/b"));
+    sb.allow(&c);
+
+    let out = sb.enter(&c, &[]);
+    assert!(out.status.success(), "{out:?}");
+    let s = stdout(&out);
+    assert!(s.contains("export B_CADE='1';"), "{s}");
+    assert!(s.contains("export C_ENVRC='ok';"), "{s}");
+    assert!(
+        !s.contains("A_CADE"),
+        "disinherit must drop the .cade above it: {s}"
+    );
+}
+
+#[test]
+fn allow_gap_fill_respects_disinherit_root() {
+    // the disinherit dir is the chain root; gap-fill never reaches above it
+    let sb = Sandbox::new();
+    sb.write("a/.cade", "A_CADE=1\n");
+    let b = sb.dir("a/b");
+    sb.write("a/b/.cade", "disinherit\nB_CADE=1\n");
+    let tip = sb.dir("a/b/tip");
+    sb.write("a/b/tip/.cade", "TIP_CADE=1\n");
+
+    // approve the disinherit root as the base, then the tip
+    sb.allow(&b);
+    sb.allow(&tip);
+
+    let out = sb.enter(&tip, &[]);
+    assert!(out.status.success(), "{out:?}");
+    let s = stdout(&out);
+    assert!(s.contains("export TIP_CADE='1';"), "{s}");
+    assert!(s.contains("export B_CADE='1';"), "{s}");
+    assert!(
+        !s.contains("A_CADE"),
+        "disinherit caps the chain, so the parent must never compose: {s}"
+    );
+}

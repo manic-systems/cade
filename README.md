@@ -212,6 +212,9 @@ one directive per line, `#` are comments
 # keeping variables inherited from parent .cade layers
 pure
 
+# stop the cascade here; no parent .cade layers load above this dir
+disinherit
+
 # load from flake (default shell or named installable)
 load
 load flake
