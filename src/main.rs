@@ -59,7 +59,7 @@ fn try_main() -> Result<()> {
             let output = shell_name.get_output();
             cade.do_activation(
                 output.as_ref(),
-                Announce::Loaded,
+                Some(Announce::Loaded),
                 args.client_id.as_deref(),
                 args.owner_pid,
             )

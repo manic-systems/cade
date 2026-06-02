@@ -1251,7 +1251,10 @@ fn reload_between_unrelated_roots_announces_unload_then_load() {
 }
 
 #[test]
-fn reload_within_same_cade_tree_stays_reload() {
+fn reload_descending_into_child_loads_the_new_layer() {
+    // active at the parent root, then sitting in an approved child: descending
+    // composes the new tip, announced as a load (the badge shows it is nested),
+    // with the parent left silent (no spurious unload).
     let sb = Sandbox::new();
     sb.write(".cade", "A=1\n");
     let sub = sb.dir("sub");
@@ -1287,8 +1290,146 @@ fn reload_within_same_cade_tree_stays_reload() {
     let err = stderr(&out);
     assert!(!err.contains("cade: unloaded"), "{err}");
     assert!(
-        err.contains(&format!("cade: reloaded {sub_str} (2).")),
+        err.contains(&format!("cade: loaded {sub_str} (2).")),
         "{err}"
+    );
+}
+
+#[test]
+fn reload_ascending_out_of_child_unloads_it() {
+    // active in the child (composed [root, sub]); moving up to the parent drops
+    // the child layer (announced unloaded) while the base survives silently.
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    let sub = sb.dir("sub");
+    sb.write("sub/.cade", "B=2\n");
+    sb.allow(&sb.root);
+    sb.allow(&sub);
+    sb.write_snapshot("s5", "PATH=/orig");
+
+    let root_str = sb.root.to_string_lossy().to_string();
+    let sub_str = sub.to_string_lossy().to_string();
+    let layers = format!("{root_str}\u{1f}{sub_str}");
+    let watches = serde_json::json!({
+        "root": sub_str,
+        "cade_paths": [sub_str, root_str],
+        "files": []
+    })
+    .to_string();
+
+    let out = sb.run(
+        &sb.root,
+        &["reload", "--shell", "bash"],
+        &[
+            ("__CADE_SESSION", "s5"),
+            ("__CADE_SET", "A\u{1f}B"),
+            ("__CADE_UNSET", ""),
+            ("__CADE_PURE", "0"),
+            ("__CADE_HOOKS", "[]"),
+            ("__CADE_LAYERS", layers.as_str()),
+            ("__CADE_WATCHES", watches.as_str()),
+            ("A", "1"),
+            ("B", "2"),
+        ],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    let err = stderr(&out);
+    assert!(err.contains(&format!("cade: unloaded {sub_str}")), "{err}");
+    assert!(!err.contains("cade: loaded"), "{err}");
+    assert!(!err.contains("cade: reloaded"), "{err}");
+    // the surviving base is recomposed to just the root layer
+    assert!(
+        stdout(&out).contains(&format!("__CADE_LAYERS='{root_str}'")),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn reload_into_disallowed_child_keeps_the_approved_parent() {
+    // sitting in a disallowed child while the parent is active must NOT unload
+    // the parent; it only prompts to allow the child.
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    let sub = sb.dir("sub");
+    sb.write("sub/.cade", "B=2\n");
+    sb.allow(&sb.root); // child intentionally NOT allowed
+    sb.write_snapshot("s5", "PATH=/orig");
+
+    let root_str = sb.root.to_string_lossy().to_string();
+    let watches = serde_json::json!({
+        "root": root_str,
+        "cade_paths": [root_str],
+        "files": []
+    })
+    .to_string();
+
+    let out = sb.run(
+        &sub,
+        &["reload", "--shell", "bash"],
+        &[
+            ("__CADE_SESSION", "s5"),
+            ("__CADE_SET", "A"),
+            ("__CADE_UNSET", ""),
+            ("__CADE_PURE", "0"),
+            ("__CADE_HOOKS", "[]"),
+            ("__CADE_LAYERS", root_str.as_str()),
+            ("__CADE_WATCHES", watches.as_str()),
+            ("A", "1"),
+        ],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    let err = stderr(&out);
+    assert!(!err.contains("cade: unloaded"), "{err}");
+    assert!(err.contains("disallowed"), "{err}");
+    // no reactivation: the parent's layer set is left untouched
+    assert!(!stdout(&out).contains("__CADE_LAYERS"), "{}", stdout(&out));
+}
+
+#[test]
+fn reload_when_parent_revoked_unloads_parent_and_reloads_tip() {
+    // composed [root, sub]; with the parent no longer approved, the tip stays
+    // active but recomposes: unload the dropped parent, reload the tip.
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    let sub = sb.dir("sub");
+    sb.write("sub/.cade", "B=2\n");
+    sb.allow(&sub); // parent intentionally NOT allowed (simulating a revoke)
+    sb.write_snapshot("s5", "PATH=/orig");
+
+    let root_str = sb.root.to_string_lossy().to_string();
+    let sub_str = sub.to_string_lossy().to_string();
+    let layers = format!("{root_str}\u{1f}{sub_str}");
+    let watches = serde_json::json!({
+        "root": sub_str,
+        "cade_paths": [sub_str, root_str],
+        "files": []
+    })
+    .to_string();
+
+    let out = sb.run(
+        &sub,
+        &["reload", "--shell", "bash"],
+        &[
+            ("__CADE_SESSION", "s5"),
+            ("__CADE_SET", "A\u{1f}B"),
+            ("__CADE_UNSET", ""),
+            ("__CADE_PURE", "0"),
+            ("__CADE_HOOKS", "[]"),
+            ("__CADE_LAYERS", layers.as_str()),
+            ("__CADE_WATCHES", watches.as_str()),
+            ("A", "1"),
+            ("B", "2"),
+        ],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    let err = stderr(&out);
+    assert!(err.contains(&format!("cade: unloaded {root_str}")), "{err}");
+    assert!(err.contains(&format!("cade: reloaded {sub_str}")), "{err}");
+    assert!(
+        stdout(&out).contains(&format!("__CADE_LAYERS='{sub_str}'")),
+        "{}",
+        stdout(&out)
     );
 }
 
@@ -1491,5 +1632,120 @@ fn inline_assignment_hard_replace_drops_ambient() {
         stdout(&out).contains("export PATH='/only/this';"),
         "hard replace should drop ambient: {}",
         stdout(&out)
+    );
+}
+
+// The S-table: the active layer set is cade's contiguous `.cade` cascade unioned
+// with direnv's single nearest `.envrc`. Each layer sets a uniquely-named var so
+// we can read off exactly which participants composed.
+
+#[test]
+fn s1_cade_cascade_composes_both() {
+    // /a/.cade + /a/b/.cade, cwd=a/b -> [a, a/b]
+    let sb = Sandbox::new();
+    sb.write("a/.cade", "A_CADE=1\n");
+    let b = sb.dir("a/b");
+    sb.write("a/b/.cade", "B_CADE=1\n");
+    sb.allow(&sb.dir("a"));
+    sb.allow(&b);
+
+    let out = sb.enter(&b, &[]);
+    assert!(out.status.success(), "{out:?}");
+    let s = stdout(&out);
+    assert!(s.contains("export A_CADE='1';"), "{s}");
+    assert!(s.contains("export B_CADE='1';"), "{s}");
+}
+
+#[test]
+fn s2_nearest_envrc_only_no_cade() {
+    // /a/.envrc + /a/b/.envrc, cwd=a/b -> [a/b] (the nearest only)
+    let sb = Sandbox::new();
+    sb.write("a/.envrc", "export A_ENVRC=up\n");
+    let b = sb.dir("a/b");
+    sb.write("a/b/.envrc", "export B_ENVRC=near\n");
+    sb.allow(&b);
+
+    let out = sb.enter(&b, &[]);
+    assert!(out.status.success(), "{out:?}");
+    let s = stdout(&out);
+    assert!(s.contains("export B_ENVRC='near';"), "{s}");
+    assert!(
+        !s.contains("A_ENVRC"),
+        "the upper .envrc is not the nearest, so it must not load: {s}"
+    );
+}
+
+#[test]
+fn s3_cade_unions_nearest_envrc_below() {
+    // /a/.cade + /a/b/.envrc, cwd=a/b -> [a, a/b]
+    let sb = Sandbox::new();
+    sb.write("a/.cade", "A_CADE=1\n");
+    let b = sb.dir("a/b");
+    sb.write("a/b/.envrc", "export B_ENVRC=ok\n");
+    sb.allow(&sb.dir("a"));
+    sb.allow(&b);
+
+    let out = sb.enter(&b, &[]);
+    assert!(out.status.success(), "{out:?}");
+    let s = stdout(&out);
+    assert!(s.contains("export A_CADE='1';"), "{s}");
+    assert!(s.contains("export B_ENVRC='ok';"), "{s}");
+}
+
+#[test]
+fn s4_cade_unions_nearest_envrc_above() {
+    // /a/.envrc + /a/b/.cade, cwd=a/b -> [a, a/b]
+    let sb = Sandbox::new();
+    sb.write("a/.envrc", "export A_ENVRC=ok\n");
+    let b = sb.dir("a/b");
+    sb.write("a/b/.cade", "B_CADE=1\n");
+    sb.allow(&sb.dir("a"));
+    sb.allow(&b);
+
+    let out = sb.enter(&b, &[]);
+    assert!(out.status.success(), "{out:?}");
+    let s = stdout(&out);
+    assert!(s.contains("export A_ENVRC='ok';"), "{s}");
+    assert!(s.contains("export B_CADE='1';"), "{s}");
+}
+
+#[test]
+fn s5_only_nearest_envrc_enters_leaving_a_gap() {
+    // /a/.cade + /a/b/.envrc + /a/b/c/.envrc, cwd=a/b/c -> [a, a/b/c]; a/b dropped
+    let sb = Sandbox::new();
+    sb.write("a/.cade", "A_CADE=1\n");
+    sb.write("a/b/.envrc", "export B_ENVRC=mid\n");
+    let c = sb.dir("a/b/c");
+    sb.write("a/b/c/.envrc", "export C_ENVRC=near\n");
+    sb.allow(&sb.dir("a"));
+    sb.allow(&c);
+
+    let out = sb.enter(&c, &[]);
+    assert!(out.status.success(), "{out:?}");
+    let s = stdout(&out);
+    assert!(s.contains("export A_CADE='1';"), "{s}");
+    assert!(s.contains("export C_ENVRC='near';"), "{s}");
+    assert!(
+        !s.contains("B_ENVRC"),
+        "a/b is not the nearest .envrc, so the gap dir must not load: {s}"
+    );
+}
+
+#[test]
+fn s6_colocated_envrc_is_ignored() {
+    // /a has BOTH .cade and .envrc, cwd=a -> [a] via .cade; .envrc ignored
+    let sb = Sandbox::new();
+    sb.write("a/.cade", "A_CADE=1\n");
+    sb.write("a/.envrc", "export A_ENVRC=shouldnt\n");
+    let a = sb.dir("a");
+    sb.allow(&a);
+
+    let out = sb.enter(&a, &[]);
+    assert!(out.status.success(), "{out:?}");
+    let s = stdout(&out);
+    assert!(s.contains("export A_CADE='1';"), "{s}");
+    assert!(
+        !s.contains("A_ENVRC"),
+        "a co-located .envrc must be ignored when .cade is present: {s}"
     );
 }
