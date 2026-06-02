@@ -14,19 +14,19 @@ mod types;
 mod verbosity;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use pound::Parse;
 
 use crate::core::{Announce, Cade};
 use crate::shells::ShellName;
 
 fn try_main() -> Result<()> {
-    let args = cli::clap::Cli::parse();
+    let args = cli::pound::Cli::parse();
     let config = crate::config::load(args.config.as_deref())?;
     crate::config::set(config);
     if let Some(verbosity) = args.verbosity {
         crate::verbosity::set(verbosity.into());
     }
-    use cli::clap::CliAction::*;
+    use cli::pound::CliAction::*;
 
     // `hook` emits a static snippet, so handle it before the side-effecting init
     if let Hook { shell } = &args.action {
@@ -85,7 +85,7 @@ fn try_main() -> Result<()> {
                 .context("reload cade environment")?;
         }
         Export { format } => match format {
-            cli::clap::CliExportFormat::Json => {
+            cli::pound::CliExportFormat::Json => {
                 let delta = cade
                     .export_env_delta(args.client_id.as_deref(), args.owner_pid)
                     .context("export cade environment")?;
@@ -110,7 +110,7 @@ fn try_main() -> Result<()> {
         }
         Hook { .. } => unreachable!("handled before Cade::init()"),
         Lease { action } => {
-            use cli::clap::LeaseAction::*;
+            use cli::pound::LeaseAction::*;
             match action {
                 Open {
                     kind,

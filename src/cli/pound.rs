@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use pound::{Parse, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -25,18 +25,18 @@ pub enum CliExportFormat {
     Json,
 }
 
-#[derive(Subcommand)]
+#[derive(Parse)]
 pub enum CliAction {
     Enter {
-        #[arg(long)]
+        #[pound(long)]
         shell: String,
     },
     Exit {
-        #[arg(long)]
+        #[pound(long)]
         shell: String,
     },
     Reload {
-        #[arg(long)]
+        #[pound(long)]
         shell: String,
     },
     Allow,
@@ -46,61 +46,60 @@ pub enum CliAction {
         shell: String,
     },
     /// Internal compatibility endpoint used by the direnv shim.
-    #[command(hide = true)]
+    #[pound(hidden)]
     Export {
-        #[arg(value_enum)]
         format: CliExportFormat,
     },
     Lease {
-        #[command(subcommand)]
+        #[pound(subcommand)]
         action: LeaseAction,
     },
     Status,
 }
 
-#[derive(Subcommand)]
+#[derive(Parse)]
 pub enum LeaseAction {
     Open {
-        #[arg(long, default_value = "generic")]
+        #[pound(long, default = "generic")]
         kind: String,
 
-        #[arg(long)]
+        #[pound(long)]
         project: Option<PathBuf>,
 
-        #[arg(long)]
+        #[pound(long)]
         ttl_seconds: Option<u64>,
     },
     Refresh {
-        #[arg(long)]
+        #[pound(long)]
         client_id: String,
 
-        #[arg(long)]
+        #[pound(long)]
         ttl_seconds: Option<u64>,
     },
     Close {
-        #[arg(long)]
+        #[pound(long)]
         client_id: String,
     },
 }
 
-#[derive(Parser)]
+#[derive(Parse)]
 pub struct Cli {
     /// Strictly read this TOML config file instead of the XDG default.
-    #[arg(long, global = true)]
+    #[pound(long)]
     pub config: Option<PathBuf>,
 
     /// Diagnostic verbosity: quiet, normal, vars, or trace.
-    #[arg(long, value_enum, global = true)]
+    #[pound(long)]
     pub verbosity: Option<CliVerbosity>,
 
     /// Lease client id to attach while activating or reloading.
-    #[arg(long, global = true)]
+    #[pound(long)]
     pub client_id: Option<String>,
 
     /// Shell process pid to hold this activation's GC roots.
-    #[arg(long, global = true)]
+    #[pound(long)]
     pub owner_pid: Option<u32>,
 
-    #[command(subcommand)]
+    #[pound(subcommand)]
     pub action: CliAction,
 }
