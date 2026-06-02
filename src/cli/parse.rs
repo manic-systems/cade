@@ -62,6 +62,7 @@ impl FromStr for Keyword {
 
         let res = match keyword.as_str() {
             "pure" => Pure,
+            "disinherit" => Disinherit,
             "call" => {
                 // split respecting shell quoting
                 let target = shlex::split(rest_raw).ok_or(ParseError::InvalidQuoting)?;
@@ -178,6 +179,14 @@ mod tests {
         assert!(matches!(
             "İ foo".parse::<Keyword>(),
             Err(ParseError::InvalidKeyword)
+        ));
+    }
+
+    #[test]
+    fn bare_disinherit_parses() {
+        assert!(matches!(
+            "disinherit".parse::<Keyword>(),
+            Ok(Keyword::Disinherit)
         ));
     }
 

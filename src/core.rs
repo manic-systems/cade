@@ -1686,7 +1686,7 @@ fn load_single_layer(
             Concat(vars) => Ok(CadeAction::Concat(vars.clone())),
             Set(env) => Ok(CadeAction::Environ(env.clone())),
             // affects only chain construction, not the loaded environment
-            Watch(_) => continue,
+            Watch(_) | Disinherit => continue,
         }?;
         layer.push_action(act);
     }
