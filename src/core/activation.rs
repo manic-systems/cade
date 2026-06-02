@@ -197,6 +197,13 @@ impl Cade {
         owner_pid: Option<u32>,
     ) -> Result<EnvDelta> {
         let export = self.export_session();
+        if !crate::config::direnv_mode().runs_shim() {
+            // The shim is off, so cade exports no active project env. Still route
+            // through the unwind path: if a prior shim/full export left a live
+            // DIRENV_DIFF, restore its preimage instead of stranding the old
+            // project's vars. With no carried diff this returns an empty no-op.
+            return Ok(direnv_export::inactive_delta(export.previous));
+        }
         let Some(root) = find_cade_root(&self.cwd) else {
             // This mirrors direnv's unload behavior for direct callers: leaving
             // a project must undo the last exported diff if the caller preserved

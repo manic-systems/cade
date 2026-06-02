@@ -2,7 +2,7 @@
 //! activation at a given cwd, and which one is the root. No db, no env, no
 //! shell output - just the filesystem layout of `.cade` and `.envrc` markers.
 
-use crate::types::Keyword;
+use crate::{config, types::Keyword};
 use std::path::{Path, PathBuf};
 
 /// what a dir contributes; a co-located `.envrc` yields to `.cade`, so at most one kind
@@ -15,7 +15,9 @@ pub(super) enum DirKind {
 fn dir_kind(dir: &Path) -> Option<DirKind> {
     if std::fs::exists(dir.join(".cade")).unwrap_or(false) {
         Some(DirKind::Cade)
-    } else if std::fs::exists(dir.join(".envrc")).unwrap_or(false) {
+    } else if config::direnv_mode().loads_envrc()
+        && std::fs::exists(dir.join(".envrc")).unwrap_or(false)
+    {
         Some(DirKind::Envrc)
     } else {
         None
