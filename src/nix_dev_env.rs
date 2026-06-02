@@ -142,6 +142,14 @@ fn load_nix_dev_env(
 ) -> Result<EnvSet> {
     let previous_env: HashMap<_, _> = std::env::vars().collect();
     proc.current_dir(path);
+    if let Some(parent) = profile.and_then(Path::parent) {
+        // Nix enumerates existing generations by reading the profile's parent
+        // directory, so it must exist before `nix develop --profile` runs. The
+        // flake/shell loaders nest the profile one level under `profiles/`
+        // (already created), but the .envrc loader nests it two levels deep.
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating nix profile dir at {}", parent.display()))?;
+    }
     let stdout = run_checked(proc, &format!("nix develop {what}"))?;
     let stdout = captured_env_stdout(&stdout, what)?;
     let mut env = env_set_from_captured_env(stdout, &previous_env)?;
