@@ -8,10 +8,17 @@ self:
 let
   cfg = config.programs.cade;
   exe = lib.getExe cfg.package;
+  direnvCompatString =
+    if builtins.isBool cfg.direnvCompat then
+      (if cfg.direnvCompat then "shim" else "none")
+    else
+      cfg.direnvCompat;
   configValues = lib.filterAttrs (_: v: v != null) {
     inherit (cfg) verbosity;
     long_running_warning_ms = cfg.longRunningWarningMs;
     shell_gc_root_ttl_seconds = cfg.shellGcRootTtlSeconds;
+    direnv =
+      if cfg.configFile != null || direnvCompatString == "envrc" then null else direnvCompatString;
   };
   tomlFormat = pkgs.formats.toml { };
   generatedConfigFile = tomlFormat.generate "cade-config.toml" configValues;
@@ -95,14 +102,36 @@ in
     };
 
     direnvCompat = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      example = true;
+      type =
+        with lib.types;
+        either bool (enum [
+          "none"
+          "shim"
+          "envrc"
+          "full"
+        ]);
+      default = if (config.programs.direnv.enable or false) then "none" else "envrc";
+      example = "full";
       description = ''
-        Install a cade-backed `direnv` executable on PATH for editor and tool
-        compatibility. This is not the shell integration path; interactive
+        Which direnv compatibility cade enables, written to its config as
+        `direnv`. Defaults to `none` when `programs.direnv.enable` is set
+        (let real direnv own `.envrc`), otherwise `envrc`.
+
+        - `none`: neither the implicit `.envrc` loader nor the export shim.
+        - `shim`: install the cade-backed `direnv` shim; the implicit `.envrc`
+          loader stays off.
+        - `envrc`: cade implicitly loads a bare `.envrc`; no shim.
+        - `full`: both the implicit `.envrc` loader and the shim.
+
+        The shim is the cade-backed `direnv` executable on PATH for editor and
+        tool compatibility. This is not the shell integration path; interactive
         shells should use cade's native hook snippets. The shim collides with a
         real direnv in environment.systemPackages, so install only one.
+
+        Deprecated: a boolean is still accepted from the pre-enum option
+        (`true` behaves as `"shim"`, `false` as `"none"`) but warns. Use the
+        string form. Leaving the option unset keeps the string default above
+        rather than any boolean.
       '';
     };
 
@@ -136,9 +165,32 @@ in
         assertion = cfg.configFile == null || configValues == { };
         message = "programs.cade.configFile cannot be combined with generated config options.";
       }
+      {
+        assertion =
+          cfg.configFile == null
+          || builtins.elem direnvCompatString [
+            "none"
+            "envrc"
+          ];
+        message = ''
+          programs.cade.direnvCompat = "${direnvCompatString}" is ignored at
+          runtime when programs.cade.configFile is set (configFile owns the
+          config), yet it still installs the direnv shim. Put the `direnv` key
+          in your configFile TOML instead, and leave direnvCompat unset.
+        '';
+      }
     ];
 
-    environment.systemPackages = [ cfg.package ] ++ lib.optional cfg.direnvCompat direnvShim;
+    warnings = lib.optional (builtins.isBool cfg.direnvCompat) ''
+      programs.cade.direnvCompat is set to a boolean (${lib.boolToString cfg.direnvCompat}).
+      The boolean form is deprecated; it is read as "${direnvCompatString}" for now.
+      Set it to one of "none", "shim", "envrc", or "full" instead.
+    '';
+
+    environment.systemPackages = [
+      cfg.package
+    ]
+    ++ lib.optional (direnvCompatString == "shim" || direnvCompatString == "full") direnvShim;
 
     programs.bash.interactiveShellInit = lib.mkIf cfg.enableBashIntegration ''
       eval "$(${cadeCmd} hook bash)"
