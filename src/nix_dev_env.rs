@@ -90,46 +90,110 @@ const IGNORED_ENV_KEYS: &[&str] = &[
     "dontAddDisableDepTrack",
 ];
 
-pub(crate) fn load_flake(
-    path: &Path,
-    output: Option<String>,
-    profile: Option<PathBuf>,
-) -> Result<EnvSet> {
+/// a resolved flake installable
+pub(crate) struct FlakeTarget {
+    /// dir `nix develop` runs in (the flake's own dir)
+    pub cwd: PathBuf,
+    /// `nix develop` installable arg, empty for the current-dir default
+    pub installable: String,
+    /// stable identifier of the resolved target, used in gc-root keys
+    pub spec: String,
+}
+
+impl FlakeTarget {
+    /// the current-dir flake, optionally with a bare output (`.#dev`). this is
+    /// the historical layer-dir installable; callers that already have a parsed
+    /// output (e.g. an `.envrc` `use flake .#dev`) build it directly instead of
+    /// re-encoding a `.#output` string that the path classifier would misread
+    /// as a directed path
+    pub(crate) fn bare_output(dir: &Path, output: Option<&str>) -> Self {
+        match output.filter(|o| !o.is_empty()) {
+            Some(o) => FlakeTarget {
+                cwd: dir.to_path_buf(),
+                installable: format!(".#{o}"),
+                spec: format!("flake:{o}"),
+            },
+            None => FlakeTarget {
+                cwd: dir.to_path_buf(),
+                installable: String::new(),
+                spec: "flake".to_string(),
+            },
+        }
+    }
+}
+
+/// a bare output (e.g. `dev`, `devShells.default`) has no `#` and no path
+/// marker, so it stays `.#<arg>` in the layer dir, preserving historical
+/// behavior; anything else is a directed path
+fn looks_like_path(arg: &str) -> bool {
+    arg.contains('#')
+        || arg.contains('/')
+        || arg.starts_with('.')
+        || arg.starts_with('~')
+        || arg.starts_with('/')
+}
+
+/// resolve a flake `arg` against `layer_dir`. infallible: a directed path is
+/// resolved for watch (canonical when present, lexical when not), so a
+/// not-yet-created target still keys watch/spec off its real dir; `nix develop`
+/// surfaces a genuinely missing dir at load time
+pub(crate) fn resolve_flake_target(layer_dir: &Path, arg: Option<&str>) -> FlakeTarget {
+    let Some(arg) = arg.filter(|a| !a.is_empty()) else {
+        return FlakeTarget::bare_output(layer_dir, None);
+    };
+
+    if !looks_like_path(arg) {
+        return FlakeTarget::bare_output(layer_dir, Some(arg));
+    }
+
+    // path[#output]: left is a directed flake path, optional right names an output within it
+    let (path_part, output) = match arg.split_once('#') {
+        Some((p, o)) => (p, Some(o)),
+        None => (arg, None),
+    };
+    let path_part = if path_part.is_empty() { "." } else { path_part };
+    let dir = crate::path_resolve::resolve_for_watch(layer_dir, path_part);
+    let installable = match output {
+        Some(o) if !o.is_empty() => format!("{}#{o}", dir.display()),
+        _ => dir.display().to_string(),
+    };
+    let spec = format!("flake:{installable}");
+    FlakeTarget {
+        cwd: dir,
+        installable,
+        spec,
+    }
+}
+
+pub(crate) fn load_flake(target: &FlakeTarget, profile: Option<PathBuf>) -> Result<EnvSet> {
     let mut proc = Command::new("nix");
     proc.arg("develop");
-    // A named output is a flake installable.
-    if let Some(flake_output) = output.filter(|o| !o.is_empty()) {
-        proc.arg(format!(".#{flake_output}"));
+    if !target.installable.is_empty() {
+        proc.arg(&target.installable);
     }
     add_profile(&mut proc, profile.as_deref());
     add_env_command(&mut proc);
 
     load_nix_dev_env(
         proc,
-        path,
-        &format!("at {}", path.display()),
+        &target.cwd,
+        &format!("at {}", target.cwd.display()),
         profile.as_deref(),
     )
 }
 
-pub(crate) fn load_shell(
-    path: &Path,
-    filename: String,
-    profile: Option<PathBuf>,
-) -> Result<EnvSet> {
-    let file = if filename.is_empty() {
-        "./shell.nix".to_string()
-    } else {
-        filename
-    };
+pub(crate) fn load_shell(file: &Path, profile: Option<PathBuf>) -> Result<EnvSet> {
+    // run in the resolved file's own dir so its relative refs resolve
+    let cwd = file.parent().unwrap_or(file);
+    let file_str = file.to_string_lossy();
     let mut proc = Command::new("nix");
-    proc.args(["develop", "-f", &file]);
+    proc.args(["develop", "-f"]).arg(file);
     add_profile(&mut proc, profile.as_deref());
     add_env_command(&mut proc);
     load_nix_dev_env(
         proc,
-        path,
-        &format!("-f {file} at {}", path.display()),
+        cwd,
+        &format!("-f {file_str} at {}", cwd.display()),
         profile.as_deref(),
     )
 }
@@ -305,6 +369,61 @@ fn clean_captured_path(value: &str, path_suffix: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bare_output_stays_current_dir_installable() {
+        // back-compat: `load flake dev` -> `.#dev` in the layer dir
+        let layer = Path::new("/layer");
+        let target = resolve_flake_target(layer, Some("dev"));
+        assert_eq!(target.installable, ".#dev");
+        assert_eq!(target.cwd, layer);
+        assert_eq!(target.spec, "flake:dev");
+    }
+
+    #[test]
+    fn no_arg_is_current_dir_default() {
+        let layer = Path::new("/layer");
+        let target = resolve_flake_target(layer, None);
+        assert!(target.installable.is_empty());
+        assert_eq!(target.cwd, layer);
+        assert_eq!(target.spec, "flake");
+    }
+
+    #[test]
+    fn directed_flake_path_resolves_and_runs_in_target_dir() {
+        let base = std::env::temp_dir().join(format!(
+            "cade-flake-target-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let sub = base.join("svc");
+        std::fs::create_dir_all(&sub).unwrap();
+        let canon_sub = std::fs::canonicalize(&sub).unwrap();
+
+        // `#dev`: installable carries the output
+        let target = resolve_flake_target(&base, Some("./svc#dev"));
+        assert_eq!(target.cwd, canon_sub);
+        assert_eq!(target.installable, format!("{}#dev", canon_sub.display()));
+
+        // no output: installable is just the target dir
+        let target = resolve_flake_target(&base, Some("./svc"));
+        assert_eq!(target.cwd, canon_sub);
+        assert_eq!(target.installable, canon_sub.display().to_string());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn directed_flake_missing_path_watches_real_target() {
+        // a directed flake at a not-yet-created path resolves lexically (no
+        // error here; `nix develop` reports the missing dir at load time) so the
+        // watch set tracks the real target's `flake.nix`, not the layer dir
+        let layer = Path::new("/no/such/layer");
+        let target = resolve_flake_target(layer, Some("./nope"));
+        assert_eq!(target.cwd, Path::new("/no/such/layer/nope"));
+        assert_eq!(target.installable, "/no/such/layer/nope");
+        assert_eq!(target.spec, "flake:/no/such/layer/nope");
+    }
 
     #[test]
     fn add_env_command_uses_resolved_env_binary() {

@@ -6,7 +6,8 @@
 //! `export`/`PATH_add`) and warns about any line it can't faithfully
 //! reproduce. This should cover most cases of .envrc.
 
-use crate::loaders::{load_env, load_flake, load_shell};
+use crate::loaders::{load_env, load_shell};
+use crate::nix_dev_env::{FlakeTarget, load_flake};
 use crate::{
     types::EnvSet,
     verbosity::{self, Verbosity},
@@ -113,18 +114,20 @@ fn merge(out: &mut EnvSet, other: EnvSet) {
     out.nix_store_paths.extend(other.nix_store_paths);
 }
 
-fn envrc_path(dir: &Path, filename: &str) -> PathBuf {
-    dir.join(if filename.is_empty() {
+pub(crate) fn envrc_arg(filename: &str) -> &str {
+    if filename.is_empty() {
         ".envrc"
     } else {
         filename
-    })
+    }
 }
 
-/// Compose an .envrc's recognized directives into a single EnvSet
-pub fn load_envrc(dir: &Path, filename: String, profile_dir: Option<PathBuf>) -> Result<EnvSet> {
-    let path = envrc_path(dir, &filename);
-    let contents = std::fs::read_to_string(&path)
+/// Compose an .envrc's recognized directives into a single EnvSet. `path` is the
+/// already-resolved .envrc; its directives resolve against its own dir
+pub fn load_envrc(path: &Path, profile_dir: Option<PathBuf>) -> Result<EnvSet> {
+    // directives inside resolve against the .envrc's own dir (direnv semantics)
+    let dir = path.parent().unwrap_or(path);
+    let contents = std::fs::read_to_string(path)
         .with_context(|| format!("reading .envrc at {}", path.display()))?;
 
     let mut out = EnvSet::new();
@@ -136,27 +139,26 @@ pub fn load_envrc(dir: &Path, filename: String, profile_dir: Option<PathBuf>) ->
                 let profile = profile_dir
                     .as_ref()
                     .map(|base| base.join(format!("{idx}-flake")));
-                merge(
-                    &mut out,
-                    load_flake(dir, output, profile).context("use flake")?,
-                )
+                // build the bare-output installable directly: a parsed `.#dev`
+                // must not be re-encoded into a `.#dev` string and fed back
+                // through the path classifier, which would misread it as a
+                // directed path and orphan previously-rooted profiles
+                let target = FlakeTarget::bare_output(dir, output.as_deref());
+                merge(&mut out, load_flake(&target, profile).context("use flake")?)
             }
             Directive::UseNix(file) => {
                 let profile = profile_dir
                     .as_ref()
                     .map(|base| base.join(format!("{idx}-nix")));
-                merge(&mut out, load_shell(dir, file, profile).context("use nix")?)
+                let shell = dir.join(if file.is_empty() { "shell.nix" } else { &file });
+                merge(&mut out, load_shell(&shell, profile).context("use nix")?)
             }
             Directive::Dotenv { file, if_exists } => {
-                let p = if file.is_empty() {
-                    dir.join(".env")
-                } else {
-                    dir.join(&file)
-                };
+                let p = dir.join(if file.is_empty() { ".env" } else { &file });
                 if if_exists && !p.exists() {
                     continue;
                 }
-                merge(&mut out, load_env(dir, file).context("dotenv")?);
+                merge(&mut out, load_env(&p).context("dotenv")?);
             }
             Directive::Export(key, value) => {
                 let parts: Vec<String> = value.split(':').map(str::to_string).collect();
@@ -197,11 +199,13 @@ pub fn load_envrc(dir: &Path, filename: String, profile_dir: Option<PathBuf>) ->
     Ok(out)
 }
 
-/// Files an .envrc layer depends on
-pub fn envrc_watch_files(dir: &Path, filename: String) -> Vec<PathBuf> {
-    let path = envrc_path(dir, &filename);
-    let mut files = vec![path.clone()];
-    let Ok(contents) = std::fs::read_to_string(&path) else {
+/// Files an .envrc layer depends on. `path` is the already-resolved .envrc, the
+/// same canonical path the load path keys on, so watch and load never diverge
+pub fn envrc_watch_files(path: &Path) -> Vec<PathBuf> {
+    // directives inside resolve against the .envrc's own dir (direnv semantics)
+    let dir = path.parent().unwrap_or(path);
+    let mut files = vec![path.to_path_buf()];
+    let Ok(contents) = std::fs::read_to_string(path) else {
         return files;
     };
     for directive in parse(&contents) {
@@ -254,6 +258,21 @@ mod tests {
             parse_line("PATH_add ./bin"),
             Some(Directive::PathAdd(vec!["./bin".to_string()]))
         );
+    }
+
+    #[test]
+    fn use_flake_named_output_stays_bare_output() {
+        // regression: a parsed `.#dev` must build a bare-output installable, not
+        // be re-encoded and reclassified as a directed path (which would change
+        // the installable to a layer-dir path and orphan rooted profiles)
+        let Some(Directive::UseFlake(output)) = parse_line("use flake .#dev") else {
+            panic!("expected UseFlake");
+        };
+        let target =
+            crate::nix_dev_env::FlakeTarget::bare_output(Path::new("/layer"), output.as_deref());
+        assert_eq!(target.installable, ".#dev");
+        assert_eq!(target.spec, "flake:dev");
+        assert_eq!(target.cwd, Path::new("/layer"));
     }
 
     #[test]

@@ -1816,3 +1816,53 @@ fn allow_gap_fill_respects_disinherit_root() {
         "disinherit caps the chain, so the parent must never compose: {s}"
     );
 }
+
+#[test]
+fn directed_load_env_reads_from_subdir() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "load env ./conf/app.env\n");
+    sb.write("conf/app.env", "FROM_SUBDIR=1\n");
+    sb.allow(&sb.root);
+
+    let out = sb.enter(&sb.root, &[]);
+    assert!(out.status.success(), "enter failed: {:?}", out);
+    assert!(
+        stdout(&out).contains("export FROM_SUBDIR='1';"),
+        "directed env not loaded: {}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn directed_load_env_reads_from_sibling_with_parent_ref() {
+    let sb = Sandbox::new();
+    sb.write("shared/.env", "FROM_SIBLING=1\n");
+    let proj = sb.dir("proj");
+    sb.write("proj/.cade", "load env ../shared/.env\n");
+    sb.allow(&proj);
+
+    let out = sb.enter(&proj, &[]);
+    assert!(out.status.success(), "enter failed: {:?}", out);
+    assert!(
+        stdout(&out).contains("export FROM_SIBLING='1';"),
+        "directed sibling env not loaded: {}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn directed_load_missing_path_errors_clearly() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "load env ./conf/missing.env\n");
+    sb.allow(&sb.root);
+
+    let out = sb.enter(&sb.root, &[]);
+    assert!(!out.status.success(), "missing directed env should fail");
+    let err = stderr(&out);
+    // a missing directed target is reported by the loader at load time and must
+    // still name the offending file clearly
+    assert!(
+        err.contains("env file") && err.contains("missing.env"),
+        "error should name the loader and path: {err}"
+    );
+}
