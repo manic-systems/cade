@@ -726,7 +726,7 @@ fn direnv_export_with_owner_pid_writes_session_holder() {
     let out = sb.run(
         &sb.root,
         &["--owner-pid", owner.as_str(), "export", "json"],
-        &[],
+        &[("CADE_DIRENV", "full")],
     );
     assert!(out.status.success(), "{:?}", out);
 
@@ -1550,6 +1550,133 @@ fn envrc_is_autodetected_when_no_cade() {
     assert!(
         stdout(&out).contains("export FROM_ENVRC='1';"),
         "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn direnv_none_ignores_bare_envrc() {
+    let sb = Sandbox::new();
+    sb.write_config("direnv = \"none\"\n");
+    // a bare .envrc, no .cade
+    sb.write(".envrc", "dotenv\n");
+    sb.write(".env", "FROM_ENVRC=1\n");
+
+    // with the implicit loader off, the dir is invisible to cade: there is no
+    // config root, so nothing activates and no env is emitted.
+    let out = sb.enter(&sb.root, &[]);
+    let s = stdout(&out);
+    assert!(
+        !s.contains("FROM_ENVRC"),
+        "bare .envrc must not activate when direnv = none: {s}"
+    );
+    assert!(
+        !s.contains("export __CADE_LAYERS="),
+        "no layers should compose for a bare .envrc when direnv = none: {s}"
+    );
+}
+
+#[test]
+fn direnv_shim_skips_implicit_envrc_but_export_json_works() {
+    let sb = Sandbox::new();
+    sb.write_config("direnv = \"shim\"\n");
+    sb.write(".envrc", "dotenv\n");
+    sb.write(".env", "FROM_ENVRC=1\n");
+
+    // implicit .envrc loader is off in shim mode: the bare .envrc dir is
+    // invisible, so entering it does not load anything.
+    let entered = sb.enter(&sb.root, &[]);
+    assert!(
+        !stdout(&entered).contains("FROM_ENVRC"),
+        "shim mode must not implicitly load .envrc: {}",
+        stdout(&entered)
+    );
+
+    // but the export shim endpoint is live
+    let exported = sb.run(&sb.root, &["export", "json"], &[]);
+    assert!(exported.status.success(), "{exported:?}");
+    let json: serde_json::Value = serde_json::from_str(stdout(&exported).trim()).unwrap();
+    assert!(json.is_object(), "export json must be an object: {json}");
+}
+
+#[test]
+fn direnv_none_export_json_is_empty_noop() {
+    let sb = Sandbox::new();
+    sb.write_config("direnv = \"none\"\n");
+    sb.write(".cade", "A=1\n");
+    sb.allow(&sb.root);
+
+    // shim off: the endpoint stays a harmless no-op that does not emit cade env
+    let out = sb.run(&sb.root, &["export", "json"], &[]);
+    assert!(out.status.success(), "{out:?}");
+    let json: serde_json::Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+    assert_eq!(json, serde_json::json!({}), "expected empty delta: {json}");
+}
+
+#[test]
+fn direnv_none_export_json_unwinds_carried_diff() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "PROJ_VAR=hello\n");
+    sb.allow(&sb.root);
+
+    // First export under an active mode to obtain a real DIRENV_DIFF that
+    // carries the project's preimage, exactly as a prior shim/full export would
+    // have handed an editor like Zed.
+    let active = sb.run(&sb.root, &["export", "json"], &[("CADE_DIRENV", "full")]);
+    assert!(active.status.success(), "{active:?}");
+    let active_json: serde_json::Value = serde_json::from_str(stdout(&active).trim()).unwrap();
+    assert_eq!(
+        active_json["PROJ_VAR"], "hello",
+        "active export should set the project var: {active_json}"
+    );
+    let diff = active_json["DIRENV_DIFF"]
+        .as_str()
+        .expect("active export must carry a DIRENV_DIFF")
+        .to_string();
+
+    // Now the mode flips to `none` while the editor still carries that
+    // DIRENV_DIFF. The shim is off, but the export must still unwind the carried
+    // project env rather than returning `{}` and stranding PROJ_VAR.
+    let out = sb.run(
+        &sb.root,
+        &["export", "json"],
+        &[
+            ("CADE_DIRENV", "none"),
+            ("DIRENV_DIFF", diff.as_str()),
+            ("PROJ_VAR", "hello"),
+        ],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let json: serde_json::Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+    assert_ne!(
+        json,
+        serde_json::json!({}),
+        "off-mode export must unwind a carried diff, not return an empty no-op: {json}"
+    );
+    let obj = json.as_object().expect("delta is an object");
+    assert!(
+        obj.contains_key("PROJ_VAR") && json["PROJ_VAR"].is_null(),
+        "PROJ_VAR had no preimage, so the unwind must clear it (null): {json}"
+    );
+    assert!(
+        obj.contains_key("DIRENV_DIFF") && json["DIRENV_DIFF"].is_null(),
+        "the unwind must clear DIRENV_DIFF: {json}"
+    );
+}
+
+#[test]
+fn default_mode_reads_bare_envrc() {
+    let sb = Sandbox::new();
+    // no config written: the default mode (envrc) loads a bare .envrc
+    sb.write(".envrc", "dotenv\n");
+    sb.write(".env", "FROM_ENVRC=1\n");
+    sb.allow(&sb.root);
+
+    let out = sb.enter(&sb.root, &[]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        stdout(&out).contains("export FROM_ENVRC='1';"),
+        "default mode should load a bare .envrc: {}",
         stdout(&out)
     );
 }

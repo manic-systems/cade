@@ -61,15 +61,23 @@ programs.cade = {
   verbosity = "normal";          # null, quiet, normal, vars, trace
   longRunningWarningMs = 5000;   # null, or a positive integer
   shellGcRootTtlSeconds = 2592000; # null, or a positive integer
-  direnvCompat = false;          # true installs the direnv shim for tools
+  direnvCompat = "envrc";        # none, shim, envrc (default), full
 };
 ```
 
-`direnvCompat` installs a cade-backed `direnv` on `PATH` for editors and other
-direnv-aware tools (see [direnv compatibility](#direnv-compatibility)). it is
-not the shell integration path; interactive shells should use `cade hook
-<shell>`. the shim collides with a real direnv in `environment.systemPackages`,
-so install only one.
+`direnvCompat` selects which direnv compatibility cade enables (see [direnv
+compatibility](#direnv-compatibility)):
+
+- `none`: neither the implicit `.envrc` loader nor the export shim
+- `shim`: install the cade-backed `direnv` shim; the implicit `.envrc` loader
+  stays off
+- `envrc` (default): cade implicitly loads a bare `.envrc`; no shim
+- `full`: both the implicit `.envrc` loader and the shim
+
+`shim` and `full` install a cade-backed `direnv` on `PATH` for editors and other
+direnv-aware tools. that is not the shell integration path; interactive shells
+should use `cade hook <shell>`. the shim collides with a real direnv in
+`environment.systemPackages`, so install only one.
 
 setting `verbosity`, `longRunningWarningMs`, or `shellGcRootTtlSeconds` makes
 the module generate a TOML config file and pass it to cade with `--config`.
@@ -284,9 +292,26 @@ the direnv stdlib that maps cleanly onto cade's own loaders:
 an `.envrc` is picked up two ways:
 
 - **automatically**: a directory with an `.envrc` but no `.cade` is treated as
-  if it contained `load envrc`
+  if it contained `load envrc`. this implicit loader is opt-in via the `direnv`
+  setting (see below); it is on by default but a directory with only an `.envrc`
+  is invisible to cade when it is off
 - **explicitly**: `load envrc [file]` in a `.cade` composes it as one layer
-  alongside other directives 
+  alongside other directives. the explicit directive always works, regardless of
+  the `direnv` setting
+
+both pieces are governed by one config setting, `direnv`, in cade's
+`config.toml`:
+
+```toml
+direnv = "envrc"   # none | shim | envrc | full
+```
+
+- `none`: neither the implicit `.envrc` loader nor the export shim
+- `shim`: the export shim is active; the implicit `.envrc` loader is off
+- `envrc` (default): the implicit `.envrc` loader is on; the shim is off
+- `full`: both
+
+the `CADE_DIRENV` environment variable overrides the config value the same way.
 
 anything cade can't faithfully reproduce (shell expansion, conditionals,
 `layout`, `source_up`, functions, unknown flags) is skipped with a warning.
@@ -310,13 +335,18 @@ keeps working, but they do not activate cade. other direnv commands fail as
 unsupported. the shim maps JSON export to cade's hidden direnv-compatible JSON
 endpoint; `json` is an output format, not a shell accepted by `--shell`.
 
+the shim is opt-in via the `direnv` setting: it is active only when `direnv` is
+`shim` or `full`. when the shim is off, `cade export json` returns an empty
+delta (`{}`), so direnv-aware tools keep working while cade stays inactive for
+them.
+
 the JSON exporter carries minimal `DIRENV_DIFF` state containing only previous
 values for variables cade changed. that state lets repeated exports, directory
 leave, and re-enter restore the editor environment without growing `PATH` or
 leaking a full ambient environment snapshot.
 
-enable it in the module with `programs.cade.direnvCompat = true;`, or build it
-from the flake:
+enable it in the module with `programs.cade.direnvCompat = "shim";` (or `full`),
+or build it from the flake:
 
 ```sh
 nix build .#direnv-compat   # produces bin/direnv

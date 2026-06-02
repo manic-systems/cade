@@ -4,7 +4,11 @@ use common::{Sandbox, stderr, stdout};
 use std::{path::Path, process::Output};
 
 fn run_export_json(sb: &Sandbox, cwd: &Path, extra_env: &[(&str, &str)]) -> Output {
-    sb.run(cwd, &["export", "json"], extra_env)
+    // The shim endpoint is opt-in; these tests exercise its payload, so enable
+    // it explicitly. A test may still override CADE_DIRENV via extra_env.
+    let mut env = vec![("CADE_DIRENV", "full")];
+    env.extend_from_slice(extra_env);
+    sb.run(cwd, &["export", "json"], &env)
 }
 
 fn parse_json(out: &Output) -> serde_json::Value {
