@@ -1,15 +1,19 @@
 use super::{
     Cade, DISALLOWED_REMINDER, Keyword, RollupResult, compute_layer_key, direnv_session_id,
-    find_cade_root, is_valid_session, layer_uses_nix_loader, load_single_layer, new_session_id,
-    rollup_envs, watched_files_for_keywords,
+    find_cade_root, is_valid_session, load_single_layer, new_session_id, rollup_envs,
+    watched_files_for_keywords,
 };
 use crate::{
     direnv_export,
     env_delta::{EnvDelta, EnvDeltaInput, live_ambient_env},
+    types::CadeLayer,
     verbosity::{self, Verbosity},
 };
 use anyhow::{Context, Result, anyhow};
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 pub(super) struct ActivationPlan {
     pub(super) root: PathBuf,
@@ -81,30 +85,22 @@ impl Cade {
 
             let token = compute_layer_key(&watch_files);
             let dir = path.to_string_lossy();
-            let cacheable = !layer_uses_nix_loader(keywords);
-            if cacheable && let Some(cached) = self.get_cached_layer(&dir, &token)? {
-                verbosity::log(
-                    Verbosity::Trace,
-                    format_args!("cade: using cached layer {}.", path.display()),
-                );
-                nix_store_paths.extend(cached.nix_store_paths.iter().cloned());
-                if cached.nix_store_paths.is_empty() {
-                    nix_store_paths
-                        .extend(crate::envs::nix_store_paths_from_env_values(&cached.envs));
-                }
-                cade_layers.push(cached);
-            } else {
-                verbosity::log(
-                    Verbosity::Trace,
-                    format_args!("cade: loading layer {}.", path.display()),
-                );
-                let layer = load_single_layer(layer_count, path, keywords, self, session)?;
-                nix_store_paths.extend(layer.nix_store_paths.iter().cloned());
-                if cacheable {
+
+            let (layer, store_paths) = match self.reusable_cached_layer(&dir, &token, path)? {
+                Some(reused) => reused,
+                None => {
+                    verbosity::log(
+                        Verbosity::Trace,
+                        format_args!("cade: loading layer {}.", path.display()),
+                    );
+                    let layer = load_single_layer(layer_count, path, keywords, self, session)?;
                     self.store_cached_layer(&dir, &token, &layer)?;
+                    let store_paths = layer.nix_store_paths.clone();
+                    (layer, store_paths)
                 }
-                cade_layers.push(layer);
-            }
+            };
+            nix_store_paths.extend(store_paths);
+            cade_layers.push(layer);
         }
 
         let rollup = rollup_envs(cade_layers);
@@ -116,6 +112,45 @@ impl Cade {
             nix_store_paths,
             rollup,
         }))
+    }
+
+    /// A cached layer is reusable only when its watch token still matches
+    /// (enforced by `get_cached_layer`) and every nix store path it references
+    /// still exists. Nix loaders are cached like any other layer, but their
+    /// outputs can be collected between sessions while the inputs (and so the
+    /// token) are unchanged; a missing path forces a reload that re-realizes and
+    /// re-roots them.
+    ///
+    /// The returned store paths are derived from the layer's env values rather
+    /// than its cached `nix_store_paths`: the warm path has no
+    /// `nix develop --profile` to root the dev-shell closure, so cade roots every
+    /// referenced path itself.
+    fn reusable_cached_layer(
+        &self,
+        dir: &str,
+        token: &str,
+        path: &Path,
+    ) -> Result<Option<(CadeLayer, Vec<String>)>> {
+        let Some(layer) = self.get_cached_layer(dir, token)? else {
+            return Ok(None);
+        };
+        let store_paths = crate::envs::nix_store_paths_from_env_values(&layer.envs);
+        if store_paths_all_present(&store_paths) {
+            verbosity::log(
+                Verbosity::Trace,
+                format_args!("cade: using cached layer {}.", path.display()),
+            );
+            Ok(Some((layer, store_paths)))
+        } else {
+            verbosity::log(
+                Verbosity::Trace,
+                format_args!(
+                    "cade: cached layer {} references missing nix store paths; reloading.",
+                    path.display()
+                ),
+            );
+            Ok(None)
+        }
     }
 
     pub(super) fn activation_env_with_snapshot(&self) -> Result<(ActivationEnv, String, bool)> {
@@ -194,5 +229,40 @@ impl Cade {
         };
         let delta = plan.rollup.env_delta(&activation_env);
         direnv_export::active_delta(delta, activation_env.baseline, export.previous)
+    }
+}
+
+/// Whether every given nix store path still exists. Vacuously true when there
+/// are none, so plain env and call layers always stay cacheable.
+fn store_paths_all_present(paths: &[String]) -> bool {
+    paths.iter().all(|p| Path::new(p).exists())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn store_paths_all_present_is_vacuously_true_when_empty() {
+        assert!(store_paths_all_present(&[]));
+    }
+
+    #[test]
+    fn store_paths_all_present_detects_a_missing_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "cade-storepaths-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let present = dir.join("present");
+        std::fs::write(&present, b"").unwrap();
+        let present = present.to_string_lossy().to_string();
+        let missing = dir.join("missing").to_string_lossy().to_string();
+
+        assert!(store_paths_all_present(std::slice::from_ref(&present)));
+        assert!(!store_paths_all_present(&[present, missing]));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
