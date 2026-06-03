@@ -107,7 +107,7 @@ fn visible_columns(line: &str) -> usize {
     while let Some(ch) = chars.next() {
         if ch == '\x1b' && chars.peek() == Some(&'[') {
             chars.next();
-            while let Some(ch) = chars.next() {
+            for ch in chars.by_ref() {
                 if ('@'..='~').contains(&ch) {
                     break;
                 }
