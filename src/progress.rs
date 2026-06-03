@@ -37,7 +37,7 @@ struct State {
     frame: usize,
     long_running: bool,
     recent: Vec<String>,
-    visible_lines: usize,
+    visible_rows: usize,
 }
 
 impl State {
@@ -54,17 +54,14 @@ impl State {
     fn render(&mut self) {
         let block = self.block();
         let mut err = std::io::stderr().lock();
-        rewind(&mut err, self.visible_lines);
-        for line in &block {
-            let _ = writeln!(err, "{line}");
-        }
-        self.visible_lines = block.len();
+        rewind(&mut err, self.visible_rows);
+        self.visible_rows = render_block(&mut err, &block);
         let _ = err.flush();
     }
 }
 
-/// Move the cursor back to the top of a `n`-line block, clearing it on the way.
-fn rewind(err: &mut impl Write, n: usize) {
+/// Move the cursor back to the top of a `n`-row block, clearing it on the way.
+pub(crate) fn rewind(err: &mut impl Write, n: usize) {
     if n == 0 {
         return;
     }
@@ -73,6 +70,101 @@ fn rewind(err: &mut impl Write, n: usize) {
         let _ = writeln!(err, "\x1b[2K");
     }
     let _ = write!(err, "\x1b[{n}F");
+}
+
+pub(crate) fn render_block(err: &mut impl Write, lines: &[String]) -> usize {
+    let width = terminal_width().unwrap_or(80).max(1);
+    for line in lines {
+        let line = fit_terminal_line(line, width);
+        let _ = write!(err, "{line}\x1b[K\r\n");
+    }
+    lines.len()
+}
+
+fn fit_terminal_line(line: &str, width: usize) -> String {
+    let max_columns = width.saturating_sub(1).max(1);
+    if visible_columns(line) <= max_columns {
+        return line.to_string();
+    }
+
+    let suffix = if max_columns >= 3 {
+        "..."
+    } else if max_columns == 2 {
+        ".."
+    } else {
+        "."
+    };
+    let keep_columns = max_columns.saturating_sub(suffix.len());
+    let mut out = take_visible_columns(line, keep_columns);
+    out.push_str(RESET);
+    out.push_str(suffix);
+    out
+}
+
+fn visible_columns(line: &str) -> usize {
+    let mut columns = 0;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            while let Some(ch) = chars.next() {
+                if ('@'..='~').contains(&ch) {
+                    break;
+                }
+            }
+        } else {
+            columns += 1;
+        }
+    }
+    columns
+}
+
+fn take_visible_columns(line: &str, columns: usize) -> String {
+    if columns == 0 {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    let mut visible = 0;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' && chars.peek() == Some(&'[') {
+            out.push(ch);
+            out.push(chars.next().unwrap());
+            for ch in chars.by_ref() {
+                out.push(ch);
+                if ('@'..='~').contains(&ch) {
+                    break;
+                }
+            }
+        } else {
+            if visible == columns {
+                break;
+            }
+            out.push(ch);
+            visible += 1;
+        }
+    }
+    out
+}
+
+#[cfg(unix)]
+fn terminal_width() -> Option<usize> {
+    let mut size = std::mem::MaybeUninit::<libc::winsize>::zeroed();
+    // SAFETY: ioctl writes a winsize into the valid out pointer when stderr is a tty.
+    let result = unsafe { libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, size.as_mut_ptr()) };
+    if result == 0 {
+        // SAFETY: ioctl returned success, so the winsize has been initialized.
+        let size = unsafe { size.assume_init() };
+        (size.ws_col > 0).then_some(size.ws_col as usize)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(unix))]
+fn terminal_width() -> Option<usize> {
+    None
 }
 
 /// True while a live spinner owns the terminal.
@@ -123,8 +215,8 @@ pub fn log_line(line: &str) {
     match guard.as_mut() {
         Some(state) => {
             let mut err = std::io::stderr().lock();
-            rewind(&mut err, state.visible_lines);
-            state.visible_lines = 0;
+            rewind(&mut err, state.visible_rows);
+            state.visible_rows = 0;
             let _ = writeln!(err, "{line}");
             let _ = err.flush();
         }
@@ -151,7 +243,7 @@ pub fn start(subject: &str) -> Spinner {
         frame: 0,
         long_running: false,
         recent: Vec::new(),
-        visible_lines: 0,
+        visible_rows: 0,
     });
 
     let thread = std::thread::spawn(run_loop);
@@ -201,7 +293,7 @@ impl Spinner {
             .lock()
             .unwrap()
             .take()
-            .map(|state| state.visible_lines)
+            .map(|state| state.visible_rows)
             .unwrap_or(0);
         let mut err = std::io::stderr().lock();
         rewind(&mut err, visible);
@@ -215,5 +307,31 @@ impl Drop for Spinner {
         if self.active && !self.resolved {
             self.finish(RED, CROSS, "cade: environment failed to load.".to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visible_columns_ignores_spinner_colour_sequences() {
+        let line = format!("[{YELLOW}/{RESET}] cade: loading");
+        assert_eq!(visible_columns(&line), 17);
+    }
+
+    #[test]
+    fn fit_terminal_line_prevents_autowrap() {
+        let fitted = fit_terminal_line("1234567890", 10);
+        assert!(fitted.ends_with("..."), "{fitted:?}");
+        assert_eq!(visible_columns(&fitted), 9);
+    }
+
+    #[test]
+    fn fit_terminal_line_preserves_ansi_reset_when_truncated() {
+        let line = format!("[{YELLOW}/{RESET}] cade: loading a very long path");
+        let fitted = fit_terminal_line(&line, 12);
+        assert!(fitted.contains(RESET), "{fitted:?}");
+        assert_eq!(visible_columns(&fitted), 11);
     }
 }
