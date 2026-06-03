@@ -22,20 +22,24 @@ fn dir_kind(dir: &Path) -> Option<DirKind> {
     }
 }
 
-/// true when `dir`'s `.cade` carries a `disinherit` directive (caps the cascade)
-fn reads_disinherit(dir: &Path) -> bool {
-    matches!(
-        super::read_cade(&dir.join(".cade")),
-        Ok(kws) if kws.iter().any(|kw| matches!(kw, Keyword::Disinherit))
-    )
+/// true when `dir`'s `.cade` caps the cascade at this dir: either it carries a
+/// `disinherit` directive, or it is malformed (a parse error). a malformed
+/// `.cade` must not be silently climbed past to a valid parent; capping here
+/// keeps the chain shape aligned with activation, which surfaces the same parse
+/// error when it re-reads the file via `config_keywords`
+fn caps_the_cascade(dir: &Path) -> bool {
+    match super::read_cade(&dir.join(".cade")) {
+        Ok(kws) => kws.iter().any(|kw| matches!(kw, Keyword::Disinherit)),
+        Err(_) => true,
+    }
 }
 
 /// the active layer set, tip-first: every `.cade` ancestor (the cascade stacks
 /// across gaps; an empty intermediate dir does not sever it) unioned with
-/// direnv's single nearest `.envrc`. `disinherit` halts the cascade; otherwise
-/// only the permission layer caps it
+/// direnv's single nearest `.envrc`. a `disinherit` directive or a malformed
+/// `.cade` halts the cascade; otherwise only the permission layer caps it
 //
-// note: a `disinherit` dir is parsed here and re-parsed at activation via
+// note: a capping dir is parsed here and re-parsed at activation via
 // `config_keywords`; a single-parse pass shared across both is a deferred
 // cross-cutting refactor (touches the composition-branch callers)
 pub(super) fn participant_dirs(start: &Path) -> Vec<PathBuf> {
@@ -46,9 +50,9 @@ pub(super) fn participant_dirs(start: &Path) -> Vec<PathBuf> {
     while let Some(d) = dir {
         match dir_kind(&d) {
             Some(DirKind::Cade) => {
-                // include this dir, then stop the cascade if it disinherits
+                // include this dir, then stop on disinherit or a malformed `.cade`
                 cade_chain.push(d.clone());
-                if reads_disinherit(&d) {
+                if caps_the_cascade(&d) {
                     break;
                 }
             }
@@ -257,6 +261,52 @@ mod tests {
         assert_eq!(
             parts(&participant_dirs(&cwd), &base),
             vec!["a/b/c".to_string(), "a/b".to_string()]
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn malformed_cade_caps_the_cascade_instead_of_being_skipped() {
+        // a child `.cade` with an unparseable directive must cap the chain at
+        // that dir, not be silently climbed past to its valid parent. this keeps
+        // the chain-shape decision aligned with activation, which surfaces the
+        // parse error when it re-reads the same file.
+        let base = build_tree(
+            &[
+                ("a", ".cade", "A_CADE=1\n"),
+                ("a/b", ".cade", "not a keyword\n"),
+            ],
+            "malformed-caps-midchain",
+        );
+        let cwd = base.join("a/b");
+        assert_eq!(
+            parts(&participant_dirs(&cwd), &base),
+            vec!["a/b".to_string()],
+            "malformed .cade must cap the cascade, not skip up to the parent"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn malformed_cade_caps_even_with_a_deeper_valid_tip() {
+        // the cap holds from the tip's perspective too: a valid tip below a
+        // malformed `.cade` composes the tip and the malformed dir, but the cap
+        // stops the chain there so the valid grandparent never participates.
+        // this is the chain-shape that gap-fill anchors on (it never reaches
+        // above the cap).
+        let base = build_tree(
+            &[
+                ("a", ".cade", "A_CADE=1\n"),
+                ("a/b", ".cade", "not a keyword\n"),
+                ("a/b/tip", ".cade", "TIP_CADE=1\n"),
+            ],
+            "malformed-caps-with-tip",
+        );
+        let cwd = base.join("a/b/tip");
+        assert_eq!(
+            parts(&participant_dirs(&cwd), &base),
+            vec!["a/b/tip".to_string(), "a/b".to_string()],
+            "the malformed dir caps the chain; the valid grandparent must not join"
         );
         std::fs::remove_dir_all(&base).ok();
     }
