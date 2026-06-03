@@ -26,12 +26,15 @@ let
       generatedConfigFile
     else
       null;
-  cadeCmd = lib.escapeShellArgs (map toString (
-    [ exe ] ++ lib.optionals (activeConfigFile != null) [
-      "--config"
-      activeConfigFile
-    ]
-  ));
+  cadeCmd = lib.escapeShellArgs (
+    map toString (
+      [ exe ]
+      ++ lib.optionals (activeConfigFile != null) [
+        "--config"
+        activeConfigFile
+      ]
+    )
+  );
   snippets = import ./snippets.nix { cade = cadeCmd; };
   direnvShim = pkgs.callPackage "${self}/nix/direnv-compat.nix" { cade = cfg.package; };
 in
@@ -65,12 +68,14 @@ in
     };
 
     verbosity = lib.mkOption {
-      type = lib.types.nullOr (lib.types.enum [
-        "quiet"
-        "normal"
-        "vars"
-        "trace"
-      ]);
+      type = lib.types.nullOr (
+        lib.types.enum [
+          "quiet"
+          "normal"
+          "vars"
+          "trace"
+        ]
+      );
       default = null;
       description = "Default diagnostic verbosity written to cade's generated TOML config.";
     };

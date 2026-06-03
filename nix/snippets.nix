@@ -2,7 +2,9 @@
 # NixOS / nix-darwin (nushell, elvish, murex). By default these invoke `cade`
 # from PATH, so this needs no package/pkgs. The module passes an escaped command
 # with its configured package/config file.
-{ cade ? "cade" }:
+{
+  cade ? "cade",
+}:
 {
   nushell = ''
     mkdir ~/.cache/cade

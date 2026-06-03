@@ -1,10 +1,16 @@
 {
   lib,
   rustPlatform,
+  stdenv,
+  pkg-config,
   sqlite,
+  clang,
+  wild ? null,
 }:
 let
   manifest = (lib.importTOML ../Cargo.toml).package;
+  hasWild =
+    stdenv.hostPlatform.isLinux && (stdenv.hostPlatform.isx86_64 || stdenv.hostPlatform.isAarch64);
 in
 rustPlatform.buildRustPackage {
   pname = manifest.name;
@@ -23,7 +29,18 @@ rustPlatform.buildRustPackage {
 
   cargoLock.lockFile = ../Cargo.lock;
 
+  nativeBuildInputs = [
+    pkg-config
+  ]
+  ++ lib.optionals hasWild [
+    wild
+    clang
+  ];
   buildInputs = [ sqlite ];
+
+  env = lib.optionalAttrs hasWild {
+    RUSTFLAGS = "-Clinker=${clang}/bin/clang -Clink-arg=--ld-path=wild";
+  };
 
   meta = {
     description = manifest.description;
