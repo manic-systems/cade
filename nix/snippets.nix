@@ -1,4 +1,6 @@
-{ cade ? "cade" }:
+{
+  cade ? "cade",
+}:
 {
   nushell = ''
     mkdir ~/.cache/cade
