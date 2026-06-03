@@ -114,7 +114,7 @@ struct LongRunningProgress<'a> {
     enabled: bool,
     interactive: bool,
     shown: bool,
-    visible_lines: usize,
+    visible_rows: usize,
     last_block: Vec<String>,
 }
 
@@ -125,7 +125,7 @@ impl<'a> LongRunningProgress<'a> {
             enabled: verbosity::enabled(Verbosity::Normal),
             interactive: std::io::stderr().is_terminal(),
             shown: false,
-            visible_lines: 0,
+            visible_rows: 0,
             last_block: Vec::new(),
         }
     }
@@ -176,25 +176,20 @@ impl<'a> LongRunningProgress<'a> {
             return;
         }
         self.clear();
-        for line in &block {
-            eprintln!("{line}");
-        }
-        self.visible_lines = block.len();
+        let mut err = std::io::stderr().lock();
+        self.visible_rows = crate::progress::render_block(&mut err, &block);
         self.last_block = block;
-        let _ = std::io::stderr().flush();
+        let _ = err.flush();
     }
 
     fn clear(&mut self) {
-        if self.visible_lines == 0 {
+        if self.visible_rows == 0 {
             return;
         }
-        eprint!("\x1b[{}F", self.visible_lines);
-        for _ in 0..self.visible_lines {
-            eprintln!("\x1b[2K");
-        }
-        eprint!("\x1b[{}F", self.visible_lines);
-        let _ = std::io::stderr().flush();
-        self.visible_lines = 0;
+        let mut err = std::io::stderr().lock();
+        crate::progress::rewind(&mut err, self.visible_rows);
+        let _ = err.flush();
+        self.visible_rows = 0;
         self.last_block.clear();
     }
 
