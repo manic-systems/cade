@@ -64,13 +64,14 @@ impl State {
 }
 
 /// Move the cursor back to the top of a `n`-line block, clearing it on the way.
+/// Avoid `writeln!`/`eprintln!` so stray `\n` won't produce visible scrollback.
 fn rewind(err: &mut impl Write, n: usize) {
     if n == 0 {
         return;
     }
     let _ = write!(err, "\x1b[{n}F");
     for _ in 0..n {
-        let _ = writeln!(err, "\x1b[2K");
+        let _ = write!(err, "\x1b[2K\x1b[1B");
     }
     let _ = write!(err, "\x1b[{n}F");
 }
