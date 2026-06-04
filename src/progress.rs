@@ -200,6 +200,9 @@ pub fn set_recent(lines: Vec<String>) {
     if let Some(state) = STATE.lock().unwrap().as_mut() {
         let start = lines.len().saturating_sub(RECENT_LINES);
         state.recent = lines[start..].to_vec();
+        if state.long_running {
+            state.render();
+        }
     }
 }
 
@@ -211,7 +214,18 @@ pub fn mark_long_running(message: String) {
     if let Some(state) = STATE.lock().unwrap().as_mut() {
         state.long_running = true;
         state.message = message;
+        state.render();
     }
+}
+
+fn durable_recent_block(state: &State) -> Vec<String> {
+    if !state.long_running || state.recent.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = vec!["cade: recent output:".to_string()];
+    lines.extend(state.recent.iter().map(|line| format!("    {line}")));
+    lines
 }
 
 /// Emit a stderr line, stepping around the live spinner if one is drawing.
@@ -303,14 +317,17 @@ impl Spinner {
             thread.thread().unpark();
             let _ = thread.join();
         }
-        let visible = STATE
+        let (visible, recent) = STATE
             .lock()
             .unwrap()
             .take()
-            .map(|state| state.visible_rows)
-            .unwrap_or(0);
+            .map(|state| (state.visible_rows, durable_recent_block(&state)))
+            .unwrap_or((0, Vec::new()));
         let mut err = std::io::stderr().lock();
         rewind(&mut err, visible);
+        for line in recent {
+            let _ = writeln!(err, "{line}");
+        }
         let _ = err.flush();
     }
 
@@ -320,15 +337,18 @@ impl Spinner {
             thread.thread().unpark();
             let _ = thread.join();
         }
-        let visible = STATE
+        let (visible, recent) = STATE
             .lock()
             .unwrap()
             .take()
-            .map(|state| state.visible_rows)
-            .unwrap_or(0);
+            .map(|state| (state.visible_rows, durable_recent_block(&state)))
+            .unwrap_or((0, Vec::new()));
         let mut err = std::io::stderr().lock();
         rewind(&mut err, visible);
         let _ = writeln!(err, "[{colour}{symbol}{RESET}] {message}");
+        for line in recent {
+            let _ = writeln!(err, "{line}");
+        }
         let _ = err.flush();
     }
 }
@@ -364,5 +384,38 @@ mod tests {
         let fitted = fit_terminal_line(&line, 12);
         assert!(fitted.contains(RESET), "{fitted:?}");
         assert_eq!(visible_columns(&fitted), 11);
+    }
+
+    #[test]
+    fn durable_recent_block_keeps_long_running_command_output() {
+        let state = State {
+            message: "cade: call `slow` is taking a long time".to_string(),
+            frame: 0,
+            long_running: true,
+            recent: vec!["line2".to_string(), "line3".to_string()],
+            visible_rows: 3,
+        };
+
+        assert_eq!(
+            durable_recent_block(&state),
+            vec![
+                "cade: recent output:".to_string(),
+                "    line2".to_string(),
+                "    line3".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn durable_recent_block_stays_empty_before_long_running_warning() {
+        let state = State {
+            message: "cade: loading /project".to_string(),
+            frame: 0,
+            long_running: false,
+            recent: vec!["line".to_string()],
+            visible_rows: 1,
+        };
+
+        assert!(durable_recent_block(&state).is_empty());
     }
 }
