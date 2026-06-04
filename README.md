@@ -23,6 +23,9 @@ add cade as an input and use the module for your platform. the module installs
 cade and wires its hook into your interactive shells for bash/zsh/fish - otherwise see lib.snippets in the flake
 or programs.cade.shellSnippets in the nixos module.
 
+note that cade's `next` branch is the current "bleeding edge", so use that if you want it.
+from 0.1.2 `main` will effectively be stable/versioned and should only land tags and backports.
+
 ```nix
 {
   inputs.cade.url = "github:manic-systems/cade";
