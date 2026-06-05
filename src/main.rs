@@ -5,6 +5,7 @@ mod direnv_export;
 mod env_delta;
 mod envrc;
 mod envs;
+mod expand;
 mod loaders;
 mod nix_dev_env;
 mod path_resolve;

@@ -32,11 +32,11 @@ pub enum Keyword {
     Pure,
     /// stop the `.cade` cascade at this dir; nothing above it loads
     Disinherit,
-    Call(Vec<String>),
+    Call(String),
     Load(Loadable),
     Hook(InnerHook),
     Clear(Vec<String>),
-    Watch(Vec<String>),
+    Watch(String),
     Concat(Vec<String>),
     Set(EnvSet),
 }

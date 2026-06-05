@@ -80,7 +80,7 @@ impl Cade {
         let mut nix_store_paths: Vec<String> = Vec::new();
 
         for (layer_count, (path, keywords)) in cade_files.iter().enumerate() {
-            let watch_files = watched_files_for_keywords(path, keywords);
+            let watch_files = watched_files_for_keywords(path, keywords)?;
             all_watch_files.extend(watch_files.clone());
 
             let token = compute_layer_key(&watch_files);

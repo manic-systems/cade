@@ -7,7 +7,6 @@ pub enum ParseError {
     UnknownLoadable,
     TooManyOptions,
     TooFewOptions,
-    InvalidQuoting,
     EmptyLine,
 }
 
@@ -18,7 +17,6 @@ impl Display for ParseError {
             Self::UnknownLoadable => f.write_str("unknown loadable"),
             Self::TooManyOptions => f.write_str("too many options"),
             Self::TooFewOptions => f.write_str("too few options"),
-            Self::InvalidQuoting => f.write_str("unbalanced quotes"),
             Self::EmptyLine => f.write_str("empty line"),
         }
     }
@@ -64,12 +62,11 @@ impl FromStr for Keyword {
             "pure" => Pure,
             "disinherit" => Disinherit,
             "call" => {
-                // split respecting shell quoting
-                let target = shlex::split(rest_raw).ok_or(ParseError::InvalidQuoting)?;
-                if target.is_empty() {
+                // kept raw, `${}` expansion then shlex tokenization will occur
+                if rest_raw.is_empty() {
                     return Err(ParseError::TooFewOptions);
                 }
-                Call(target)
+                Call(rest_raw.to_string())
             }
             "load" => {
                 let rest: Vec<&str> = rest_raw.split_whitespace().collect();
@@ -116,11 +113,10 @@ impl FromStr for Keyword {
                 Clear(vars)
             }
             "watch" => {
-                let files = shlex::split(rest_raw).ok_or(ParseError::InvalidQuoting)?;
-                if files.is_empty() {
+                if rest_raw.is_empty() {
                     return Err(ParseError::TooFewOptions);
                 }
-                Watch(files)
+                Watch(rest_raw.to_string())
             }
             "concat" => {
                 let vars: Vec<String> = rest_raw.split_whitespace().map(|s| s.to_owned()).collect();
