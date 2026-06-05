@@ -370,8 +370,9 @@ pub fn load_env(path: &Path) -> Result<EnvSet> {
 
 pub fn call(path: &Path, argv: Vec<String>) -> Result<EnvSet> {
     let mut it = argv.iter();
-    // safety: parser rejects an empty argv
-    let mut process = Command::new(it.next().unwrap());
+    // expansion can empty the argv (e.g. `call ${UNSET}`)
+    let program = it.next().context("call has no command")?;
+    let mut process = Command::new(program);
     process.current_dir(path);
     process.args(it);
     let cmdline = argv.join(" ");

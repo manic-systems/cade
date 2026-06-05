@@ -267,11 +267,15 @@ struct WatchState {
 
 // Falls back to an implicit `load envrc` when a dir has no .cade.
 fn config_keywords(dir: &Path) -> Result<Vec<Keyword>> {
-    if std::fs::exists(dir.join(".cade")).unwrap_or(false) {
-        read_cade(&dir.join(".cade")).context("reading cade file")
+    let mut keywords = if std::fs::exists(dir.join(".cade")).unwrap_or(false) {
+        read_cade(&dir.join(".cade")).context("reading cade file")?
     } else {
-        Ok(vec![Keyword::Load(Loadable::Envrc(String::new()))])
+        vec![Keyword::Load(Loadable::Envrc(String::new()))]
+    };
+    for kw in &mut keywords {
+        crate::expand::expand_keyword(kw);
     }
+    Ok(keywords)
 }
 
 // Reject session ids that could escape the snapshots dir when used as a path.
@@ -1734,7 +1738,7 @@ fn load_single_layer(
     for (action_index, kw) in keywords.iter().enumerate() {
         let act = match kw {
             Pure => Ok(CadeAction::Purify),
-            Call(argv) => call(path, argv.clone())
+            Call(raw) => call(path, tokenize_args(raw)?)
                 .context("calling process")
                 .map(CadeAction::Environ),
             Load(loadable) => {
@@ -1764,8 +1768,12 @@ fn load_single_layer(
     Ok(layer)
 }
 
+fn tokenize_args(raw: &str) -> Result<Vec<String>> {
+    shlex::split(raw).ok_or_else(|| anyhow!("unbalanced quotes in `{raw}`"))
+}
+
 /// Determine which files a layer depends on
-fn watched_files_for_keywords(dir: &Path, keywords: &[Keyword]) -> Vec<PathBuf> {
+fn watched_files_for_keywords(dir: &Path, keywords: &[Keyword]) -> Result<Vec<PathBuf>> {
     let mut files = vec![dir.join(".cade")];
     for kw in keywords {
         match kw {
@@ -1774,11 +1782,11 @@ fn watched_files_for_keywords(dir: &Path, keywords: &[Keyword]) -> Vec<PathBuf> 
             // real files lexically, so creating it trips the watcher
             Keyword::Load(loadable) => files.extend(loadable.resolve(dir).watch),
             // explicit user-declared dependencies
-            Keyword::Watch(ws) => files.extend(ws.iter().map(|w| dir.join(w))),
+            Keyword::Watch(raw) => files.extend(tokenize_args(raw)?.iter().map(|w| dir.join(w))),
             _ => {}
         }
     }
-    files
+    Ok(files)
 }
 
 fn compute_layer_key(watched_files: &[PathBuf]) -> String {

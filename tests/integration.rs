@@ -1993,3 +1993,85 @@ fn directed_load_missing_path_errors_clearly() {
         "error should name the loader and path: {err}"
     );
 }
+
+#[test]
+fn expands_env_vars_in_inline_assignment() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "GREETING=hi-${WHO}\nMODE=${MODE:-dev}\n");
+    sb.allow(&sb.root);
+
+    let out = sb.enter(&sb.root, &[("WHO", "world")]);
+    assert!(out.status.success(), "enter failed: {:?}", out);
+    let s = stdout(&out);
+    assert!(
+        s.contains("export GREETING='hi-world';"),
+        "missing GREETING: {s}"
+    );
+    assert!(
+        s.contains("export MODE='dev';"),
+        "missing MODE default: {s}"
+    );
+}
+
+#[test]
+fn escaped_dollar_stays_literal_in_inline_assignment() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "LIT=\\${WHO}\n");
+    sb.allow(&sb.root);
+
+    let out = sb.enter(&sb.root, &[("WHO", "world")]);
+    assert!(out.status.success(), "enter failed: {:?}", out);
+    let s = stdout(&out);
+    assert!(
+        s.contains("export LIT='${WHO}';"),
+        "escape not honored: {s}"
+    );
+}
+
+#[test]
+fn call_arg_value_stays_one_token() {
+    let sb = Sandbox::new();
+    // $# reports the argument count; a word-split value would make it 2
+    sb.write(".cade", "call /bin/sh -c 'echo COUNT=$#' sh ${ARGS}\n");
+    sb.allow(&sb.root);
+
+    let out = sb.enter(&sb.root, &[("ARGS", "a b")]);
+    assert!(out.status.success(), "enter failed: {:?}", out);
+    let s = stdout(&out);
+    assert!(s.contains("export COUNT='1';"), "value word-split: {s}");
+}
+
+#[test]
+fn expands_env_vars_in_load_path() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "load env ${WHICH}.env\n");
+    sb.write("alt.env", "PICKED=fromalt\n");
+    sb.allow(&sb.root);
+
+    let out = sb.enter(&sb.root, &[("WHICH", "alt")]);
+    assert!(out.status.success(), "enter failed: {:?}", out);
+    let s = stdout(&out);
+    assert!(
+        s.contains("export PICKED='fromalt';"),
+        "load path not expanded: {s}"
+    );
+}
+
+#[test]
+fn leaves_hook_command_for_the_shell_to_expand() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "hook load echo ${WHO}\n");
+    sb.allow(&sb.root);
+
+    let out = sb.enter(&sb.root, &[("WHO", "world")]);
+    assert!(out.status.success(), "enter failed: {:?}", out);
+    let s = stdout(&out);
+    assert!(
+        s.contains("echo ${WHO}"),
+        "hook should be emitted verbatim: {s}"
+    );
+    assert!(
+        !s.contains("echo world"),
+        "hook must not be pre-expanded: {s}"
+    );
+}

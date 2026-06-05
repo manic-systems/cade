@@ -274,6 +274,32 @@ in `.cade`, `.env` files, and `call` output, `KEY=value` follows the variable's
 normal mode, while `KEY:=value` forces a **hard replace** that ignores ambient
 and parent layers.
 
+### variable expansion
+
+`.cade` directive arguments expand `${VAR}` references against the environment.
+only the braced `${...}` form is recognized. you may also write `\$` for a literal `$`,
+so `LIT=\${VAR}` keeps the text `${VAR}` unexpanded.
+`hook` commands are **not** expanded by cade because the shell runs them and expands `${...}`
+itself.
+
+```
+call deploy --token ${API_TOKEN}
+load env ${ENVIRONMENT:-dev}.env
+DATA_DIR=${XDG_DATA_HOME:-${HOME}/.local/share}/myapp
+```
+
+the syntax is bash-compatible: `${VAR}` substitutes `VAR` (empty when unset),
+and all `${VAR:-default}` / `${VAR-default}` / `${VAR:+alt}` / `${VAR+alt}`
+forms are supported, with `default`/`alt` themselves expandable. the default is
+optional, so `${VAR:-}` simply substitutes `VAR`. 
+in `call` and `watch`, an expanded value is always a single argument: it is not
+re-split on spaces, so `call deploy ${ARGS}` passes one argument even when `ARGS`
+contains spaces.
+
+expansion is resolved when a layer is loaded and cached with it, keyed on the
+layer's files. changing a referenced variable does not re-expand until one of
+those files changes (`watch` an extra file to force it).
+
 ## direnv compatibility
 
 cade can read [direnv](https://direnv.net/) `.envrc` files, but does **not**
