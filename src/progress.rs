@@ -37,6 +37,7 @@ struct State {
     frame: usize,
     long_running: bool,
     recent: Vec<String>,
+    nix_bar: Option<String>,
     visible_rows: usize,
 }
 
@@ -47,6 +48,9 @@ impl State {
         let mut lines = vec![format!("[{colour}{frame}{RESET}] {}", self.message)];
         if self.long_running {
             lines.extend(self.recent.iter().map(|line| format!("    {line}")));
+            if let Some(bar) = &self.nix_bar {
+                lines.push(bar.clone());
+            }
         }
         lines
     }
@@ -206,6 +210,19 @@ pub fn set_recent(lines: Vec<String>) {
     }
 }
 
+/// Replace the reconstructed nix progress bar shown below the recent output.
+pub fn set_nix_bar(bar: Option<String>) {
+    if !is_active() {
+        return;
+    }
+    if let Some(state) = STATE.lock().unwrap().as_mut() {
+        state.nix_bar = bar;
+        if state.long_running {
+            state.render();
+        }
+    }
+}
+
 /// Flip the spinner into its yellow long-running state with a new message.
 pub fn mark_long_running(message: String) {
     if !is_active() {
@@ -266,6 +283,7 @@ pub fn start(subject: &str) -> Spinner {
         frame: 0,
         long_running: false,
         recent: Vec::new(),
+        nix_bar: None,
         visible_rows: 0,
     });
 
@@ -393,6 +411,7 @@ mod tests {
             frame: 0,
             long_running: true,
             recent: vec!["line2".to_string(), "line3".to_string()],
+            nix_bar: None,
             visible_rows: 3,
         };
 
@@ -413,6 +432,7 @@ mod tests {
             frame: 0,
             long_running: false,
             recent: vec!["line".to_string()],
+            nix_bar: None,
             visible_rows: 1,
         };
 

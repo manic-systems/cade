@@ -8,6 +8,7 @@ mod envs;
 mod expand;
 mod loaders;
 mod nix_dev_env;
+mod nix_progress;
 mod path_resolve;
 mod progress;
 mod shells;
