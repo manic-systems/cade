@@ -1,11 +1,11 @@
 use crate::{
     config,
+    nix_progress::NixProgress,
     types::EnvSet,
     verbosity::{self, Verbosity},
 };
 use anyhow::{Context, Result, bail};
 use std::{
-    collections::VecDeque,
     io::{IsTerminal, Read, Write},
     path::Path,
     process::{Command, Output, Stdio},
@@ -17,9 +17,6 @@ pub(crate) use crate::nix_dev_env::{load_flake, load_shell};
 
 const DEFAULT_LONG_RUNNING_WARNING_AFTER: Duration = Duration::from_secs(5);
 const LONG_RUNNING_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const RECENT_OUTPUT_LINES: usize = 5;
-const RECENT_OUTPUT_LINE_BYTES: usize = 4 * 1024;
-const DISPLAY_LINE_CHARS: usize = 200;
 
 fn long_running_warning_after() -> Duration {
     config::long_running_warning_ms()
@@ -36,77 +33,6 @@ enum StreamKind {
 struct StreamEvent {
     kind: StreamKind,
     data: Vec<u8>,
-}
-
-struct RecentLines {
-    lines: VecDeque<String>,
-    current: Vec<u8>,
-}
-
-impl RecentLines {
-    fn new() -> Self {
-        Self {
-            lines: VecDeque::with_capacity(RECENT_OUTPUT_LINES),
-            current: Vec::new(),
-        }
-    }
-
-    fn push(&mut self, chunk: &[u8]) {
-        for &byte in chunk {
-            match byte {
-                b'\n' => self.finish_current_line(),
-                b'\r' => {
-                    self.current.clear();
-                }
-                _ => {
-                    if self.current.len() < RECENT_OUTPUT_LINE_BYTES {
-                        self.current.push(byte);
-                    }
-                }
-            }
-        }
-    }
-
-    fn finish_current_line(&mut self) {
-        let line = sanitize_display_line(&self.current);
-        self.current.clear();
-        if line.is_empty() {
-            return;
-        }
-        if self.lines.len() == RECENT_OUTPUT_LINES {
-            self.lines.pop_front();
-        }
-        self.lines.push_back(line);
-    }
-
-    fn lines(&self) -> Vec<String> {
-        let mut lines: Vec<String> = self.lines.iter().cloned().collect();
-        let current = sanitize_display_line(&self.current);
-        if !current.is_empty() {
-            lines.push(current);
-        }
-        let keep_from = lines.len().saturating_sub(RECENT_OUTPUT_LINES);
-        lines.into_iter().skip(keep_from).collect()
-    }
-}
-
-fn sanitize_display_line(raw: &[u8]) -> String {
-    let text = String::from_utf8_lossy(raw);
-    let mut out = String::new();
-    for ch in text.chars() {
-        if ch == '\t' {
-            out.push_str("    ");
-        } else if ch.is_control() {
-            out.push(' ');
-        } else {
-            out.push(ch);
-        }
-        if out.chars().count() >= DISPLAY_LINE_CHARS {
-            out.push_str("...");
-            break;
-        }
-    }
-    out.trim().to_string()
 }
 
 struct LongRunningProgress<'a> {
@@ -130,13 +56,13 @@ impl<'a> LongRunningProgress<'a> {
         }
     }
 
-    fn show(&mut self, recent: &[String]) {
+    fn show(&mut self, recent: &[String], bar: Option<&str>) {
         self.shown = true;
         if !self.enabled {
             return;
         }
         if self.interactive {
-            self.render(recent);
+            self.render(recent, bar);
         } else {
             eprintln!(
                 "cade: {} is taking a long time; press Ctrl-C to stop and inspect the command.",
@@ -150,9 +76,9 @@ impl<'a> LongRunningProgress<'a> {
         self.shown && self.enabled && self.interactive
     }
 
-    fn update(&mut self, recent: &[String]) {
+    fn update(&mut self, recent: &[String], bar: Option<&str>) {
         if self.wants_live() {
-            self.render(recent);
+            self.render(recent, bar);
         }
     }
 
@@ -170,8 +96,8 @@ impl<'a> LongRunningProgress<'a> {
         }
     }
 
-    fn render(&mut self, recent: &[String]) {
-        let block = self.block(recent);
+    fn render(&mut self, recent: &[String], bar: Option<&str>) {
+        let block = self.block(recent, bar);
         if block == self.last_block {
             return;
         }
@@ -193,7 +119,7 @@ impl<'a> LongRunningProgress<'a> {
         self.last_block.clear();
     }
 
-    fn block(&self, recent: &[String]) -> Vec<String> {
+    fn block(&self, recent: &[String], bar: Option<&str>) -> Vec<String> {
         let mut lines = vec![format!(
             "cade: {} is taking a long time; press Ctrl-C to stop and inspect the command.",
             self.what
@@ -201,6 +127,9 @@ impl<'a> LongRunningProgress<'a> {
         if !recent.is_empty() {
             lines.push("cade: recent output:".to_string());
             lines.extend(recent.iter().map(|line| format!("    {line}")));
+        }
+        if let Some(bar) = bar {
+            lines.push(bar.to_string());
         }
         lines
     }
@@ -237,20 +166,25 @@ fn handle_stream_event(
     event: StreamEvent,
     stdout: &mut Vec<u8>,
     stderr: &mut Vec<u8>,
-    recent_stderr: &mut RecentLines,
+    nix: &mut NixProgress,
     progress: Option<&mut LongRunningProgress<'_>>,
 ) {
     match event.kind {
         StreamKind::Stdout => stdout.extend(event.data),
         StreamKind::Stderr => {
             stderr.extend(&event.data);
-            recent_stderr.push(&event.data);
+            nix.push(&event.data);
+            let recent = nix.recent_lines();
+            let bar = nix.bar_line();
             match progress {
                 // No spinner owns the terminal: drive the standalone widget.
-                Some(progress) if progress.wants_live() => progress.update(&recent_stderr.lines()),
+                Some(progress) if progress.wants_live() => progress.update(&recent, bar.as_deref()),
                 Some(_) => {}
                 // Feed the active activation spinner instead.
-                None => crate::progress::set_recent(recent_stderr.lines()),
+                None => {
+                    crate::progress::set_recent(recent);
+                    crate::progress::set_nix_bar(bar);
+                }
             }
         }
     }
@@ -277,7 +211,7 @@ pub(crate) fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let mut recent_stderr = RecentLines::new();
+    let mut nix = NixProgress::new();
     // The activation spinner, when present, subsumes the standalone widget.
     let mut progress = (!crate::progress::is_active()).then(|| LongRunningProgress::new(what));
     let mut warned = false;
@@ -291,10 +225,13 @@ pub(crate) fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
         if !warned && start.elapsed() >= warn_after {
             warned = true;
             match &mut progress {
-                Some(progress) => progress.show(&recent_stderr.lines()),
-                None => crate::progress::mark_long_running(format!(
-                    "cade: {what} is taking a long time; press Ctrl-C to stop and inspect the command."
-                )),
+                Some(progress) => progress.show(&nix.recent_lines(), nix.bar_line().as_deref()),
+                None => {
+                    crate::progress::mark_long_running(format!(
+                        "cade: {what} is taking a long time; press Ctrl-C to stop and inspect the command."
+                    ));
+                    crate::progress::set_nix_bar(nix.bar_line());
+                }
             }
         }
 
@@ -307,13 +244,9 @@ pub(crate) fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
         };
 
         match rx.recv_timeout(wait_for) {
-            Ok(event) => handle_stream_event(
-                event,
-                &mut stdout,
-                &mut stderr,
-                &mut recent_stderr,
-                progress.as_mut(),
-            ),
+            Ok(event) => {
+                handle_stream_event(event, &mut stdout, &mut stderr, &mut nix, progress.as_mut())
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 break child.wait().context("waiting for command status")?;
@@ -325,16 +258,10 @@ pub(crate) fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
         let _ = reader.join();
     }
     while let Ok(event) = rx.try_recv() {
-        handle_stream_event(
-            event,
-            &mut stdout,
-            &mut stderr,
-            &mut recent_stderr,
-            progress.as_mut(),
-        );
+        handle_stream_event(event, &mut stdout, &mut stderr, &mut nix, progress.as_mut());
     }
     if let Some(mut progress) = progress {
-        progress.finish(&recent_stderr.lines());
+        progress.finish(&nix.recent_lines());
     }
 
     let out = Output {
@@ -345,15 +272,21 @@ pub(crate) fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     verbosity::log(Verbosity::Trace, format_args!("cade: finished {what}."));
 
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let stderr = stderr.trim();
+        // prefer the de-jsonified nix messages; fall back to raw stderr for
+        // non-nix commands (whose stderr is plain text already).
+        let summary = if nix.saw_nix() {
+            nix.error_text()
+        } else {
+            String::from_utf8_lossy(&out.stderr).into_owned()
+        };
+        let summary = summary.trim();
         bail!(
             "{what} failed ({}){}",
             out.status,
-            if stderr.is_empty() {
+            if summary.is_empty() {
                 String::new()
             } else {
-                format!(":\n{stderr}")
+                format!(":\n{summary}")
             }
         );
     }

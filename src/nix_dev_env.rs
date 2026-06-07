@@ -185,6 +185,7 @@ pub(crate) fn load_flake(target: &FlakeTarget, profile: Option<PathBuf>) -> Resu
     if !target.installable.is_empty() {
         proc.arg(&target.installable);
     }
+    add_log_format(&mut proc);
     add_profile(&mut proc, profile.as_deref());
     add_env_command(&mut proc);
 
@@ -202,6 +203,7 @@ pub(crate) fn load_shell(file: &Path, profile: Option<PathBuf>) -> Result<EnvSet
     let file_str = file.to_string_lossy();
     let mut proc = Command::new("nix");
     proc.args(["develop", "-f"]).arg(file);
+    add_log_format(&mut proc);
     add_profile(&mut proc, profile.as_deref());
     add_env_command(&mut proc);
     load_nix_dev_env(
@@ -247,6 +249,10 @@ fn add_profile(proc: &mut Command, profile: Option<&Path>) {
     if let Some(profile) = profile {
         proc.args(["--profile"]).arg(profile);
     }
+}
+
+fn add_log_format(proc: &mut Command) {
+    proc.args(["--log-format", "internal-json"]);
 }
 
 fn add_env_command(proc: &mut Command) {
