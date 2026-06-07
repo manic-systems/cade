@@ -15,6 +15,7 @@ codegen-units = 1
 
 [dependencies]
 anyhow = "1.0.99"
+cognos = "1.0"
 libc = "0.2"
 microxdg = "0.2.0"
 pound = "0.1.4"
