@@ -18,7 +18,6 @@ use anyhow::{Context, Result};
 use pound::Parse;
 
 use crate::core::{Announce, Cade};
-use crate::shells::ShellName;
 
 fn try_main() -> Result<()> {
     let args = cli::pound::Cli::parse();
@@ -31,7 +30,7 @@ fn try_main() -> Result<()> {
 
     // `hook` emits a static snippet, so handle it before the side-effecting init
     if let Hook { shell } = &args.action {
-        let shell_name: ShellName = shell.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+        let shell_name: crate::shells::ShellName = (*shell).into();
         let output = shell_name.get_output();
         let cade_exe = std::env::current_exe()
             .context("resolve cade executable for shell hook")?
@@ -57,7 +56,7 @@ fn try_main() -> Result<()> {
     let mut cade = Cade::init()?;
     match args.action {
         Enter { shell } => {
-            let shell_name: ShellName = shell.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+            let shell_name: crate::shells::ShellName = shell.into();
             let output = shell_name.get_output();
             cade.do_activation(
                 output.as_ref(),
@@ -68,7 +67,7 @@ fn try_main() -> Result<()> {
             .context("activate cade environment")?;
         }
         Exit { shell } => {
-            let shell_name: ShellName = shell.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+            let shell_name: crate::shells::ShellName = shell.into();
             let output = shell_name.get_output();
             cade.do_restore(
                 output.as_ref(),
@@ -80,7 +79,7 @@ fn try_main() -> Result<()> {
             .context("deactivate cade environment")?;
         }
         Reload { shell } => {
-            let shell_name: ShellName = shell.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+            let shell_name: crate::shells::ShellName = shell.into();
             let output = shell_name.get_output();
             cade.do_reload(output.as_ref(), args.client_id.as_deref(), args.owner_pid)
                 .context("reload cade environment")?;

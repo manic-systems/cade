@@ -20,6 +20,32 @@ impl From<CliVerbosity> for crate::verbosity::Verbosity {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum CliShell {
+    Fish,
+    Bash,
+    Zsh,
+    Nushell,
+    Nu,
+    Json,
+    Elvish,
+    Murex,
+}
+
+impl From<CliShell> for crate::shells::ShellName {
+    fn from(value: CliShell) -> Self {
+        match value {
+            CliShell::Fish => Self::Fish,
+            CliShell::Bash => Self::Bash,
+            CliShell::Zsh => Self::Zsh,
+            CliShell::Nushell | CliShell::Nu => Self::Nushell,
+            CliShell::Json => Self::Json,
+            CliShell::Elvish => Self::Elvish,
+            CliShell::Murex => Self::Murex,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum CliExportFormat {
     Json,
@@ -32,19 +58,19 @@ pub enum CliAction {
     Enter {
         /// Shell directive format to emit.
         #[pound(long)]
-        shell: String,
+        shell: CliShell,
     },
     /// Deactivate cade and restore the shell environment from its snapshot.
     Exit {
         /// Shell directive format to emit.
         #[pound(long)]
-        shell: String,
+        shell: CliShell,
     },
     /// Re-evaluate cade after a directory change and update the shell.
     Reload {
         /// Shell directive format to emit.
         #[pound(long)]
-        shell: String,
+        shell: CliShell,
     },
     /// Allow cade to load the current .cade directory.
     Allow,
@@ -55,7 +81,7 @@ pub enum CliAction {
     /// Print shell hook initialization code.
     Hook {
         /// Shell to generate hook code for.
-        shell: String,
+        shell: CliShell,
     },
     /// Internal compatibility endpoint used by the direnv shim.
     #[pound(hidden)]
@@ -124,4 +150,25 @@ pub struct Cli {
 
     #[pound(subcommand)]
     pub action: CliAction,
+}
+
+#[cfg(test)]
+mod tests {
+    use pound::Parse;
+
+    use super::{Cli, CliAction, CliShell};
+
+    #[test]
+    fn shell_switches_use_typed_values() {
+        let cli = Cli::try_parse_from(["enter", "--shell", "nu"]).expect("parse shell value");
+        let CliAction::Enter { shell } = cli.action else {
+            panic!("expected enter action");
+        };
+
+        assert_eq!(shell, CliShell::Nu);
+        assert!(matches!(
+            crate::shells::ShellName::from(shell),
+            crate::shells::ShellName::Nushell
+        ));
+    }
 }
