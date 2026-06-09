@@ -1,9 +1,9 @@
 {
   # nixpkgs, systems, and fenix are pinned with tack (see ./.tack), not flake inputs
   outputs =
-    { self }:
+    { self, ... }@args:
     let
-      inherit (import ./.tack) nixpkgs systems fenix;
+      inherit (import ./.tack { overrides = args.tackOverrides or { }; }) nixpkgs systems fenix;
       forAllSystems =
         function:
         nixpkgs.lib.genAttrs (import systems) (system: function nixpkgs.legacyPackages.${system} system);

@@ -14,6 +14,9 @@
 # nixpkgs = "nixpkgs"
 # nixpkgs = ["nixpkgs-stable", "nixpkgs-unstable"]
 
+[tack]
+recomposable = true
+
 # inputs.<name> fields
 #   url             required, shorturl ok, ?rev=<sha> pins an exact commit
 #   type            flake (default), fetch, or fixed
