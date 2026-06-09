@@ -37,6 +37,24 @@ case "${1:-}" in
 esac
 "#;
 
+const FAKE_NIX: &str = r#"#!@bash@
+set -eu
+
+while [ "$#" -gt 0 ] && [ "$1" != "--command" ]; do
+  shift
+done
+if [ "$#" -eq 0 ]; then
+  exit 64
+fi
+shift
+
+PATH="/fake-dev/bin:${PATH:-}"
+export PATH
+FROM_FAKE_NIX=ok
+export FROM_FAKE_NIX
+exec "$@"
+"#;
+
 struct ShimSandbox {
     root: PathBuf,
     shim: PathBuf,
@@ -54,13 +72,28 @@ impl ShimSandbox {
         let fake_cade = root.join("cade");
         write_executable(&fake_cade, &FAKE_CADE.replace("@bash@", bash));
 
+        Self::with_root_and_cade(root, &fake_cade, bash)
+    }
+
+    fn new_with_cade(cade: &Path) -> Self {
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("cade-shim-{}-{id}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+
+        let bash = bash_path();
+        let bash = bash.to_str().expect("bash path must be valid UTF-8");
+
+        Self::with_root_and_cade(root, cade, bash)
+    }
+
+    fn with_root_and_cade(root: PathBuf, cade: &Path, bash: &str) -> Self {
         let template = include_str!("../nix/direnv-compat.bash");
         let shim = root.join("direnv");
         write_executable(
             &shim,
             &template
                 .replace("#!@bash@/bin/bash", &format!("#!{bash}"))
-                .replace("@cade@", fake_cade.to_str().unwrap()),
+                .replace("@cade@", cade.to_str().unwrap()),
         );
 
         Self { root, shim }
@@ -144,6 +177,14 @@ fn stdout(out: &Output) -> String {
 
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+fn export_json(out: &Output) -> serde_json::Value {
+    let mut json: serde_json::Value = serde_json::from_str(stdout(out).trim()).unwrap();
+    if let Some(diff) = json.get("DIRENV_DIFF").and_then(|value| value.as_str()) {
+        json["DIRENV_DIFF"] = serde_json::from_str(diff).unwrap();
+    }
+    json
 }
 
 #[test]
@@ -239,4 +280,81 @@ fn shell_hook_is_a_harmless_noop_for_captured_shells() {
     assert!(out.status.success(), "{out:?}");
     assert!(stdout(&out).is_empty(), "{}", stdout(&out));
     assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+}
+
+#[test]
+fn export_json_loads_cade_shell_through_real_shim() {
+    let cade = PathBuf::from(env!("CARGO_BIN_EXE_cade"));
+    let sb = ShimSandbox::new_with_cade(&cade);
+    let bash = bash_path();
+    let bash = bash.to_str().expect("bash path must be valid UTF-8");
+
+    let project = sb.root.join("project");
+    let fake_bin = sb.root.join("fake-bin");
+    let config_dir = sb.root.join("config").join("cade");
+    let state_dir = sb.root.join("state");
+    let home = sb.root.join("home");
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    fs::write(project.join(".cade"), "load flake\n").unwrap();
+    fs::write(config_dir.join("config.toml"), "direnv = \"shim\"\n").unwrap();
+    write_executable(&fake_bin.join("nix"), &FAKE_NIX.replace("@bash@", bash));
+
+    let host_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin.clone()).chain(std::env::split_paths(&host_path)),
+    )
+    .expect("test PATH should be valid");
+
+    let allow = Command::new(&cade)
+        .arg("allow")
+        .current_dir(&project)
+        .env_clear()
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", sb.root.join("config"))
+        .env("XDG_STATE_HOME", &state_dir)
+        .env("PATH", &path)
+        .output()
+        .expect("run cade allow");
+    assert!(allow.status.success(), "{allow:?}");
+
+    let direct = Command::new(&cade)
+        .args(["export", "json"])
+        .current_dir(&project)
+        .env_clear()
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", sb.root.join("config"))
+        .env("XDG_STATE_HOME", &state_dir)
+        .env("PATH", &path)
+        .output()
+        .expect("run direct cade export");
+    assert!(direct.status.success(), "{direct:?}");
+    assert!(stderr(&direct).is_empty(), "{}", stderr(&direct));
+
+    let shim = Command::new(&sb.shim)
+        .args(["export", "json"])
+        .current_dir(&project)
+        .env_clear()
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", sb.root.join("config"))
+        .env("XDG_STATE_HOME", &state_dir)
+        .env("PATH", &path)
+        .output()
+        .expect("run real direnv shim");
+
+    assert!(shim.status.success(), "{shim:?}");
+    assert!(stderr(&shim).is_empty(), "{}", stderr(&shim));
+
+    let direct_json = export_json(&direct);
+    let shim_json = export_json(&shim);
+    assert_eq!(shim_json, direct_json);
+    assert_eq!(shim_json["FROM_FAKE_NIX"], "ok");
+    assert!(
+        shim_json["PATH"]
+            .as_str()
+            .is_some_and(|path| path.starts_with("/fake-dev/bin:")),
+        "{shim_json}"
+    );
 }
