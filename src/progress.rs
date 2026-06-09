@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-const FRAMES: [char; 4] = ['/', '|', '\\', '-'];
+const FRAMES: [char; 4] = ['/', '-', '\\', '|'];
 const LOADED: char = '\u{2192}'; // → layer applied
 const EVICTED: char = '\u{2190}'; // ← layer peeled off
 const CROSS: char = '\u{2717}'; // ✗ ballot x
