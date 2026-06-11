@@ -170,6 +170,7 @@ const PATH_LIKE: &[&str] = &[
     "TERMINFO_DIRS",
 ];
 const SPACE_JOINED: &[&str] = &["NIX_CFLAGS_COMPILE", "NIX_HARDENING_ENABLE", "NIX_LDFLAGS"];
+const LAYER_CACHE_VERSION: &str = "layer-cache-v2";
 const DEFAULT_SHELL_GC_ROOT_TTL_SECS: u64 = 30 * 24 * 3600;
 
 fn shell_gc_root_ttl() -> Duration {
@@ -1809,7 +1810,7 @@ fn watched_files_for_keywords(dir: &Path, keywords: &[Keyword]) -> Result<Vec<Pa
 }
 
 fn compute_layer_key(watched_files: &[PathBuf]) -> String {
-    let mut parts = Vec::new();
+    let mut parts = vec![LAYER_CACHE_VERSION.to_string()];
     for file in watched_files {
         if let Ok(meta) = std::fs::metadata(file) {
             parts.push(format!(

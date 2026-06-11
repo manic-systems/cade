@@ -296,7 +296,7 @@ fn env_set_from_captured_env(raw: &[u8], previous: &HashMap<String, String>) -> 
         if !keep_loaded_env_var(key) {
             continue;
         }
-        if previous.get(key).is_some_and(|value| value == raw_value) {
+        if previous.get(key).is_some_and(|value| value == raw_value) && !is_kept_nix_env_var(key) {
             continue;
         }
 
@@ -348,11 +348,7 @@ fn wipe_profile_history(profile: &Path) {
 }
 
 fn keep_loaded_env_var(var: &str) -> bool {
-    if KEPT_NIX_ENV_KEYS.contains(&var)
-        || KEPT_NIX_ENV_PREFIXES
-            .iter()
-            .any(|prefix| var.starts_with(prefix))
-    {
+    if is_kept_nix_env_var(var) {
         return true;
     }
 
@@ -364,6 +360,13 @@ fn keep_loaded_env_var(var: &str) -> bool {
             .any(|suffix| var.ends_with(suffix))
         || var.to_lowercase().contains("phase")
         || IGNORED_ENV_KEYS.contains(&var))
+}
+
+fn is_kept_nix_env_var(var: &str) -> bool {
+    KEPT_NIX_ENV_KEYS.contains(&var)
+        || KEPT_NIX_ENV_PREFIXES
+            .iter()
+            .any(|prefix| var.starts_with(prefix))
 }
 
 fn clean_captured_path(value: &str, path_suffix: Option<&str>) -> String {
@@ -506,6 +509,24 @@ mod tests {
 
         assert_eq!(env.vars["PATH"], vec!["/dev/bin"]);
         assert_eq!(env.vars["FOO"], vec!["bar"]);
+    }
+
+    #[test]
+    fn captured_env_keeps_unchanged_nix_wrapper_vars() {
+        let previous = HashMap::from([
+            ("NIX_CC".to_string(), "/nix/store/gcc-wrapper".to_string()),
+            ("PKG_CONFIG_PATH".to_string(), "/old/pkgconfig".to_string()),
+            ("AMBIENT".to_string(), "same".to_string()),
+        ]);
+        let env = env_set_from_captured_env(
+            b"NIX_CC=/nix/store/gcc-wrapper\0PKG_CONFIG_PATH=/old/pkgconfig\0AMBIENT=same\0",
+            &previous,
+        )
+        .unwrap();
+
+        assert_eq!(env.vars["NIX_CC"], vec!["/nix/store/gcc-wrapper"]);
+        assert!(!env.vars.contains_key("PKG_CONFIG_PATH"));
+        assert!(!env.vars.contains_key("AMBIENT"));
     }
 
     #[cfg(unix)]
