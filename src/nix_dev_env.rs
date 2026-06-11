@@ -23,6 +23,20 @@ const ENV_CAPTURE_SCRIPT: &str = "printf '\\0__CADE_ENV_BEGIN__\\0'\nexec \"$1\"
 // `print-dev-env --json` path and apply it to the captured env dump.
 const IGNORED_ENV_PREFIXES: &[&str] = &["NIX_", "output", "deps", "enable"];
 const IGNORED_ENV_SUFFIXES: &[&str] = &["Inputs", "Flags", "TYPE"];
+const KEPT_NIX_ENV_KEYS: &[&str] = &[
+    "NIX_BINTOOLS",
+    "NIX_CC",
+    "NIX_CFLAGS_COMPILE",
+    "NIX_ENFORCE_NO_NATIVE",
+    "NIX_HARDENING_ENABLE",
+    "NIX_LDFLAGS",
+    "NIX_STORE",
+];
+const KEPT_NIX_ENV_PREFIXES: &[&str] = &[
+    "NIX_BINTOOLS_WRAPPER_TARGET_",
+    "NIX_CC_WRAPPER_TARGET_",
+    "NIX_PKG_CONFIG_WRAPPER_TARGET_",
+];
 const IGNORED_ENV_KEYS: &[&str] = &[
     "SHELL",
     "pkg",
@@ -334,6 +348,14 @@ fn wipe_profile_history(profile: &Path) {
 }
 
 fn keep_loaded_env_var(var: &str) -> bool {
+    if KEPT_NIX_ENV_KEYS.contains(&var)
+        || KEPT_NIX_ENV_PREFIXES
+            .iter()
+            .any(|prefix| var.starts_with(prefix))
+    {
+        return true;
+    }
+
     !(IGNORED_ENV_PREFIXES
         .iter()
         .any(|prefix| var.starts_with(prefix))
@@ -423,6 +445,31 @@ mod tests {
         assert_eq!(target.cwd, Path::new("/no/such/layer/nope"));
         assert_eq!(target.installable, "/no/such/layer/nope");
         assert_eq!(target.spec, "flake:/no/such/layer/nope");
+    }
+
+    #[test]
+    fn keeps_nix_wrapper_environment() {
+        for key in [
+            "NIX_BINTOOLS",
+            "NIX_BINTOOLS_WRAPPER_TARGET_HOST_x86_64_unknown_linux_gnu",
+            "NIX_CC",
+            "NIX_CC_WRAPPER_TARGET_HOST_x86_64_unknown_linux_gnu",
+            "NIX_CFLAGS_COMPILE",
+            "NIX_ENFORCE_NO_NATIVE",
+            "NIX_HARDENING_ENABLE",
+            "NIX_LDFLAGS",
+            "NIX_PKG_CONFIG_WRAPPER_TARGET_HOST_x86_64_unknown_linux_gnu",
+            "NIX_STORE",
+        ] {
+            assert!(keep_loaded_env_var(key), "{key} should be kept");
+        }
+    }
+
+    #[test]
+    fn still_filters_noisy_nix_internals() {
+        for key in ["NIX_BUILD_TOP", "NIX_GCROOT", "NIX_PROFILES", "NIX_PATH"] {
+            assert!(!keep_loaded_env_var(key), "{key} should stay filtered");
+        }
     }
 
     #[test]

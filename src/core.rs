@@ -169,6 +169,7 @@ const PATH_LIKE: &[&str] = &[
     "XDG_CONFIG_DIRS",
     "TERMINFO_DIRS",
 ];
+const SPACE_JOINED: &[&str] = &["NIX_CFLAGS_COMPILE", "NIX_HARDENING_ENABLE", "NIX_LDFLAGS"];
 const DEFAULT_SHELL_GC_ROOT_TTL_SECS: u64 = 30 * 24 * 3600;
 
 fn shell_gc_root_ttl() -> Duration {
@@ -1534,13 +1535,23 @@ fn rollup_envs(cade_layers: Vec<CadeLayer>) -> RollupResult {
             }
             cleared.remove(&k);
             // `:=` forces hard replace regardless of other settings
-            let is_concat = !layer.envs.hard.contains(&k) && concat_active.contains(&k);
+            let is_hard = layer.envs.hard.contains(&k);
+            let is_concat = !is_hard && concat_active.contains(&k);
             if is_concat {
                 absorb.insert(k.clone());
                 let entry = env.entry(k).or_default();
                 let mut combined = v;
                 combined.append(entry);
                 *entry = combined;
+            } else if !is_hard && SPACE_JOINED.contains(&k.as_str()) {
+                absorb.remove(&k);
+                let value = join_space_values(v);
+                if let Some(previous) = env.get(&k).map(|values| join_space_values(values.clone()))
+                {
+                    env.insert(k, vec![join_space_values(vec![value, previous])]);
+                } else {
+                    env.insert(k, vec![value]);
+                }
             } else {
                 // replace drops prior layers and ambient values
                 absorb.remove(&k);
@@ -1568,6 +1579,14 @@ fn rollup_envs(cade_layers: Vec<CadeLayer>) -> RollupResult {
         hooks,
         purified,
     }
+}
+
+fn join_space_values(values: Vec<String>) -> String {
+    values
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn read_cade(path: &Path) -> Result<Vec<Keyword>> {
@@ -1890,6 +1909,45 @@ mod tests {
         let r = rollup_envs(vec![parent, child]);
         assert_eq!(r.env["EDITOR"], vec!["vim"]);
         assert!(!r.absorb.contains("EDITOR"));
+    }
+
+    #[test]
+    fn nix_wrapper_flags_stack_child_first() {
+        let parent = env_layer(&[
+            ("NIX_LDFLAGS", "-L/parent/lib -rpath /parent/lib"),
+            ("NIX_CFLAGS_COMPILE", "-isystem /parent/include"),
+            ("NIX_HARDENING_ENABLE", "fortify stackprotector"),
+        ]);
+        let child = env_layer(&[
+            ("NIX_LDFLAGS", "-L/child/lib"),
+            ("NIX_CFLAGS_COMPILE", "-isystem /child/include"),
+            ("NIX_HARDENING_ENABLE", "relro"),
+        ]);
+        let r = rollup_envs(vec![parent, child]);
+
+        assert_eq!(
+            r.env["NIX_LDFLAGS"],
+            vec!["-L/child/lib -L/parent/lib -rpath /parent/lib"]
+        );
+        assert_eq!(
+            r.env["NIX_CFLAGS_COMPILE"],
+            vec!["-isystem /child/include -isystem /parent/include"]
+        );
+        assert_eq!(
+            r.env["NIX_HARDENING_ENABLE"],
+            vec!["relro fortify stackprotector"]
+        );
+        assert!(!r.absorb.contains("NIX_LDFLAGS"));
+    }
+
+    #[test]
+    fn nix_wrapper_scalar_vars_replace_child_wins() {
+        let parent = env_layer(&[("NIX_CC", "/parent/cc"), ("NIX_STORE", "/parent/store")]);
+        let child = env_layer(&[("NIX_CC", "/child/cc"), ("NIX_STORE", "/child/store")]);
+        let r = rollup_envs(vec![parent, child]);
+
+        assert_eq!(r.env["NIX_CC"], vec!["/child/cc"]);
+        assert_eq!(r.env["NIX_STORE"], vec!["/child/store"]);
     }
 
     #[test]
