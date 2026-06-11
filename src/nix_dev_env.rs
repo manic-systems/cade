@@ -23,6 +23,20 @@ const ENV_CAPTURE_SCRIPT: &str = "printf '\\0__CADE_ENV_BEGIN__\\0'\nexec \"$1\"
 // `print-dev-env --json` path and apply it to the captured env dump.
 const IGNORED_ENV_PREFIXES: &[&str] = &["NIX_", "output", "deps", "enable"];
 const IGNORED_ENV_SUFFIXES: &[&str] = &["Inputs", "Flags", "TYPE"];
+const KEPT_NIX_ENV_KEYS: &[&str] = &[
+    "NIX_BINTOOLS",
+    "NIX_CC",
+    "NIX_CFLAGS_COMPILE",
+    "NIX_ENFORCE_NO_NATIVE",
+    "NIX_HARDENING_ENABLE",
+    "NIX_LDFLAGS",
+    "NIX_STORE",
+];
+const KEPT_NIX_ENV_PREFIXES: &[&str] = &[
+    "NIX_BINTOOLS_WRAPPER_TARGET_",
+    "NIX_CC_WRAPPER_TARGET_",
+    "NIX_PKG_CONFIG_WRAPPER_TARGET_",
+];
 const IGNORED_ENV_KEYS: &[&str] = &[
     "SHELL",
     "pkg",
@@ -262,6 +276,14 @@ fn wipe_profile_history(profile: &Path) {
 }
 
 fn keep_loaded_env_var(var: &str) -> bool {
+    if KEPT_NIX_ENV_KEYS.contains(&var)
+        || KEPT_NIX_ENV_PREFIXES
+            .iter()
+            .any(|prefix| var.starts_with(prefix))
+    {
+        return true;
+    }
+
     !(IGNORED_ENV_PREFIXES
         .iter()
         .any(|prefix| var.starts_with(prefix))
