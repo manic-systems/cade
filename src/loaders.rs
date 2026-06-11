@@ -190,7 +190,7 @@ impl<'a> LongRunningProgress<'a> {
         }
         eprint!("\x1b[{}F", self.visible_lines);
         for _ in 0..self.visible_lines {
-            eprintln!("\x1b[2K");
+            write!(&mut std::io::stderr(), "\x1b[2K\x1b[1B").ok();
         }
         eprint!("\x1b[{}F", self.visible_lines);
         let _ = std::io::stderr().flush();
