@@ -87,14 +87,9 @@ impl ShimSandbox {
     }
 
     fn with_root_and_cade(root: PathBuf, cade: &Path, bash: &str) -> Self {
-        let template = include_str!("../nix/direnv-compat.bash");
         let shim = root.join("direnv");
-        write_executable(
-            &shim,
-            &template
-                .replace("#!@bash@/bin/bash", &format!("#!{bash}"))
-                .replace("@cade@", cade.to_str().unwrap()),
-        );
+        let cade = cade.to_str().unwrap();
+        write_executable(&shim, &direnv_shim_script(bash, cade, "shim"));
 
         Self { root, shim }
     }
@@ -123,6 +118,45 @@ impl ShimSandbox {
         command.args(args).env_clear().env("CADE_FAKE_MODE", "ok");
         output_with_retry(command)
     }
+}
+
+fn direnv_shim_script(bash: &str, cade: &str, mode: &str) -> String {
+    format!(
+        r#"#!{bash}
+# Minimal direnv shim for tools that call `direnv export json`.
+# Shell hook/export probes are no-ops so login-shell env capture keeps working.
+set -eu
+
+cade={cade:?}
+cade_direnv_mode={mode:?}
+
+cmd=${{1:-}}
+target=${{2:-}}
+
+case $cmd in
+  export)
+    case ${{target:-bash}} in
+      json)
+        CADE_DIRENV=${{CADE_DIRENV:-$cade_direnv_mode}} "$cade" export json
+        ;;
+      bash | zsh | fish | nushell | nu)
+        ;;
+      *)
+        printf 'direnv shim: unsupported export target: %s\n' "$target" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  hook)
+    ;;
+  *)
+    printf 'direnv shim: unsupported command: %s\n' "${{cmd:-<empty>}}" >&2
+    exit 1
+    ;;
+esac
+exit 0
+"#
+    )
 }
 
 impl Drop for ShimSandbox {
@@ -350,6 +384,74 @@ fn export_json_loads_cade_shell_through_real_shim() {
     let direct_json = export_json(&direct);
     let shim_json = export_json(&shim);
     assert_eq!(shim_json, direct_json);
+    assert_eq!(shim_json["FROM_FAKE_NIX"], "ok");
+    assert!(
+        shim_json["PATH"]
+            .as_str()
+            .is_some_and(|path| path.starts_with("/fake-dev/bin:")),
+        "{shim_json}"
+    );
+}
+
+#[test]
+fn real_shim_enables_export_without_cade_config() {
+    let cade = PathBuf::from(env!("CARGO_BIN_EXE_cade"));
+    let sb = ShimSandbox::new_with_cade(&cade);
+    let bash = bash_path();
+    let bash = bash.to_str().expect("bash path must be valid UTF-8");
+
+    let project = sb.root.join("project-no-config");
+    let fake_bin = sb.root.join("fake-bin-no-config");
+    let state_dir = sb.root.join("state-no-config");
+    let home = sb.root.join("home-no-config");
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    fs::write(project.join(".cade"), "load flake\n").unwrap();
+    write_executable(&fake_bin.join("nix"), &FAKE_NIX.replace("@bash@", bash));
+
+    let host_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin.clone()).chain(std::env::split_paths(&host_path)),
+    )
+    .expect("test PATH should be valid");
+
+    let allow = Command::new(&cade)
+        .arg("allow")
+        .current_dir(&project)
+        .env_clear()
+        .env("HOME", &home)
+        .env("XDG_STATE_HOME", &state_dir)
+        .env("PATH", &path)
+        .output()
+        .expect("run cade allow");
+    assert!(allow.status.success(), "{allow:?}");
+
+    let direct = Command::new(&cade)
+        .args(["export", "json"])
+        .current_dir(&project)
+        .env_clear()
+        .env("HOME", &home)
+        .env("XDG_STATE_HOME", &state_dir)
+        .env("PATH", &path)
+        .output()
+        .expect("run direct cade export");
+    assert!(direct.status.success(), "{direct:?}");
+    assert_eq!(stdout(&direct), "{}\n");
+
+    let shim = Command::new(&sb.shim)
+        .args(["export", "json"])
+        .current_dir(&project)
+        .env_clear()
+        .env("HOME", &home)
+        .env("XDG_STATE_HOME", &state_dir)
+        .env("PATH", &path)
+        .output()
+        .expect("run real direnv shim");
+    assert!(shim.status.success(), "{shim:?}");
+
+    let shim_json = export_json(&shim);
     assert_eq!(shim_json["FROM_FAKE_NIX"], "ok");
     assert!(
         shim_json["PATH"]

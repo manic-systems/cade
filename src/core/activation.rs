@@ -234,8 +234,26 @@ impl Cade {
             live: export.live,
             baseline: export.baseline,
         };
+        let metadata = direnv_export::ExportMetadata {
+            root: plan.root.to_string_lossy().to_string(),
+            file: direnv_export_file(&plan.root).to_string_lossy().to_string(),
+            watches: plan
+                .all_watch_files
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect(),
+        };
         let delta = plan.rollup.env_delta(&activation_env);
-        direnv_export::active_delta(delta, activation_env.baseline, export.previous)
+        direnv_export::active_delta(delta, activation_env.baseline, export.previous, metadata)
+    }
+}
+
+fn direnv_export_file(root: &Path) -> PathBuf {
+    let cade = root.join(".cade");
+    if cade.exists() {
+        cade
+    } else {
+        root.join(".envrc")
     }
 }
 

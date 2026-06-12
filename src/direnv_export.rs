@@ -14,6 +14,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 
 const DIRENV_DIFF: &str = "DIRENV_DIFF";
+const DIRENV_DIR: &str = "DIRENV_DIR";
+const DIRENV_FILE: &str = "DIRENV_FILE";
+const DIRENV_WATCHES: &str = "DIRENV_WATCHES";
+
+pub(crate) struct ExportMetadata {
+    pub root: String,
+    pub file: String,
+    pub watches: Vec<String>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ExportState {
@@ -57,6 +66,9 @@ pub(crate) fn inactive_delta(previous: Option<ExportState>) -> EnvDelta {
     let mut delta = EnvDelta::empty();
     restore_applied(&mut delta, &previous);
     delta.record(DIRENV_DIFF, None);
+    delta.record(DIRENV_DIR, None);
+    delta.record(DIRENV_FILE, None);
+    delta.record(DIRENV_WATCHES, None);
     delta
 }
 
@@ -64,6 +76,7 @@ pub(crate) fn active_delta(
     mut delta: EnvDelta,
     baseline: HashMap<String, String>,
     previous: Option<ExportState>,
+    metadata: ExportMetadata,
 ) -> Result<EnvDelta> {
     let applied = tracked_delta_keys(&delta);
 
@@ -97,6 +110,12 @@ pub(crate) fn active_delta(
         preimage,
     };
     delta.record(DIRENV_DIFF, Some(serde_json::to_string(&state)?));
+    delta.record(DIRENV_DIR, Some(format!("-{}", metadata.root)));
+    delta.record(DIRENV_FILE, Some(metadata.file));
+    delta.record(
+        DIRENV_WATCHES,
+        Some(serde_json::to_string(&metadata.watches)?),
+    );
     Ok(delta)
 }
 
@@ -109,6 +128,9 @@ fn export_state(live: &HashMap<String, String>) -> Option<ExportState> {
 fn live_baseline(live: &HashMap<String, String>) -> HashMap<String, String> {
     let mut baseline = live.clone();
     baseline.remove(DIRENV_DIFF);
+    baseline.remove(DIRENV_DIR);
+    baseline.remove(DIRENV_FILE);
+    baseline.remove(DIRENV_WATCHES);
     baseline
 }
 
@@ -127,7 +149,8 @@ fn tracked_delta_keys(delta: &EnvDelta) -> BTreeSet<String> {
 }
 
 fn is_tracked_key(key: &str) -> bool {
-    key != DIRENV_DIFF && !is_shell_managed(key)
+    !matches!(key, DIRENV_DIFF | DIRENV_DIR | DIRENV_FILE | DIRENV_WATCHES)
+        && !is_shell_managed(key)
 }
 
 impl ExportState {

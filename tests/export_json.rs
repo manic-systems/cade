@@ -58,6 +58,29 @@ fn json_export_has_no_activation_bookkeeping() {
 }
 
 #[test]
+fn json_export_includes_direnv_metadata() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "A=1\n");
+    sb.allow(&sb.root);
+
+    let v = export_json(&sb, &sb.root, &[("PATH", "/usr/bin")]);
+
+    assert_eq!(v["DIRENV_DIR"], format!("-{}", sb.root.display()));
+    assert_eq!(
+        v["DIRENV_FILE"],
+        sb.root.join(".cade").to_string_lossy().as_ref()
+    );
+    let watches: serde_json::Value =
+        serde_json::from_str(v["DIRENV_WATCHES"].as_str().unwrap()).unwrap();
+    assert!(
+        watches.as_array().is_some_and(|paths| paths
+            .iter()
+            .any(|path| path == &sb.root.join(".cade").to_string_lossy().to_string())),
+        "{watches}"
+    );
+}
+
+#[test]
 fn json_export_uses_session_snapshot_for_concat_baseline() {
     let sb = Sandbox::new();
     sb.write(".cade", "load env\n");
@@ -149,6 +172,9 @@ fn json_export_outside_project_restores_previous_direnv_state() {
     );
     assert_eq!(outside_json["PATH"], "/usr/bin");
     assert!(outside_json["DIRENV_DIFF"].is_null(), "{outside_json}");
+    assert!(outside_json["DIRENV_DIR"].is_null(), "{outside_json}");
+    assert!(outside_json["DIRENV_FILE"].is_null(), "{outside_json}");
+    assert!(outside_json["DIRENV_WATCHES"].is_null(), "{outside_json}");
 }
 
 #[test]
