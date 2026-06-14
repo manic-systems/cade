@@ -1,4 +1,4 @@
-use crate::types::*;
+use crate::{env::EnvSet, types::*};
 use std::{fmt::Display, str::FromStr};
 
 #[derive(Debug)]

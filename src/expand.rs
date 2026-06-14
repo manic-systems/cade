@@ -3,7 +3,10 @@
 //! and `${VAR+w}` behave as in bash. `\$` is a literal `$`; a bare `$VAR` is
 //! left verbatim.
 
-use crate::types::{EnvSet, Keyword, Loadable};
+use crate::{
+    env::EnvSet,
+    types::{Keyword, Loadable},
+};
 
 type Lookup<'a> = &'a dyn Fn(&str) -> Option<String>;
 
@@ -14,12 +17,10 @@ pub(crate) fn expand_keyword(kw: &mut Keyword) {
 fn expand_keyword_with(kw: &mut Keyword, lookup: Lookup<'_>) {
     use Keyword::*;
     match kw {
-        // call/watch are shlex-tokenized by their consumers after this, so each
-        // substituted value is shell-quoted to survive that split as one token
+        // survive later shlex splitting
         Call(s) | Watch(s) => *s = expand_shell_args(s, lookup),
         Load(loadable) => expand_loadable(loadable, lookup),
         Set(env) => expand_envset(env, lookup),
-        // a hook is run by the shell, which expands `${...}` itself
         Hook(_) | Clear(_) | Concat(_) | Pure | Disinherit => {}
     }
 }
@@ -34,12 +35,11 @@ fn expand_loadable(loadable: &mut Loadable, lookup: Lookup<'_>) {
 
 fn expand_envset(env: &mut EnvSet, lookup: Lookup<'_>) {
     for values in env.vars.values_mut() {
-        // rejoin before expanding, `from_envs` already splits on `:` and would
-        // otherwise tear a `${VAR:-default}`
+        // keep `${var:-default}` intact
         let value = expand_plain(&values.join(":"), lookup);
         *values = value.split(':').map(str::to_owned).collect();
     }
-    env.nix_store_paths = crate::envs::nix_store_paths_from_env_values(env);
+    env.refresh_nix_store_paths();
 }
 
 fn expand_plain(input: &str, lookup: Lookup<'_>) -> String {
@@ -58,7 +58,7 @@ fn expand_with(input: &str, lookup: Lookup<'_>, on_value: &dyn Fn(String) -> Str
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            // `\$` is a literal `$`; the backslash is consumed
+            // consume `\$`
             b'\\' if bytes.get(i + 1) == Some(&b'$') => {
                 out.push('$');
                 i += 2;
@@ -68,7 +68,7 @@ fn expand_with(input: &str, lookup: Lookup<'_>, on_value: &dyn Fn(String) -> Str
                     out.push_str(&on_value(expand_ref(inner, lookup)));
                     i = end;
                 }
-                // unterminated `${`, keep literal
+                // keep unterminated `${`
                 None => {
                     out.push_str("${");
                     i += 2;

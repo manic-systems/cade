@@ -115,7 +115,7 @@ fn join_space_values(values: Vec<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{CadeAction, EnvSet};
+    use crate::{env::EnvSet, types::CadeAction};
     use std::{collections::HashMap, path::Path};
 
     fn env_layer(pairs: &[(&str, &str)]) -> CadeLayer {

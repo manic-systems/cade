@@ -122,7 +122,7 @@ impl Cade {
         let Some(layer) = self.get_cached_layer(dir, token)? else {
             return Ok(None);
         };
-        let store_paths = crate::envs::nix_store_paths_from_env_values(&layer.envs);
+        let store_paths = crate::env::nix_store_paths_from_env_values(&layer.envs);
         if store_paths_all_present(&store_paths) {
             verbosity::log(
                 Verbosity::Trace,

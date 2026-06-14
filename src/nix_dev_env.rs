@@ -7,7 +7,7 @@
 //! `nix develop --command` lets Nix own that setup, and cade only dumps the
 //! resulting process environment.
 
-use crate::{loaders::run_checked, types::EnvSet};
+use crate::{env::EnvSet, loaders::run_checked};
 use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
@@ -223,10 +223,7 @@ fn load_nix_dev_env(
     let previous_env: HashMap<_, _> = std::env::vars().collect();
     proc.current_dir(path);
     if let Some(parent) = profile.and_then(Path::parent) {
-        // Nix enumerates existing generations by reading the profile's parent
-        // directory, so it must exist before `nix develop --profile` runs. The
-        // flake/shell loaders nest the profile one level under `profiles/`
-        // (already created), but the .envrc loader nests it two levels deep.
+        // nix reads the profile parent before creating generations
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating nix profile dir at {}", parent.display()))?;
     }
@@ -234,11 +231,7 @@ fn load_nix_dev_env(
     let stdout = captured_env_stdout(&stdout, what)?;
     let mut env = env_set_from_captured_env(stdout, &previous_env)?;
     if let Some(profile) = profile {
-        // `nix develop --profile` already registered the dev-shell closure as a
-        // gc root, so the per-path store list is redundant on this (cold) path
-        // and is dropped to skip cade's manual add-root loop. The cache's warm
-        // path has no profile, so it re-derives these from the env values to
-        // root them itself (see reusable_cached_layer).
+        // the profile already roots this cold path
         env.nix_store_paths.clear();
         wipe_profile_history(profile);
     }
@@ -322,7 +315,7 @@ fn env_set_from_captured_env(raw: &[u8], previous: &HashMap<String, String>) -> 
     }
 
     let mut env = EnvSet::from_vars(vars);
-    env.nix_store_paths = crate::envs::nix_store_paths_from_env_values(&env);
+    env.refresh_nix_store_paths();
     Ok(env)
 }
 
