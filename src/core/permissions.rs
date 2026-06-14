@@ -1,4 +1,4 @@
-use super::{Cade, Keyword, config_keywords, find_cade_root, participant_dirs};
+use super::{Cade, Keyword, find_cade_root, participant_dirs};
 use crate::verbosity::{self, Verbosity};
 use anyhow::{Context, Result};
 use rusqlite::named_params;
@@ -98,7 +98,7 @@ impl Cade {
         let approved = self.approved_participants(&participant_dirs(root))?;
         let mut chain = Vec::with_capacity(approved.len());
         for path in approved {
-            let keywords = config_keywords(&path)?;
+            let keywords = crate::cade_file::load_dir(&path)?;
             chain.push((path, keywords));
         }
         chain.reverse();

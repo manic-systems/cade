@@ -1,3 +1,4 @@
+mod cade_file;
 mod cli;
 mod config;
 mod core;

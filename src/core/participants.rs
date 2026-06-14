@@ -23,7 +23,7 @@ fn dir_kind(dir: &Path) -> Option<DirKind> {
 
 // malformed .cade caps like disinherit
 fn caps_the_cascade(dir: &Path) -> bool {
-    match super::read_cade(&dir.join(".cade")) {
+    match crate::cade_file::read(&dir.join(".cade")) {
         Ok(kws) => kws.iter().any(|kw| matches!(kw, Keyword::Disinherit)),
         Err(_) => true,
     }
