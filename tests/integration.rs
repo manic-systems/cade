@@ -801,6 +801,66 @@ fn cache_invalidates_when_env_file_changes() {
     );
 }
 
+fn exported_value(script: &str, key: &str) -> String {
+    let prefix = format!("export {key}='");
+    let start = script
+        .find(&prefix)
+        .unwrap_or_else(|| panic!("missing {key} export in {script}"))
+        + prefix.len();
+    let rest = &script[start..];
+    let end = rest
+        .find("';")
+        .unwrap_or_else(|| panic!("unterminated {key} export in {script}"));
+    rest[..end].to_string()
+}
+
+#[test]
+fn reload_notices_cade_created_over_implicit_envrc() {
+    let sb = Sandbox::new();
+    sb.write(".envrc", "export FROM_ENVRC=1\n");
+    sb.allow(&sb.root);
+
+    let first = sb.enter(&sb.root, &[]);
+    assert!(first.status.success(), "{first:?}");
+    let first_stdout = stdout(&first);
+    assert!(
+        first_stdout.contains("export FROM_ENVRC='1';"),
+        "{first_stdout}"
+    );
+
+    sb.write(".cade", "FROM_CADE=2\n");
+    let state_dir = cade_state(&sb).to_string_lossy().to_string();
+    let root = sb.root.to_string_lossy().to_string();
+    let watches = exported_value(&first_stdout, "__CADE_WATCHES");
+    let session = exported_value(&first_stdout, "__CADE_SESSION");
+    let hooks = exported_value(&first_stdout, "__CADE_HOOKS");
+    let reload = sb.run(
+        &sb.root,
+        &["reload", "--shell", "bash"],
+        &[
+            ("__CADE_SESSION", &session),
+            ("__CADE_LAYERS", &root),
+            ("__CADE_SET", "FROM_ENVRC"),
+            ("__CADE_UNSET", ""),
+            ("__CADE_PURE", "0"),
+            ("__CADE_HOOKS", &hooks),
+            ("__CADE_WATCHES", &watches),
+            ("__CADE_STATE_DIR", &state_dir),
+            ("FROM_ENVRC", "1"),
+        ],
+    );
+    assert!(reload.status.success(), "{reload:?}");
+    let s = stdout(&reload);
+    assert!(
+        s.contains("unset FROM_ENVRC;"),
+        "reload must restore the envrc variable before reactivation: {s}"
+    );
+    assert!(
+        s.contains("export FROM_CADE='2';"),
+        "reload did not pick up the newly-created .cade: {s}"
+    );
+}
+
 #[test]
 fn reload_in_inactive_shell_reminds_for_disallowed_root() {
     let sb = Sandbox::new();
