@@ -1,15 +1,11 @@
-//! Compatibility shim for direnv `.envrc` files.
+//! direnv `.envrc` compatibility
 //!
-//! cade does not execute `.envrc` as a shell script. Instead it recognizes the
-//! declarative subset of the direnv stdlib that maps cleanly onto cade's own
-//! loaders (`use flake`, `use nix`, `dotenv`, `watch_file`, plus literal
-//! `export`/`PATH_add`) and warns about any line it can't faithfully
-//! reproduce. This should cover most cases of .envrc.
+//! parses the declarative stdlib subset cade can reproduce
 
 use crate::loaders::{load_env, load_shell};
 use crate::nix_dev_env::{FlakeTarget, load_flake};
 use crate::{
-    types::EnvSet,
+    env::EnvSet,
     verbosity::{self, Verbosity},
 };
 use anyhow::{Context, Result};
@@ -17,23 +13,15 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
 enum Directive {
-    /// `use flake` / `use flake .` / `use flake .#output`
     UseFlake(Option<String>),
-    /// `use nix [file]`
     UseNix(String),
-    /// `dotenv [file]` / `dotenv_if_exists [file]`
     Dotenv { file: String, if_exists: bool },
-    /// `export KEY=VALUE` with a literal (unexpanded) value
     Export(String, String),
-    /// `PATH_add DIR...`: directories to prepend to PATH
     PathAdd(Vec<String>),
-    /// `watch_file FILE...`
     WatchFile(Vec<String>),
-    /// A line cade can't faithfully map; carried so we can warn about it.
     Unhandled(String),
 }
 
-/// Ensure no shell expansion is taking place
 fn is_literal_value(v: &str) -> bool {
     !v.contains('$') && !v.contains('`')
 }
@@ -56,7 +44,7 @@ fn parse_line(raw: &str) -> Option<Directive> {
                 let positional: Vec<&String> =
                     args.iter().filter(|a| !a.starts_with('-')).collect();
                 let has_flags = args.iter().any(|a| a.starts_with('-'));
-                // don't honor flags or multiple installables
+                // unsupported flags or multiple installables
                 if has_flags || positional.len() > 1 {
                     return unhandled();
                 }
@@ -65,7 +53,7 @@ fn parse_line(raw: &str) -> Option<Directive> {
                     Some(s) if s.starts_with(".#") => {
                         Some(Directive::UseFlake(Some(s[2..].to_string())))
                     }
-                    // remote refs / absolute paths aren't supported by load_flake
+                    // load_flake needs local relative refs
                     Some(_) => unhandled(),
                 }
             }
@@ -102,16 +90,8 @@ fn parse(contents: &str) -> Vec<Directive> {
     contents.lines().filter_map(parse_line).collect()
 }
 
-/// Merge another env set in, extending list values and carrying over hard-replaces
 fn merge(out: &mut EnvSet, other: EnvSet) {
-    for (k, v) in other.vars {
-        out.vars
-            .entry(k)
-            .and_modify(|cur: &mut Vec<String>| cur.extend(v.clone()))
-            .or_insert(v);
-    }
-    out.hard.extend(other.hard);
-    out.nix_store_paths.extend(other.nix_store_paths);
+    out.merge_loaded(other);
 }
 
 pub(crate) fn envrc_arg(filename: &str) -> &str {
@@ -122,10 +102,9 @@ pub(crate) fn envrc_arg(filename: &str) -> &str {
     }
 }
 
-/// Compose an .envrc's recognized directives into a single EnvSet. `path` is the
-/// already-resolved .envrc; its directives resolve against its own dir
+/// load recognized `.envrc` directives
 pub fn load_envrc(path: &Path, profile_dir: Option<PathBuf>) -> Result<EnvSet> {
-    // directives inside resolve against the .envrc's own dir (direnv semantics)
+    // direnv resolves inside the .envrc dir
     let dir = path.parent().unwrap_or(path);
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("reading .envrc at {}", path.display()))?;
@@ -139,10 +118,7 @@ pub fn load_envrc(path: &Path, profile_dir: Option<PathBuf>) -> Result<EnvSet> {
                 let profile = profile_dir
                     .as_ref()
                     .map(|base| base.join(format!("{idx}-flake")));
-                // build the bare-output installable directly: a parsed `.#dev`
-                // must not be re-encoded into a `.#dev` string and fed back
-                // through the path classifier, which would misread it as a
-                // directed path and orphan previously-rooted profiles
+                // avoid reclassifying `.#dev` as a directed path
                 let target = FlakeTarget::bare_output(dir, output.as_deref());
                 merge(&mut out, load_flake(&target, profile).context("use flake")?)
             }
@@ -162,20 +138,15 @@ pub fn load_envrc(path: &Path, profile_dir: Option<PathBuf>) -> Result<EnvSet> {
             }
             Directive::Export(key, value) => {
                 let parts: Vec<String> = value.split(':').map(str::to_string).collect();
-                out.vars
-                    .entry(key)
-                    .and_modify(|cur| cur.extend(parts.clone()))
-                    .or_insert(parts);
+                out.append_values(key, parts);
             }
             Directive::PathAdd(dirs) => {
-                // direnv PATH_add prepends, resolved against the .envrc's dir
-                let mut prefix: Vec<String> = dirs
+                // PATH_add prepends relative to the .envrc dir
+                let prefix: Vec<String> = dirs
                     .iter()
                     .map(|d| dir.join(d).to_string_lossy().into_owned())
                     .collect();
-                let entry = out.vars.entry("PATH".to_string()).or_default();
-                prefix.append(entry);
-                *entry = prefix;
+                out.prepend_values("PATH".to_string(), prefix);
             }
             Directive::WatchFile(_) => {}
             Directive::Unhandled(line) => warnings.push(line),
@@ -199,10 +170,9 @@ pub fn load_envrc(path: &Path, profile_dir: Option<PathBuf>) -> Result<EnvSet> {
     Ok(out)
 }
 
-/// Files an .envrc layer depends on. `path` is the already-resolved .envrc, the
-/// same canonical path the load path keys on, so watch and load never diverge
+/// files an `.envrc` layer depends on
 pub fn envrc_watch_files(path: &Path) -> Vec<PathBuf> {
-    // directives inside resolve against the .envrc's own dir (direnv semantics)
+    // keep watch and load path resolution aligned
     let dir = path.parent().unwrap_or(path);
     let mut files = vec![path.to_path_buf()];
     let Ok(contents) = std::fs::read_to_string(path) else {
@@ -230,6 +200,8 @@ pub fn envrc_watch_files(path: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const STORE_PATH: &str = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-envrc";
 
     #[test]
     fn recognizes_declarative_directives() {
@@ -262,9 +234,7 @@ mod tests {
 
     #[test]
     fn use_flake_named_output_stays_bare_output() {
-        // regression: a parsed `.#dev` must build a bare-output installable, not
-        // be re-encoded and reclassified as a directed path (which would change
-        // the installable to a layer-dir path and orphan rooted profiles)
+        // parsed outputs must not re-enter path classification
         let Some(Directive::UseFlake(output)) = parse_line("use flake .#dev") else {
             panic!("expected UseFlake");
         };
@@ -276,6 +246,21 @@ mod tests {
     }
 
     #[test]
+    fn literal_export_records_store_paths() {
+        let dir =
+            std::env::temp_dir().join(format!("cade-envrc-store-paths-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".envrc");
+        std::fs::write(&path, format!("export TOOL={STORE_PATH}\n")).unwrap();
+
+        let env = load_envrc(&path, None).unwrap();
+
+        assert_eq!(env.nix_store_paths, vec![STORE_PATH]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn comments_and_blanks_are_ignored() {
         assert_eq!(parse_line(""), None);
         assert_eq!(parse_line("   # a comment"), None);
@@ -284,7 +269,6 @@ mod tests {
 
     #[test]
     fn unmappable_lines_are_flagged_not_dropped() {
-        // expansion in a value can't be reproduced literally
         assert!(matches!(
             parse_line("export PATH=$PATH:./bin"),
             Some(Directive::Unhandled(_))
@@ -293,17 +277,14 @@ mod tests {
             parse_line("export X=$(date)"),
             Some(Directive::Unhandled(_))
         ));
-        // flags we can't honor
         assert!(matches!(
             parse_line("use flake . --impure"),
             Some(Directive::Unhandled(_))
         ));
-        // remote flake refs aren't supported by the loader
         assert!(matches!(
             parse_line("use flake github:foo/bar"),
             Some(Directive::Unhandled(_))
         ));
-        // unknown stdlib functions
         assert!(matches!(
             parse_line("layout python"),
             Some(Directive::Unhandled(_))

@@ -1,5 +1,6 @@
+use crate::env::EnvSet;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 #[derive(Debug)]
 pub enum CadeAction {
@@ -7,7 +8,6 @@ pub enum CadeAction {
     Environ(EnvSet),
     Hook(InnerHook),
     Clear(Vec<String>),
-    /// Mark variables as list-like (concatenating) for this layer and inward
     Concat(Vec<String>),
 }
 
@@ -19,10 +19,7 @@ pub struct CadeLayer {
     pub clears: HashSet<String>,
     #[serde(default)]
     pub concat: HashSet<String>,
-    /// Store paths to gc-root on the cold (just-loaded) path: the env-referenced
-    /// paths a `nix develop --profile` did not already root. Recomputed on every
-    /// load and never trusted across the cache boundary (the warm path has no
-    /// profile and re-derives the full set from env values), so it is not cached.
+    /// cold-path gc roots
     #[serde(skip)]
     pub nix_store_paths: Vec<String>,
 }
@@ -30,7 +27,6 @@ pub struct CadeLayer {
 #[derive(Debug)]
 pub enum Keyword {
     Pure,
-    /// stop the `.cade` cascade at this dir; nothing above it loads
     Disinherit,
     Call(String),
     Load(Loadable),
@@ -60,34 +56,6 @@ pub enum HookType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InnerHook {
-    /// Raw command text, run verbatim
     pub content: String,
     pub kind: HookType,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct EnvSet {
-    /// Variable -> colon-split values
-    pub vars: HashMap<String, Vec<String>>,
-    /// Keys assigned with := hard replace
-    #[serde(default)]
-    pub hard: HashSet<String>,
-    /// Nix store paths discovered while loading this environment.
-    #[serde(default)]
-    pub nix_store_paths: Vec<String>,
-}
-
-impl EnvSet {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Build from plain var -> values with no hard-replace
-    pub fn from_vars(vars: HashMap<String, Vec<String>>) -> Self {
-        Self {
-            vars,
-            hard: HashSet::new(),
-            nix_store_paths: Vec::new(),
-        }
-    }
 }

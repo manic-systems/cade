@@ -1,7 +1,7 @@
 use crate::{
     config,
+    env::EnvSet,
     nix_progress::NixProgress,
-    types::EnvSet,
     verbosity::{self, Verbosity},
 };
 use anyhow::{Context, Result, bail};

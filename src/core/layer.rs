@@ -1,12 +1,15 @@
 use super::Cade;
-use crate::types::{CadeAction, CadeLayer, Keyword, Loadable};
+use crate::{
+    env::EnvSet,
+    types::{CadeAction, CadeLayer, Keyword, Loadable},
+};
 use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
 
 impl CadeLayer {
     pub fn new(_layer: usize, _origin: &Path) -> Self {
         Self {
-            envs: crate::types::EnvSet::new(),
+            envs: EnvSet::new(),
             hooks: Vec::new(),
             purify: false,
             clears: std::collections::HashSet::new(),
@@ -25,11 +28,7 @@ impl CadeLayer {
                 self.nix_store_paths.extend(env.nix_store_paths);
                 self.envs.hard.extend(env.hard);
                 for (k, v) in env.vars {
-                    self.envs
-                        .vars
-                        .entry(k)
-                        .and_modify(|iv| iv.extend(v.clone()))
-                        .or_insert(v);
+                    self.envs.append_values(k, v);
                 }
             }
             Hook(hook) => {
@@ -68,7 +67,7 @@ impl Loadable {
         }
     }
 
-    // one resolved target owns both loading and watching
+    // one target owns loading and watching
     pub(super) fn resolve(&self, layer_dir: &Path) -> ResolvedLoad {
         use crate::path_resolve::resolve_for_watch;
         match self {
@@ -77,7 +76,7 @@ impl Loadable {
                     Loadable::Flake(a) => Some(a.as_str()),
                     _ => None,
                 };
-                // missing flake dirs are left for nix develop
+                // let nix report missing flake dirs
                 let target = crate::nix_dev_env::resolve_flake_target(layer_dir, arg);
                 let watch = vec![target.cwd.join("flake.nix"), target.cwd.join("flake.lock")];
                 ResolvedLoad {
