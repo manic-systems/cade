@@ -1,7 +1,9 @@
 use super::{
-    Cade, DISALLOWED_REMINDER, Keyword, RollupResult, compute_layer_key,
-    direnv_fallback_session_id, direnv_session_id, find_cade_root, is_valid_session,
-    load_single_layer, new_session_id, rollup_envs, watched_files_for_keywords,
+    Cade, DISALLOWED_REMINDER, Keyword, find_cade_root,
+    layer::load_single_layer,
+    rollup::{RollupResult, rollup_envs},
+    sessions::{direnv_fallback_session_id, direnv_session_id, is_valid_session, new_session_id},
+    watch::{compute_layer_key, watched_files_for_keywords},
 };
 use crate::{
     direnv_export,
@@ -66,7 +68,6 @@ impl Cade {
         if cade_files.is_empty() {
             return Ok(None);
         }
-        // effective root = deepest approved participant
         let root = cade_files
             .last()
             .map(|(p, _)| p.clone())
@@ -111,17 +112,7 @@ impl Cade {
         }))
     }
 
-    /// A cached layer is reusable only when its watch token still matches
-    /// (enforced by `get_cached_layer`) and every nix store path it references
-    /// still exists. Nix loaders are cached like any other layer, but their
-    /// outputs can be collected between sessions while the inputs (and so the
-    /// token) are unchanged; a missing path forces a reload that re-realizes the
-    /// closure (via the nix profile) and re-roots it.
-    ///
-    /// The returned store paths are derived from the layer's env values rather
-    /// than its cached `nix_store_paths`: the warm path has no
-    /// `nix develop --profile` to root the dev-shell closure, so cade roots every
-    /// referenced path itself.
+    // nix cache hits must still point at live store paths
     fn reusable_cached_layer(
         &self,
         dir: &str,
@@ -157,15 +148,11 @@ impl Cade {
             .filter(|s| is_valid_session(s))
         {
             Some(session) => {
-                // Existing cade shells reuse their original pre-activation
-                // snapshot. Using the already-mutated live env here would make
-                // concat variables such as PATH grow on reload.
+                // never baseline from a mutated cade env
                 let baseline = self.read_snapshot(&session).unwrap_or_else(|| live.clone());
                 Ok((ActivationEnv { live, baseline }, session, false))
             }
             None => {
-                // First activation creates the baseline snapshot before any
-                // cade changes are emitted to the shell.
                 let session = new_session_id();
                 self.gc_state(None);
                 self.write_snapshot(&session, &live)?;
@@ -195,20 +182,16 @@ impl Cade {
     ) -> Result<EnvDelta> {
         let export = self.export_session();
         if !crate::config::direnv_mode().runs_shim() {
-            // shim is off, so cade exports no active project env, but we may still have one active
             return Ok(direnv_export::inactive_delta(export.previous));
         }
         let Some(root) = find_cade_root(&self.cwd) else {
-            // mirrors direnv's unload behavior for direct callers
             return Ok(direnv_export::inactive_delta(export.previous));
         };
-        // direnv can't persist __CADE_SESSION across exports, obtain a
-        // stable session before loading
+        // direnv cannot persist cade session env
         let session = direnv_session_id(client_id, owner_pid)
             .unwrap_or_else(|| direnv_fallback_session_id(&root));
         let Some(plan) = self.maybe_activation_plan_for_root(root, Some(&session))? else {
             if export.previous.is_some() {
-                // project can become disallowed while an editor still holds old env
                 return Ok(direnv_export::inactive_delta(export.previous));
             }
             anyhow::bail!(

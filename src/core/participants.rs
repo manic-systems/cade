@@ -1,11 +1,8 @@
-//! Pure path topology for the cascade: which directories participate in an
-//! activation at a given cwd, and which one is the root. No db, no env, no
-//! shell output - just the filesystem layout of `.cade` and `.envrc` markers.
+//! path topology only
 
 use crate::{config, types::Keyword};
 use std::path::{Path, PathBuf};
 
-/// what a dir contributes; a co-located `.envrc` yields to `.cade`, so at most one kind
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum DirKind {
     Cade,
@@ -24,11 +21,7 @@ fn dir_kind(dir: &Path) -> Option<DirKind> {
     }
 }
 
-/// true when `dir`'s `.cade` caps the cascade at this dir: either it carries a
-/// `disinherit` directive, or it is malformed (a parse error). a malformed
-/// `.cade` must not be silently climbed past to a valid parent; capping here
-/// keeps the chain shape aligned with activation, which surfaces the same parse
-/// error when it re-reads the file via `config_keywords`
+// malformed .cade caps like disinherit
 fn caps_the_cascade(dir: &Path) -> bool {
     match super::read_cade(&dir.join(".cade")) {
         Ok(kws) => kws.iter().any(|kw| matches!(kw, Keyword::Disinherit)),
@@ -36,14 +29,7 @@ fn caps_the_cascade(dir: &Path) -> bool {
     }
 }
 
-/// the active layer set, tip-first: every `.cade` ancestor (the cascade stacks
-/// across gaps; an empty intermediate dir does not sever it) unioned with
-/// direnv's single nearest `.envrc`. a `disinherit` directive or a malformed
-/// `.cade` halts the cascade; otherwise only the permission layer caps it
-//
-// note: a capping dir is parsed here and re-parsed at activation via
-// `config_keywords`; a single-parse pass shared across both is a deferred
-// cross-cutting refactor (touches the composition-branch callers)
+// tip-first .cade cascade plus nearest .envrc
 pub(super) fn participant_dirs(start: &Path) -> Vec<PathBuf> {
     let mut cade_chain: Vec<PathBuf> = Vec::new();
     let mut nearest_envrc: Option<PathBuf> = None;
@@ -52,17 +38,14 @@ pub(super) fn participant_dirs(start: &Path) -> Vec<PathBuf> {
     while let Some(d) = dir {
         match dir_kind(&d) {
             Some(DirKind::Cade) => {
-                // include this dir, then stop on disinherit or a malformed `.cade`
                 cade_chain.push(d.clone());
                 if caps_the_cascade(&d) {
                     break;
                 }
             }
             Some(DirKind::Envrc) => {
-                // only the nearest .envrc
                 nearest_envrc.get_or_insert_with(|| d.clone());
             }
-            // a gap does not break the cascade
             None => {}
         }
         dir = d.parent().map(Path::to_path_buf);
@@ -78,18 +61,10 @@ fn merge_participants(cade_chain: Vec<PathBuf>, nearest_envrc: Option<PathBuf>) 
     {
         dirs.push(envrc);
     }
-    // deepest first
     dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
     dirs
 }
 
-/// activation root: the deepest participant (may be an `.envrc` below the nearest `.cade`)
-//
-// This re-walks and sorts the whole participant set just to take the deepest.
-// A bespoke early-returning walk would shave that off the activation hot-path,
-// but the set is a handful of ancestors and a second walk would have to
-// re-derive the same .cade/.envrc union rules, inviting the very drift the
-// shared `participant_dirs` exists to prevent. The cost is accepted.
 pub(super) fn find_cade_root(start: &Path) -> Option<PathBuf> {
     participant_dirs(start).into_iter().next()
 }
@@ -105,9 +80,7 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(base.join("a").join(".cade"), b"").unwrap();
 
-        // from c (no .cade), the innermost ancestor with .cade is a/
         assert_eq!(find_cade_root(&nested), Some(base.join("a")));
-        // adding a deeper .cade changes the root
         std::fs::write(base.join("a/b").join(".cade"), b"").unwrap();
         assert_eq!(find_cade_root(&nested), Some(base.join("a/b")));
 
@@ -125,7 +98,6 @@ mod tests {
             .collect()
     }
 
-    /// build a temp tree per spec, then assert the tip-first participant list
     fn assert_participants(spec: &[(&str, &str)], cwd_rel: &str, expect_tip_first: &[&str]) {
         use std::sync::atomic::{AtomicU32, Ordering};
         static SALT: AtomicU32 = AtomicU32::new(0);
@@ -150,31 +122,26 @@ mod tests {
 
     #[test]
     fn participants_cade_cascade() {
-        // S1: contiguous .cade cascade, tip-first
         assert_participants(&[("a", ".cade"), ("a/b", ".cade")], "a/b", &["a/b", "a"]);
     }
 
     #[test]
     fn participants_nearest_envrc_only_no_cade() {
-        // S2: stacked .envrc, no .cade -> only the nearest one
         assert_participants(&[("a", ".envrc"), ("a/b", ".envrc")], "a/b", &["a/b"]);
     }
 
     #[test]
     fn participants_cade_union_nearest_envrc_below() {
-        // S3: cade {a} union nearest envrc {a/b}
         assert_participants(&[("a", ".cade"), ("a/b", ".envrc")], "a/b", &["a/b", "a"]);
     }
 
     #[test]
     fn participants_cade_union_nearest_envrc_above() {
-        // S4: cade {a/b} union nearest envrc {a}
         assert_participants(&[("a", ".envrc"), ("a/b", ".cade")], "a/b", &["a/b", "a"]);
     }
 
     #[test]
     fn participants_only_nearest_envrc_enters_with_a_gap() {
-        // S5: cade {a} union nearest envrc {a/b/c}; a/b is dropped (a hole)
         assert_participants(
             &[("a", ".cade"), ("a/b", ".envrc"), ("a/b/c", ".envrc")],
             "a/b/c",
@@ -184,7 +151,6 @@ mod tests {
 
     #[test]
     fn participants_cade_cascade_spans_a_gap() {
-        // an empty intermediate dir does not sever the cascade
         assert_participants(
             &[("a", ".cade"), ("a/b/c", ".cade")],
             "a/b/c",
@@ -194,7 +160,6 @@ mod tests {
 
     #[test]
     fn participants_upper_envrc_survives_a_cade_cascade_gap() {
-        // the gap at b excludes an upper .cade, but the nearest .envrc above it still joins
         assert_participants(
             &[("a", ".envrc"), ("a/b/c", ".cade")],
             "a/b/c",
@@ -204,7 +169,6 @@ mod tests {
 
     #[test]
     fn participants_colocated_envrc_is_ignored() {
-        // S6: a dir with both is a .cade layer; its .envrc never participates
         let base = std::env::temp_dir().join(format!("cade-parts-both-{}", std::process::id()));
         std::fs::remove_dir_all(&base).ok();
         let a = base.join("a");
@@ -215,7 +179,6 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
     }
 
-    /// Build a temp tree from (rel-dir, filename, contents) entries.
     fn build_tree(spec: &[(&str, &str, &str)], tag: &str) -> PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
         static SALT: AtomicU32 = AtomicU32::new(0);
@@ -235,7 +198,6 @@ mod tests {
 
     #[test]
     fn disinherit_truncates_the_cade_cascade() {
-        // child .cade disinherits, so its .cade parent never joins the chain.
         let base = build_tree(
             &[("a", ".cade", ""), ("a/b", ".cade", "disinherit\n")],
             "disinherit",
@@ -250,7 +212,6 @@ mod tests {
 
     #[test]
     fn disinherit_still_unions_the_nearest_envrc() {
-        // disinherit drops the parent .cade, but a nearer .envrc still composes.
         let base = build_tree(
             &[
                 ("a", ".cade", ""),
@@ -269,10 +230,6 @@ mod tests {
 
     #[test]
     fn malformed_cade_caps_the_cascade_instead_of_being_skipped() {
-        // a child `.cade` with an unparseable directive must cap the chain at
-        // that dir, not be silently climbed past to its valid parent. this keeps
-        // the chain-shape decision aligned with activation, which surfaces the
-        // parse error when it re-reads the same file.
         let base = build_tree(
             &[
                 ("a", ".cade", "A_CADE=1\n"),
@@ -291,11 +248,6 @@ mod tests {
 
     #[test]
     fn malformed_cade_caps_even_with_a_deeper_valid_tip() {
-        // the cap holds from the tip's perspective too: a valid tip below a
-        // malformed `.cade` composes the tip and the malformed dir, but the cap
-        // stops the chain there so the valid grandparent never participates.
-        // this is the chain-shape that gap-fill anchors on (it never reaches
-        // above the cap).
         let base = build_tree(
             &[
                 ("a", ".cade", "A_CADE=1\n"),
