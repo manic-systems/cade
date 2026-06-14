@@ -2,16 +2,20 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+mod rollup;
+
+pub(crate) use rollup::{RollupResult, rollup_envs};
+
 const NIX_STORE_PREFIX: &str = "/nix/store/";
 const NIX_STORE_HASH_LEN: usize = 32;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EnvSet {
-    pub vars: HashMap<String, Vec<String>>,
+    vars: HashMap<String, Vec<String>>,
     #[serde(default)]
-    pub hard: HashSet<String>,
+    hard: HashSet<String>,
     #[serde(default)]
-    pub nix_store_paths: Vec<String>,
+    nix_store_paths: Vec<String>,
 }
 
 impl EnvSet {
@@ -82,8 +86,68 @@ impl EnvSet {
         extend_unique(&mut self.nix_store_paths, other.nix_store_paths);
     }
 
+    pub(crate) fn merge_layer_env(&mut self, other: EnvSet) -> Vec<String> {
+        let EnvSet {
+            vars,
+            hard,
+            nix_store_paths,
+        } = other;
+        self.hard.extend(hard);
+        for (key, values) in vars {
+            self.append_values(key, values);
+        }
+        nix_store_paths
+    }
+
+    pub(crate) fn map_joined_values(&mut self, mut f: impl FnMut(&str) -> String) {
+        for values in self.vars.values_mut() {
+            let value = f(&values.join(":"));
+            *values = split_env_value(&value);
+        }
+        self.refresh_nix_store_paths();
+    }
+
+    pub(crate) fn clear_store_paths(&mut self) {
+        self.nix_store_paths.clear();
+    }
+
     pub(crate) fn refresh_nix_store_paths(&mut self) {
         self.nix_store_paths = nix_store_paths_from_env_values(self);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hard(&mut self, key: impl Into<String>) {
+        self.hard.insert(key.into());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn values(&self, key: &str) -> Option<&[String]> {
+        self.vars.get(key).map(Vec::as_slice)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_key(&self, key: &str) -> bool {
+        self.vars.contains_key(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.vars.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hard_is_empty(&self) -> bool {
+        self.hard.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_hard(&self, key: &str) -> bool {
+        self.hard.contains(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn store_paths(&self) -> &[String] {
+        &self.nix_store_paths
     }
 }
 
@@ -178,24 +242,24 @@ mod tests {
     #[test]
     fn parses_kv_skips_comments_and_blanks() {
         let env = EnvSet::from_envs("# comment\n\nFOO=bar\n  BAZ=qux  \n").unwrap();
-        assert_eq!(env.vars["FOO"], vec!["bar"]);
-        assert_eq!(env.vars["BAZ"], vec!["qux"]);
-        assert_eq!(env.vars.len(), 2);
-        assert!(env.hard.is_empty());
+        assert_eq!(env.values("FOO").unwrap(), ["bar"]);
+        assert_eq!(env.values("BAZ").unwrap(), ["qux"]);
+        assert_eq!(env.len(), 2);
+        assert!(env.hard_is_empty());
     }
 
     #[test]
     fn splits_colon_lists_and_merges_duplicate_keys() {
         let env = EnvSet::from_envs("PATH=/a:/b\nPATH=/c").unwrap();
-        assert_eq!(env.vars["PATH"], vec!["/a", "/b", "/c"]);
+        assert_eq!(env.values("PATH").unwrap(), ["/a", "/b", "/c"]);
     }
 
     #[test]
     fn hard_replace_notation_is_recorded() {
         let env = EnvSet::from_envs("PATH:=/only/this\nFOO=bar").unwrap();
-        assert_eq!(env.vars["PATH"], vec!["/only/this"]);
-        assert!(env.hard.contains("PATH"), "PATH:= should be hard");
-        assert!(!env.hard.contains("FOO"), "FOO= should not be hard");
+        assert_eq!(env.values("PATH").unwrap(), ["/only/this"]);
+        assert!(env.is_hard("PATH"), "PATH:= should be hard");
+        assert!(!env.is_hard("FOO"), "FOO= should not be hard");
     }
 
     #[test]
@@ -204,17 +268,17 @@ mod tests {
             "export FOO=bar\nQUOTED=\"hello world\"\nSQ='a b'\nWITH=val # trailing note\n",
         )
         .unwrap();
-        assert_eq!(env.vars["FOO"], vec!["bar"]);
-        assert_eq!(env.vars["QUOTED"], vec!["hello world"]);
-        assert_eq!(env.vars["SQ"], vec!["a b"]);
-        assert_eq!(env.vars["WITH"], vec!["val"]);
+        assert_eq!(env.values("FOO").unwrap(), ["bar"]);
+        assert_eq!(env.values("QUOTED").unwrap(), ["hello world"]);
+        assert_eq!(env.values("SQ").unwrap(), ["a b"]);
+        assert_eq!(env.values("WITH").unwrap(), ["val"]);
     }
 
     #[test]
     fn hash_inside_quotes_is_kept() {
         let env = EnvSet::from_envs("TOKEN=\"a#b\"\nFRAG=x#y\n").unwrap();
-        assert_eq!(env.vars["TOKEN"], vec!["a#b"]);
-        assert_eq!(env.vars["FRAG"], vec!["x#y"]);
+        assert_eq!(env.values("TOKEN").unwrap(), ["a#b"]);
+        assert_eq!(env.values("FRAG").unwrap(), ["x#y"]);
     }
 
     #[test]
@@ -225,14 +289,14 @@ mod tests {
     #[test]
     fn preserves_hostile_value_verbatim() {
         let env = EnvSet::from_envs("EVIL=$(touch /tmp/pwned)").unwrap();
-        assert_eq!(env.vars["EVIL"], vec!["$(touch /tmp/pwned)"]);
+        assert_eq!(env.values("EVIL").unwrap(), ["$(touch /tmp/pwned)"]);
     }
 
     #[test]
     fn appended_values_update_store_paths() {
         let mut env = EnvSet::new();
         env.append_values("TOOL".to_string(), vec![STORE_PATH.to_string()]);
-        assert_eq!(env.nix_store_paths, vec![STORE_PATH]);
+        assert_eq!(env.store_paths(), [STORE_PATH]);
     }
 
     #[test]
@@ -243,6 +307,6 @@ mod tests {
             vec![STORE_PATH.to_string()],
         )]));
         out.merge_loaded(other);
-        assert!(out.nix_store_paths.is_empty());
+        assert!(out.store_paths().is_empty());
     }
 }
