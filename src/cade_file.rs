@@ -2,6 +2,8 @@ use crate::types::{Keyword, Loadable};
 use anyhow::{Context, Result, anyhow};
 use std::path::Path;
 
+mod parse;
+
 pub(crate) fn read(path: &Path) -> Result<Vec<Keyword>> {
     let contents = std::fs::read(path).context("reading cade file")?;
     let mut accum = Vec::new();
@@ -16,7 +18,7 @@ pub(crate) fn read(path: &Path) -> Result<Vec<Keyword>> {
         })?;
         match line.parse::<Keyword>() {
             Ok(kw) => accum.push(kw),
-            Err(crate::cli::parse::ParseError::EmptyLine) => continue,
+            Err(parse::ParseError::EmptyLine) => continue,
             Err(e) => {
                 return Err(anyhow!(
                     "parse cade file at {}: line {}: {e}",

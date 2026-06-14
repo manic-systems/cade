@@ -22,8 +22,6 @@ impl Display for ParseError {
     }
 }
 
-// an all-caps env var identifier like `FOO_BAR`, used to tell a bare
-// assignment apart from the lowercase directive keywords
 fn is_assignment_key(k: &str) -> bool {
     let mut chars = k.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_uppercase() || c == '_')
@@ -40,8 +38,6 @@ impl FromStr for Keyword {
 
         use crate::types::Keyword::*;
 
-        // a bare `KEY=value` (or `KEY:=value`) assignment, recognised only when
-        // the key is an all-caps identifier so it can't shadow a keyword
         if let Some((lhs, _)) = trimmed.split_once('=') {
             let key = lhs.strip_suffix(':').unwrap_or(lhs).trim_end();
             if is_assignment_key(key) {
@@ -52,8 +48,6 @@ impl FromStr for Keyword {
         }
 
         let mut words = trimmed.split_whitespace();
-        // slice off the original first word rather than the lowercased copy
-        // since lowercasing can change byte boundaries
         let first = words.next().unwrap();
         let keyword = first.to_lowercase();
         let rest_raw = trimmed[first.len()..].trim_start();
@@ -62,7 +56,6 @@ impl FromStr for Keyword {
             "pure" => Pure,
             "disinherit" => Disinherit,
             "call" => {
-                // kept raw, `${}` expansion then shlex tokenization will occur
                 if rest_raw.is_empty() {
                     return Err(ParseError::TooFewOptions);
                 }
@@ -84,7 +77,6 @@ impl FromStr for Keyword {
             }
             "hook" => {
                 use crate::types::HookType::*;
-                // first token is the lifecycle phase, rest is the command
                 let (phase, command) = match rest_raw.split_once(char::is_whitespace) {
                     Some((p, c)) => (p, c.trim_start()),
                     None => (rest_raw, ""),
@@ -94,7 +86,6 @@ impl FromStr for Keyword {
                     "load" => (LoadPost, command),
                     "preunload" => (UnloadPre, command),
                     "unload" => (UnloadPost, command),
-                    // no phase given, treat the whole line as a post-load command
                     _ => (LoadPost, rest_raw),
                 };
                 if content.is_empty() {
@@ -162,7 +153,6 @@ mod tests {
 
     #[test]
     fn lowercase_key_is_not_an_assignment() {
-        // not all-caps, so it falls through to keyword lookup and is rejected
         assert!(matches!(
             "foo=bar".parse::<Keyword>(),
             Err(ParseError::InvalidKeyword)
@@ -171,7 +161,6 @@ mod tests {
 
     #[test]
     fn multibyte_first_word_does_not_panic() {
-        // `İ` (U+0130) lowercases to two bytes, potentially breaking slice indexing
         assert!(matches!(
             "İ foo".parse::<Keyword>(),
             Err(ParseError::InvalidKeyword)
@@ -188,7 +177,6 @@ mod tests {
 
     #[test]
     fn keyword_with_equals_in_args_stays_a_keyword() {
-        // the `=` belongs to the hook command, not a bare assignment
         assert!(matches!(
             "hook load export X=1".parse::<Keyword>(),
             Ok(Keyword::Hook(_))
