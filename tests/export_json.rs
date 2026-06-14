@@ -3,6 +3,9 @@ mod common;
 use common::{Sandbox, stderr, stdout};
 use std::{path::Path, process::Output};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 fn run_export_json(sb: &Sandbox, cwd: &Path, extra_env: &[(&str, &str)]) -> Output {
     // The shim endpoint is opt-in; these tests exercise its payload, so enable
     // it explicitly. A test may still override CADE_DIRENV via extra_env.
@@ -293,4 +296,90 @@ fn json_export_pure_unsets_ambient_without_cade_activation_bookkeeping() {
     assert!(v["AMBIENT_TEST"].is_null(), "{v}");
     assert!(v.get("HOME").is_none(), "{v}");
     assert!(v.get("__CADE_SESSION").is_none(), "{v}");
+}
+
+#[cfg(unix)]
+#[test]
+fn json_export_materializes_nix_shell_with_profile_without_live_holder() {
+    let sb = Sandbox::new();
+    sb.write(".cade", "load flake\n");
+    sb.allow(&sb.root);
+
+    let fake_bin = sb.dir("fake-bin");
+    let fake_nix = fake_bin.join("nix");
+    let profile_log = sb.state.join("profile.log");
+    write_executable(
+        &fake_nix,
+        r#"#!/bin/sh
+set -eu
+profile=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --profile)
+      shift
+      profile="${1:-}"
+      ;;
+    --command)
+      shift
+      break
+      ;;
+  esac
+  shift
+done
+if [ -z "$profile" ]; then
+  printf 'missing --profile\n' >&2
+  exit 86
+fi
+printf '%s\n' "$profile" > "$CADE_FAKE_NIX_PROFILE_LOG"
+PATH="/materialized/bin:${PATH:-}"
+export PATH
+FROM_PROFILE_NIX=ok
+export FROM_PROFILE_NIX
+exec "$@"
+"#,
+    );
+
+    let host_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin.clone()).chain(std::env::split_paths(&host_path)),
+    )
+    .expect("test PATH should be valid");
+    let path = path.to_string_lossy().to_string();
+    let profile_log = profile_log.to_string_lossy().to_string();
+
+    let out = sb.run(
+        &sb.root,
+        &["--owner-pid", "4294967295", "export", "json"],
+        &[
+            ("CADE_DIRENV", "full"),
+            ("PATH", &path),
+            ("CADE_FAKE_NIX_PROFILE_LOG", &profile_log),
+        ],
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+
+    let json = parse_json(&out);
+    assert_eq!(json["FROM_PROFILE_NIX"], "ok");
+    assert!(
+        json["PATH"]
+            .as_str()
+            .is_some_and(|path| path.starts_with("/materialized/bin:")),
+        "{json}"
+    );
+
+    let logged_profile = std::fs::read_to_string(&profile_log).unwrap();
+    assert!(
+        logged_profile.contains("/gcroots/shells/direnv-root-")
+            && logged_profile.contains("/profiles/"),
+        "{logged_profile}"
+    );
+}
+
+#[cfg(unix)]
+fn write_executable(path: &Path, contents: &str) {
+    std::fs::write(path, contents).unwrap();
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).unwrap();
 }

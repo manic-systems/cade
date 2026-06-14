@@ -465,10 +465,7 @@ fn configured_client_id(explicit: Option<&str>) -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
-/// A stable session id for the direnv export path, which cannot persist
-/// `__CADE_SESSION` between calls. Scoped to the holding lease if there is one,
-/// otherwise the owning shell process; `None` when neither is resolvable, in
-/// which case the export skips gc rooting.
+/// stable session id for the direnv export path, which cannot persist `__CADE_SESSION` between calls
 fn direnv_session_id(client_id: Option<&str>, owner_pid: Option<u32>) -> Option<String> {
     if let Some(client_id) = configured_client_id(client_id) {
         return Some(format!("direnv-lease-{}", stable_hash_hex(&client_id)));
@@ -476,6 +473,13 @@ fn direnv_session_id(client_id: Option<&str>, owner_pid: Option<u32>) -> Option<
     let pid = owner_pid.or_else(parent_pid)?;
     let start_time = process_start_time(pid)?;
     Some(format!("direnv-{pid}-{}", stable_hash_hex(&start_time)))
+}
+
+fn direnv_fallback_session_id(root: &Path) -> String {
+    format!(
+        "direnv-root-{}",
+        stable_hash_hex(root.to_string_lossy().as_ref())
+    )
 }
 
 impl Cade {

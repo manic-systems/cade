@@ -1,7 +1,7 @@
 use super::{
-    Cade, DISALLOWED_REMINDER, Keyword, RollupResult, compute_layer_key, direnv_session_id,
-    find_cade_root, is_valid_session, load_single_layer, new_session_id, rollup_envs,
-    watched_files_for_keywords,
+    Cade, DISALLOWED_REMINDER, Keyword, RollupResult, compute_layer_key,
+    direnv_fallback_session_id, direnv_session_id, find_cade_root, is_valid_session,
+    load_single_layer, new_session_id, rollup_envs, watched_files_for_keywords,
 };
 use crate::{
     direnv_export,
@@ -30,9 +30,6 @@ pub(super) struct ActivationEnv {
 
 impl RollupResult {
     pub(super) fn env_delta(&self, activation_env: &ActivationEnv) -> EnvDelta {
-        // Shell activation and JSON export share this calculation so new cade
-        // semantics cannot accidentally work in one path and diverge in the
-        // other.
         EnvDelta::from_rollup(EnvDeltaInput {
             env: &self.env,
             absorb: &self.absorb,
@@ -69,7 +66,7 @@ impl Cade {
         if cade_files.is_empty() {
             return Ok(None);
         }
-        // effective root = deepest approved participant, so messages and watches track what composed
+        // effective root = deepest approved participant
         let root = cade_files
             .last()
             .map(|(p, _)| p.clone())
@@ -198,27 +195,20 @@ impl Cade {
     ) -> Result<EnvDelta> {
         let export = self.export_session();
         if !crate::config::direnv_mode().runs_shim() {
-            // The shim is off, so cade exports no active project env. Still route
-            // through the unwind path: if a prior shim/full export left a live
-            // DIRENV_DIFF, restore its preimage instead of stranding the old
-            // project's vars. With no carried diff this returns an empty no-op.
+            // shim is off, so cade exports no active project env, but we may still have one active
             return Ok(direnv_export::inactive_delta(export.previous));
         }
         let Some(root) = find_cade_root(&self.cwd) else {
-            // This mirrors direnv's unload behavior for direct callers: leaving
-            // a project must undo the last exported diff if the caller preserved
-            // DIRENV_DIFF.
+            // mirrors direnv's unload behavior for direct callers
             return Ok(direnv_export::inactive_delta(export.previous));
         };
-        // direnv can't persist __CADE_SESSION across exports, so the session is
-        // derived from the holding lease or shell process. That keeps nix gc
-        // roots scoped to one stable session per client, like the shell path.
-        let session = direnv_session_id(client_id, owner_pid);
-        let Some(plan) = self.maybe_activation_plan_for_root(root, session.as_deref())? else {
+        // direnv can't persist __CADE_SESSION across exports, obtain a
+        // stable session before loading
+        let session = direnv_session_id(client_id, owner_pid)
+            .unwrap_or_else(|| direnv_fallback_session_id(&root));
+        let Some(plan) = self.maybe_activation_plan_for_root(root, Some(&session))? else {
             if export.previous.is_some() {
-                // A project can become disallowed while an editor still holds
-                // its previous env. Restore that env instead of leaving stale
-                // project variables active.
+                // project can become disallowed while an editor still holds old env
                 return Ok(direnv_export::inactive_delta(export.previous));
             }
             anyhow::bail!(
@@ -226,10 +216,8 @@ impl Cade {
                 self.cwd.display()
             );
         };
-        if let Some(session) = session.as_deref() {
-            self.root_nix_store_paths(session, &plan.nix_store_paths);
-            self.refresh_session_holders(session, client_id, owner_pid);
-        }
+        self.root_nix_store_paths(&session, &plan.nix_store_paths);
+        self.refresh_session_holders(&session, client_id, owner_pid);
         let activation_env = ActivationEnv {
             live: export.live,
             baseline: export.baseline,
@@ -257,8 +245,6 @@ fn direnv_export_file(root: &Path) -> PathBuf {
     }
 }
 
-/// Whether every given nix store path still exists. Vacuously true when there
-/// are none, so plain env and call layers always stay cacheable.
 fn store_paths_all_present(paths: &[String]) -> bool {
     paths.iter().all(|p| Path::new(p).exists())
 }
