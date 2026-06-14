@@ -29,7 +29,7 @@ impl Cade {
         clear_disallowed_root_marker(shell);
         let rollup = &plan.rollup;
 
-        for hook in &rollup.hooks {
+        for hook in rollup.hooks() {
             if hook.kind == HookType::LoadPre {
                 log_hook(hook);
                 print!("{}", shell.emit_hook(&hook.content));
@@ -44,7 +44,7 @@ impl Cade {
         let delta = rollup.env_delta(&activation_env);
         print!("{}", delta.render_shell(shell));
 
-        for hook in &rollup.hooks {
+        for hook in rollup.hooks() {
             if hook.kind == HookType::LoadPost {
                 log_hook(hook);
                 print!("{}", shell.emit_hook(&hook.content));
@@ -71,19 +71,18 @@ impl Cade {
             );
         }
 
-        let mut set_keys: Vec<&str> = rollup.env.keys().map(String::as_str).collect();
-        set_keys.sort_unstable();
+        let set_keys = rollup.set_keys();
         print!("{}", shell.set_env("__CADE_SET", &set_keys.join("\x1F")));
         print!(
             "{}",
-            shell.set_env("__CADE_UNSET", &rollup.unset.join("\x1F"))
+            shell.set_env("__CADE_UNSET", &rollup.unset().join("\x1F"))
         );
         print!(
             "{}",
-            shell.set_env("__CADE_PURE", if rollup.purified { "1" } else { "0" })
+            shell.set_env("__CADE_PURE", if rollup.purified() { "1" } else { "0" })
         );
 
-        let hooks_json = serde_json::to_string(&rollup.hooks).unwrap_or_default();
+        let hooks_json = serde_json::to_string(rollup.hooks()).unwrap_or_default();
         print!("{}", shell.set_env("__CADE_HOOKS", &hooks_json));
 
         let watch_state = build_watch_state(&plan.root, layer_paths.clone(), &plan.all_watch_files);
@@ -100,7 +99,7 @@ impl Cade {
             None => spinner.done(),
         }
         log_key_list("set", set_keys);
-        log_key_list("cleared", &rollup.unset);
+        log_key_list("cleared", rollup.unset());
 
         println!();
         Ok(())

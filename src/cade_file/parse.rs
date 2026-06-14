@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn bare_uppercase_assignment_parses() {
         match "FOO=bar".parse::<Keyword>().unwrap() {
-            Keyword::Set(env) => assert_eq!(env.vars["FOO"], vec!["bar"]),
+            Keyword::Set(env) => assert_eq!(env.values("FOO").unwrap(), ["bar"]),
             other => panic!("expected Set, got {other:?}"),
         }
     }
@@ -144,8 +144,8 @@ mod tests {
     fn hard_replace_assignment_is_marked() {
         match "PATH:=/x".parse::<Keyword>().unwrap() {
             Keyword::Set(env) => {
-                assert_eq!(env.vars["PATH"], vec!["/x"]);
-                assert!(env.hard.contains("PATH"));
+                assert_eq!(env.values("PATH").unwrap(), ["/x"]);
+                assert!(env.is_hard("PATH"));
             }
             other => panic!("expected Set, got {other:?}"),
         }

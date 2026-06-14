@@ -4,12 +4,12 @@ use crate::{
 };
 use std::collections::{HashMap, HashSet};
 
-pub(super) struct RollupResult {
-    pub(super) env: HashMap<String, Vec<String>>,
-    pub(super) absorb: HashSet<String>,
-    pub(super) unset: Vec<String>,
-    pub(super) hooks: Vec<InnerHook>,
-    pub(super) purified: bool,
+pub(crate) struct RollupResult {
+    env: HashMap<String, Vec<String>>,
+    absorb: HashSet<String>,
+    unset: Vec<String>,
+    hooks: Vec<InnerHook>,
+    purified: bool,
 }
 
 const PATH_LIKE: &[&str] = &[
@@ -35,7 +35,50 @@ const PATH_LIKE: &[&str] = &[
 
 const SPACE_JOINED: &[&str] = &["NIX_CFLAGS_COMPILE", "NIX_HARDENING_ENABLE", "NIX_LDFLAGS"];
 
-pub(super) fn rollup_envs(cade_layers: Vec<CadeLayer>) -> RollupResult {
+impl RollupResult {
+    pub(crate) fn env(&self) -> &HashMap<String, Vec<String>> {
+        &self.env
+    }
+
+    pub(crate) fn absorb(&self) -> &HashSet<String> {
+        &self.absorb
+    }
+
+    pub(crate) fn unset(&self) -> &[String] {
+        &self.unset
+    }
+
+    pub(crate) fn hooks(&self) -> &[InnerHook] {
+        &self.hooks
+    }
+
+    pub(crate) fn purified(&self) -> bool {
+        self.purified
+    }
+
+    pub(crate) fn set_keys(&self) -> Vec<&str> {
+        let mut keys: Vec<&str> = self.env.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    #[cfg(test)]
+    fn values(&self, key: &str) -> Option<&[String]> {
+        self.env.get(key).map(Vec::as_slice)
+    }
+
+    #[cfg(test)]
+    fn contains_key(&self, key: &str) -> bool {
+        self.env.contains_key(key)
+    }
+
+    #[cfg(test)]
+    fn absorbs(&self, key: &str) -> bool {
+        self.absorb.contains(key)
+    }
+}
+
+pub(crate) fn rollup_envs(cade_layers: Vec<CadeLayer>) -> RollupResult {
     let mut purified = false;
     let mut env: HashMap<String, Vec<String>> = HashMap::new();
     let mut cleared: HashSet<String> = HashSet::new();
@@ -55,12 +98,13 @@ pub(super) fn rollup_envs(cade_layers: Vec<CadeLayer>) -> RollupResult {
             cleared.insert(var.clone());
         }
 
-        for (k, v) in layer.envs.vars {
+        let crate::env::EnvSet { vars, hard, .. } = layer.envs;
+        for (k, v) in vars {
             if is_shell_managed(&k) {
                 continue;
             }
             cleared.remove(&k);
-            let is_hard = layer.envs.hard.contains(&k);
+            let is_hard = hard.contains(&k);
             let is_concat = !is_hard && concat_active.contains(&k);
             if is_concat {
                 absorb.insert(k.clone());
@@ -133,12 +177,15 @@ mod tests {
         let parent = env_layer(&[("PATH", "/parent/bin"), ("ONLY_PARENT", "p")]);
         let child = env_layer(&[("PATH", "/child/bin"), ("ONLY_CHILD", "c")]);
         let r = rollup_envs(vec![parent, child]);
-        assert_eq!(r.env["PATH"], vec!["/child/bin", "/parent/bin"]);
-        assert!(r.absorb.contains("PATH"), "PATH should absorb ambient");
-        assert_eq!(r.env["ONLY_PARENT"], vec!["p"]);
-        assert_eq!(r.env["ONLY_CHILD"], vec!["c"]);
-        assert!(!r.absorb.contains("ONLY_PARENT"));
-        assert!(!r.purified);
+        assert_eq!(
+            r.values("PATH"),
+            Some(&["/child/bin".into(), "/parent/bin".into()][..])
+        );
+        assert!(r.absorbs("PATH"), "PATH should absorb ambient");
+        assert_eq!(r.values("ONLY_PARENT"), Some(&["p".into()][..]));
+        assert_eq!(r.values("ONLY_CHILD"), Some(&["c".into()][..]));
+        assert!(!r.absorbs("ONLY_PARENT"));
+        assert!(!r.purified());
     }
 
     #[test]
@@ -146,8 +193,8 @@ mod tests {
         let parent = env_layer(&[("EDITOR", "nano")]);
         let child = env_layer(&[("EDITOR", "vim")]);
         let r = rollup_envs(vec![parent, child]);
-        assert_eq!(r.env["EDITOR"], vec!["vim"]);
-        assert!(!r.absorb.contains("EDITOR"));
+        assert_eq!(r.values("EDITOR"), Some(&["vim".into()][..]));
+        assert!(!r.absorbs("EDITOR"));
     }
 
     #[test]
@@ -165,18 +212,18 @@ mod tests {
         let r = rollup_envs(vec![parent, child]);
 
         assert_eq!(
-            r.env["NIX_LDFLAGS"],
+            r.values("NIX_LDFLAGS").unwrap(),
             vec!["-L/child/lib -L/parent/lib -rpath /parent/lib"]
         );
         assert_eq!(
-            r.env["NIX_CFLAGS_COMPILE"],
+            r.values("NIX_CFLAGS_COMPILE").unwrap(),
             vec!["-isystem /child/include -isystem /parent/include"]
         );
         assert_eq!(
-            r.env["NIX_HARDENING_ENABLE"],
+            r.values("NIX_HARDENING_ENABLE").unwrap(),
             vec!["relro fortify stackprotector"]
         );
-        assert!(!r.absorb.contains("NIX_LDFLAGS"));
+        assert!(!r.absorbs("NIX_LDFLAGS"));
     }
 
     #[test]
@@ -185,8 +232,8 @@ mod tests {
         let child = env_layer(&[("NIX_CC", "/child/cc"), ("NIX_STORE", "/child/store")]);
         let r = rollup_envs(vec![parent, child]);
 
-        assert_eq!(r.env["NIX_CC"], vec!["/child/cc"]);
-        assert_eq!(r.env["NIX_STORE"], vec!["/child/store"]);
+        assert_eq!(r.values("NIX_CC"), Some(&["/child/cc".into()][..]));
+        assert_eq!(r.values("NIX_STORE"), Some(&["/child/store".into()][..]));
     }
 
     #[test]
@@ -195,17 +242,12 @@ mod tests {
         let mut child = CadeLayer::new(1, Path::new("/"));
         let mut vars = HashMap::new();
         vars.insert("PATH".to_string(), vec!["/only/child".to_string()]);
-        child.push_action(CadeAction::Environ(EnvSet {
-            vars,
-            hard: std::collections::HashSet::from(["PATH".to_string()]),
-            nix_store_paths: Vec::new(),
-        }));
+        let mut env = EnvSet::from_vars(vars);
+        env.mark_hard("PATH");
+        child.push_action(CadeAction::Environ(env));
         let r = rollup_envs(vec![parent, child]);
-        assert_eq!(r.env["PATH"], vec!["/only/child"]);
-        assert!(
-            !r.absorb.contains("PATH"),
-            "hard replace must not absorb ambient"
-        );
+        assert_eq!(r.values("PATH"), Some(&["/only/child".into()][..]));
+        assert!(!r.absorbs("PATH"), "hard replace must not absorb ambient");
     }
 
     #[test]
@@ -214,8 +256,8 @@ mod tests {
         parent.push_action(CadeAction::Concat(vec!["MYLIST".to_string()]));
         let child = env_layer(&[("MYLIST", "/c")]);
         let r = rollup_envs(vec![parent, child]);
-        assert_eq!(r.env["MYLIST"], vec!["/c", "/p"]);
-        assert!(r.absorb.contains("MYLIST"));
+        assert_eq!(r.values("MYLIST"), Some(&["/c".into(), "/p".into()][..]));
+        assert!(r.absorbs("MYLIST"));
     }
 
     #[test]
@@ -224,9 +266,9 @@ mod tests {
         let mut child = CadeLayer::new(1, Path::new("/"));
         child.push_action(CadeAction::Clear(vec!["DROP_ME".into()]));
         let r = rollup_envs(vec![parent, child]);
-        assert!(!r.env.contains_key("DROP_ME"));
-        assert!(r.env.contains_key("KEEP"));
-        assert_eq!(r.unset, vec!["DROP_ME".to_string()]);
+        assert!(!r.contains_key("DROP_ME"));
+        assert!(r.contains_key("KEEP"));
+        assert_eq!(r.unset(), ["DROP_ME"]);
     }
 
     #[test]
@@ -236,8 +278,11 @@ mod tests {
         l2.push_action(CadeAction::Clear(vec!["X".into()]));
         let l3 = env_layer(&[("X", "2")]);
         let r = rollup_envs(vec![l1, l2, l3]);
-        assert_eq!(r.env["X"], vec!["2"]);
-        assert!(r.unset.is_empty(), "X was re-set, so it must not be unset");
+        assert_eq!(r.values("X"), Some(&["2".into()][..]));
+        assert!(
+            r.unset().is_empty(),
+            "X was re-set, so it must not be unset"
+        );
     }
 
     #[test]
@@ -250,8 +295,8 @@ mod tests {
             vec!["c".to_string()],
         )]))));
         let r = rollup_envs(vec![parent, child]);
-        assert!(r.purified);
-        assert_eq!(r.env["FROM_PARENT"], vec!["kept"]);
-        assert_eq!(r.env["FROM_CHILD"], vec!["c"]);
+        assert!(r.purified());
+        assert_eq!(r.values("FROM_PARENT"), Some(&["kept".into()][..]));
+        assert_eq!(r.values("FROM_CHILD"), Some(&["c".into()][..]));
     }
 }

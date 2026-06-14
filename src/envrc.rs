@@ -256,7 +256,7 @@ mod tests {
 
         let env = load_envrc(&path, None).unwrap();
 
-        assert_eq!(env.nix_store_paths, vec![STORE_PATH]);
+        assert_eq!(env.store_paths(), [STORE_PATH]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

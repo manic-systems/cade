@@ -25,11 +25,7 @@ impl CadeLayer {
                 self.purify = true;
             }
             Environ(env) => {
-                self.nix_store_paths.extend(env.nix_store_paths);
-                self.envs.hard.extend(env.hard);
-                for (k, v) in env.vars {
-                    self.envs.append_values(k, v);
-                }
+                self.nix_store_paths.extend(self.envs.merge_layer_env(env));
             }
             Hook(hook) => {
                 self.hooks.push(hook);
@@ -160,4 +156,23 @@ pub(super) fn load_single_layer(
 
 pub(super) fn tokenize_args(raw: &str) -> Result<Vec<String>> {
     shlex::split(raw).ok_or_else(|| anyhow!("unbalanced quotes in `{raw}`"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{env::EnvSet, types::CadeAction};
+
+    const STORE_PATH: &str = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-layer";
+
+    #[test]
+    fn layer_merge_preserves_store_path_metadata() {
+        let env = EnvSet::from_envs(&format!("TOOL={STORE_PATH}\n")).unwrap();
+        let mut layer = CadeLayer::new(0, Path::new("/"));
+
+        layer.push_action(CadeAction::Environ(env));
+
+        assert_eq!(layer.nix_store_paths, [STORE_PATH]);
+        assert_eq!(layer.envs.store_paths(), [STORE_PATH]);
+    }
 }

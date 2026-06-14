@@ -34,12 +34,7 @@ fn expand_loadable(loadable: &mut Loadable, lookup: Lookup<'_>) {
 }
 
 fn expand_envset(env: &mut EnvSet, lookup: Lookup<'_>) {
-    for values in env.vars.values_mut() {
-        // keep `${var:-default}` intact
-        let value = expand_plain(&values.join(":"), lookup);
-        *values = value.split(':').map(str::to_owned).collect();
-    }
-    env.refresh_nix_store_paths();
+    env.map_joined_values(|value| expand_plain(value, lookup));
 }
 
 fn expand_plain(input: &str, lookup: Lookup<'_>) -> String {
@@ -333,7 +328,7 @@ mod tests {
         let mut set = "MODE=${MODE:-dev}".parse::<Keyword>().unwrap();
         expand_keyword_with(&mut set, &lookup);
         match set {
-            Keyword::Set(env) => assert_eq!(env.vars["MODE"], vec!["dev"]),
+            Keyword::Set(env) => assert_eq!(env.values("MODE").unwrap(), ["dev"]),
             other => panic!("expected Set, got {other:?}"),
         }
     }
@@ -344,7 +339,21 @@ mod tests {
         let mut set = "MYPATH=${EXTRA}:/c".parse::<Keyword>().unwrap();
         expand_keyword_with(&mut set, &lookup);
         match set {
-            Keyword::Set(env) => assert_eq!(env.vars["MYPATH"], vec!["/a", "/b", "/c"]),
+            Keyword::Set(env) => assert_eq!(env.values("MYPATH").unwrap(), ["/a", "/b", "/c"]),
+            other => panic!("expected Set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inline_assignment_expansion_refreshes_store_paths() {
+        const STORE_PATH: &str = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-expanded";
+
+        let lookup = lookup_from(&[("TOOL", STORE_PATH)]);
+        let mut set = "TOOL=${TOOL}".parse::<Keyword>().unwrap();
+        expand_keyword_with(&mut set, &lookup);
+
+        match set {
+            Keyword::Set(env) => assert_eq!(env.store_paths(), [STORE_PATH]),
             other => panic!("expected Set, got {other:?}"),
         }
     }

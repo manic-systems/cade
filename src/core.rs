@@ -4,7 +4,6 @@ mod layer;
 mod lifecycle;
 mod participants;
 mod permissions;
-mod rollup;
 mod sessions;
 mod snapshot;
 mod watch;

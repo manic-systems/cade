@@ -1,12 +1,12 @@
 use super::{
     Cade, DISALLOWED_REMINDER, Keyword, find_cade_root,
     layer::load_single_layer,
-    rollup::{RollupResult, rollup_envs},
     sessions::{direnv_fallback_session_id, direnv_session_id, is_valid_session, new_session_id},
     watch::{compute_layer_key, watched_files_for_keywords},
 };
 use crate::{
     direnv_export,
+    env::{RollupResult, rollup_envs},
     env_delta::{EnvDelta, EnvDeltaInput, live_ambient_env},
     types::CadeLayer,
     verbosity::{self, Verbosity},
@@ -33,10 +33,10 @@ pub(super) struct ActivationEnv {
 impl RollupResult {
     pub(super) fn env_delta(&self, activation_env: &ActivationEnv) -> EnvDelta {
         EnvDelta::from_rollup(EnvDeltaInput {
-            env: &self.env,
-            absorb: &self.absorb,
-            unset: &self.unset,
-            purified: self.purified,
+            env: self.env(),
+            absorb: self.absorb(),
+            unset: self.unset(),
+            purified: self.purified(),
             live_env: &activation_env.live,
             baseline: &activation_env.baseline,
         })

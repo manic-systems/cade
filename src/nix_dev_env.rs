@@ -232,7 +232,7 @@ fn load_nix_dev_env(
     let mut env = env_set_from_captured_env(stdout, &previous_env)?;
     if let Some(profile) = profile {
         // the profile already roots this cold path
-        env.nix_store_paths.clear();
+        env.clear_store_paths();
         wipe_profile_history(profile);
     }
     Ok(env)
@@ -506,8 +506,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(env.vars["PATH"], vec!["/dev/bin"]);
-        assert_eq!(env.vars["FOO"], vec!["bar"]);
+        assert_eq!(env.values("PATH").unwrap(), ["/dev/bin"]);
+        assert_eq!(env.values("FOO").unwrap(), ["bar"]);
     }
 
     #[test]
@@ -523,9 +523,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(env.vars["NIX_CC"], vec!["/nix/store/gcc-wrapper"]);
-        assert!(!env.vars.contains_key("PKG_CONFIG_PATH"));
-        assert!(!env.vars.contains_key("AMBIENT"));
+        assert_eq!(env.values("NIX_CC").unwrap(), ["/nix/store/gcc-wrapper"]);
+        assert!(!env.contains_key("PKG_CONFIG_PATH"));
+        assert!(!env.contains_key("AMBIENT"));
     }
 
     #[cfg(unix)]
@@ -569,7 +569,7 @@ exec "$@"
         let env = load_nix_dev_env(proc, &root, "fake nix", None).unwrap();
         std::fs::remove_dir_all(&root).ok();
 
-        assert_eq!(env.vars["FROM_HOOK"], vec!["ok"]);
-        assert_eq!(env.vars["PATH"], vec!["/hook/bin"]);
+        assert_eq!(env.values("FROM_HOOK").unwrap(), ["ok"]);
+        assert_eq!(env.values("PATH").unwrap(), ["/hook/bin"]);
     }
 }
