@@ -3,7 +3,7 @@
 //! parses the declarative stdlib subset cade can reproduce
 
 use crate::loaders::{load_env, load_shell};
-use crate::nix_dev_env::{FlakeTarget, load_flake};
+use crate::nix::{FlakeTarget, load_flake};
 use crate::{
     env::EnvSet,
     verbosity::{self, Verbosity},
@@ -237,8 +237,7 @@ mod tests {
         let Some(Directive::UseFlake(output)) = parse_line("use flake .#dev") else {
             panic!("expected UseFlake");
         };
-        let target =
-            crate::nix_dev_env::FlakeTarget::bare_output(Path::new("/layer"), output.as_deref());
+        let target = crate::nix::FlakeTarget::bare_output(Path::new("/layer"), output.as_deref());
         assert_eq!(target.installable, ".#dev");
         assert_eq!(target.spec, "flake:dev");
         assert_eq!(target.cwd, Path::new("/layer"));
