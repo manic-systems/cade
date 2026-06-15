@@ -41,7 +41,7 @@ impl CadeLayer {
 }
 
 enum LoadRun {
-    Flake(crate::nix_dev_env::FlakeTarget),
+    Flake(crate::nix::FlakeTarget),
     Shell(PathBuf),
     Env(PathBuf),
     Envrc(PathBuf),
@@ -73,7 +73,7 @@ impl Loadable {
                     _ => None,
                 };
                 // let nix report missing flake dirs
-                let target = crate::nix_dev_env::resolve_flake_target(layer_dir, arg);
+                let target = crate::nix::resolve_flake_target(layer_dir, arg);
                 let watch = vec![target.cwd.join("flake.nix"), target.cwd.join("flake.lock")];
                 ResolvedLoad {
                     spec: target.spec.clone(),

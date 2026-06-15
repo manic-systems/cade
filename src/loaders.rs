@@ -1,7 +1,7 @@
 use crate::{
     config,
     env::EnvSet,
-    nix_progress::NixProgress,
+    nix::NixProgress,
     verbosity::{self, Verbosity},
 };
 use anyhow::{Context, Result, bail};
@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub use crate::nix_dev_env::{load_flake, load_shell};
+pub use crate::nix::{load_flake, load_shell};
 
 const DEFAULT_LONG_RUNNING_WARNING_AFTER: Duration = Duration::from_secs(5);
 const LONG_RUNNING_POLL_INTERVAL: Duration = Duration::from_millis(100);

@@ -1,13 +1,13 @@
-//! Reconstructs nix progress from `--log-format internal-json` output.
+//! reconstructs nix progress from `--log-format internal-json`
 
 use cognos::internal::json::{Actions, Activities, ResultType, Verbosity, parse_line};
 use std::collections::{HashMap, VecDeque};
 
-const RECENT_LINES: usize = 5; // rolling log lines kept for the display
-const LINE_BYTES: usize = 4 * 1024; // cap on a single buffered line
-const DISPLAY_CHARS: usize = 200; // truncate display lines past this
-const TRANSCRIPT_CAP: usize = 200; // de-jsonified lines kept for a failure summary
-const BAR_CELLS: usize = 24; // width of the rendered bar
+const RECENT_LINES: usize = 5;
+const LINE_BYTES: usize = 4 * 1024;
+const DISPLAY_CHARS: usize = 200;
+const TRANSCRIPT_CAP: usize = 200;
+const BAR_CELLS: usize = 24;
 
 const BAR: &str = "\x1b[34m";
 const RESET: &str = "\x1b[0m";
@@ -20,16 +20,16 @@ struct Count {
 
 #[derive(Default)]
 pub struct NixProgress {
-    carry: Vec<u8>,               // bytes of an as-yet-unterminated line
-    recent: VecDeque<String>,     // last few display lines (the rolling log)
-    transcript: VecDeque<String>, // de-jsonified msg/build-log lines, for errors
-    saw_nix: bool,                // any `@nix` event parsed at all
+    carry: Vec<u8>,
+    recent: VecDeque<String>,
+    transcript: VecDeque<String>,
+    saw_nix: bool,
 
     builds: Count,
     copies: Count,
-    builds_id: Option<u64>,              // id of the top-level Builds activity
-    copies_id: Option<u64>,              // id of the top-level CopyPaths activity
-    transfers: HashMap<u64, (u64, u64)>, // file-transfer id -> (done, expected) bytes
+    builds_id: Option<u64>,
+    copies_id: Option<u64>,
+    transfers: HashMap<u64, (u64, u64)>,
 }
 
 impl NixProgress {
@@ -216,15 +216,15 @@ fn render_bar(progress: f32, status: &str) -> String {
     let mut bar = String::from("[");
     bar.push_str(BAR);
     for _ in 0..full {
-        bar.push('━'); // heavy = filled
+        bar.push('━');
     }
     let mut used = full;
     if half {
-        bar.push('╸'); // half leading edge, sub-cell precision
+        bar.push('╸');
         used += 1;
     }
     for _ in used..BAR_CELLS {
-        bar.push('─'); // light = remaining
+        bar.push('─');
     }
     bar.push_str(RESET);
     bar.push(']');
@@ -272,8 +272,6 @@ fn sanitize(raw: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    // event shapes lifted from a real `nix-build --log-format internal-json`:
-    // top-level Builds(104)/CopyPaths(103) parents carry the aggregate Progress.
     fn feed(np: &mut NixProgress, lines: &[&str]) {
         for line in lines {
             np.push(line.as_bytes());
@@ -298,7 +296,6 @@ mod tests {
         let bar = np.bar_line().unwrap();
         assert!(bar.contains("2/3 built"), "{bar}");
         assert!(bar.contains("67%"), "{bar}");
-        // the leaf build description shows in the rolling log
         assert!(
             np.recent_lines()
                 .iter()
@@ -347,7 +344,6 @@ mod tests {
                 r#"@nix {"action":"result","id":7,"type":101,"fields":["cc: fatal error"]}"#,
             ],
         );
-        // ANSI is stripped from the visible line
         assert!(np.recent_lines().iter().any(|l| l == "error: build failed"));
         let err = np.error_text();
         assert!(err.contains("error: build failed"), "{err}");
