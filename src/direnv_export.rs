@@ -18,25 +18,25 @@ const DIRENV_DIR: &str = "DIRENV_DIR";
 const DIRENV_FILE: &str = "DIRENV_FILE";
 const DIRENV_WATCHES: &str = "DIRENV_WATCHES";
 
-pub(crate) struct ExportMetadata {
+pub struct ExportMetadata {
     pub root: String,
     pub file: String,
     pub watches: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct ExportState {
+pub struct ExportState {
     version: u8,
     preimage: HashMap<String, Option<String>>,
 }
 
-pub(crate) struct ExportSession {
+pub struct ExportSession {
     pub live: HashMap<String, String>,
     pub baseline: HashMap<String, String>,
     pub previous: Option<ExportState>,
 }
 
-pub(crate) fn capture_session(snapshot: Option<HashMap<String, String>>) -> ExportSession {
+pub fn capture_session(snapshot: Option<HashMap<String, String>>) -> ExportSession {
     let live = live_ambient_env();
     let previous = export_state(&live);
     // Prefer DIRENV_DIFF when present because it is the only state a direct
@@ -55,7 +55,7 @@ pub(crate) fn capture_session(snapshot: Option<HashMap<String, String>>) -> Expo
     }
 }
 
-pub(crate) fn inactive_delta(previous: Option<ExportState>) -> EnvDelta {
+pub fn inactive_delta(previous: Option<ExportState>) -> EnvDelta {
     let Some(previous) = previous else {
         return EnvDelta::empty();
     };
@@ -72,7 +72,7 @@ pub(crate) fn inactive_delta(previous: Option<ExportState>) -> EnvDelta {
     delta
 }
 
-pub(crate) fn active_delta(
+pub fn active_delta(
     mut delta: EnvDelta,
     baseline: HashMap<String, String>,
     previous: Option<ExportState>,

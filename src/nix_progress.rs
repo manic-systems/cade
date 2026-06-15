@@ -19,7 +19,7 @@ struct Count {
 }
 
 #[derive(Default)]
-pub(crate) struct NixProgress {
+pub struct NixProgress {
     carry: Vec<u8>,               // bytes of an as-yet-unterminated line
     recent: VecDeque<String>,     // last few display lines (the rolling log)
     transcript: VecDeque<String>, // de-jsonified msg/build-log lines, for errors
@@ -33,11 +33,11 @@ pub(crate) struct NixProgress {
 }
 
 impl NixProgress {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
-    pub(crate) fn push(&mut self, chunk: &[u8]) {
+    pub fn push(&mut self, chunk: &[u8]) {
         for &byte in chunk {
             match byte {
                 b'\n' => {
@@ -151,15 +151,15 @@ impl NixProgress {
         self.transcript.push_back(line);
     }
 
-    pub(crate) fn recent_lines(&self) -> Vec<String> {
+    pub fn recent_lines(&self) -> Vec<String> {
         self.recent.iter().cloned().collect()
     }
 
-    pub(crate) fn saw_nix(&self) -> bool {
+    pub fn saw_nix(&self) -> bool {
         self.saw_nix
     }
 
-    pub(crate) fn error_text(&self) -> String {
+    pub fn error_text(&self) -> String {
         self.transcript
             .iter()
             .cloned()
@@ -197,7 +197,7 @@ impl NixProgress {
         parts.join(" · ")
     }
 
-    pub(crate) fn bar_line(&self) -> Option<String> {
+    pub fn bar_line(&self) -> Option<String> {
         let fraction = self.fraction()?;
         Some(render_bar(fraction, &self.status_text()))
     }

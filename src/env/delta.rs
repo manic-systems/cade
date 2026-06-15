@@ -5,27 +5,27 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 type EnvDiff = BTreeMap<String, Option<String>>;
 
-pub(crate) struct EnvDelta {
+pub struct EnvDelta {
     changes: EnvDiff,
 }
 
-pub(crate) struct EnvDeltaInput<'a> {
-    pub(crate) env: &'a HashMap<String, Vec<String>>,
-    pub(crate) absorb: &'a HashSet<String>,
-    pub(crate) unset: &'a [String],
-    pub(crate) purified: bool,
-    pub(crate) live_env: &'a HashMap<String, String>,
-    pub(crate) baseline: &'a HashMap<String, String>,
+pub struct EnvDeltaInput<'a> {
+    pub env: &'a HashMap<String, Vec<String>>,
+    pub absorb: &'a HashSet<String>,
+    pub unset: &'a [String],
+    pub purified: bool,
+    pub live_env: &'a HashMap<String, String>,
+    pub baseline: &'a HashMap<String, String>,
 }
 
 impl EnvDelta {
-    pub(crate) fn empty() -> Self {
+    pub fn empty() -> Self {
         Self {
             changes: EnvDiff::new(),
         }
     }
 
-    pub(crate) fn from_rollup(input: EnvDeltaInput<'_>) -> Self {
+    pub fn from_rollup(input: EnvDeltaInput<'_>) -> Self {
         let EnvDeltaInput {
             env,
             absorb,
@@ -64,7 +64,7 @@ impl EnvDelta {
         Self { changes }
     }
 
-    pub(crate) fn render_shell(&self, shell: &dyn ShellOutput) -> String {
+    pub fn render_shell(&self, shell: &dyn ShellOutput) -> String {
         let mut output = String::new();
         for (k, v) in &self.changes {
             match v {
@@ -75,19 +75,19 @@ impl EnvDelta {
         output
     }
 
-    pub(crate) fn contains(&self, key: &str) -> bool {
+    pub fn contains(&self, key: &str) -> bool {
         self.changes.contains_key(key)
     }
 
-    pub(crate) fn keys(&self) -> impl Iterator<Item = &str> {
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.changes.keys().map(String::as_str)
     }
 
-    pub(crate) fn record(&mut self, key: &str, value: Option<String>) {
+    pub fn record(&mut self, key: &str, value: Option<String>) {
         record_change(&mut self.changes, key, value);
     }
 
-    pub(crate) fn to_json(&self) -> String {
+    pub fn to_json(&self) -> String {
         format!(
             "{}\n",
             serde_json::to_string(&self.changes).expect("env diff serializes")
@@ -95,13 +95,13 @@ impl EnvDelta {
     }
 }
 
-pub(crate) fn live_ambient_env() -> HashMap<String, String> {
+pub fn live_ambient_env() -> HashMap<String, String> {
     std::env::vars()
         .filter(|(k, _)| !k.starts_with("__CADE_"))
         .collect()
 }
 
-pub(crate) fn is_shell_managed(key: &str) -> bool {
+pub fn is_shell_managed(key: &str) -> bool {
     matches!(key, "PWD" | "OLDPWD" | "SHLVL" | "_" | "LAST_EXIT_CODE") || key.starts_with("__CADE_")
 }
 

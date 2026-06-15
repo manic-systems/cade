@@ -10,7 +10,7 @@ use crate::{
 
 type Lookup<'a> = &'a dyn Fn(&str) -> Option<String>;
 
-pub(crate) fn expand_keyword(kw: &mut Keyword) {
+pub fn expand_keyword(kw: &mut Keyword) {
     expand_keyword_with(kw, &|k| std::env::var(k).ok());
 }
 

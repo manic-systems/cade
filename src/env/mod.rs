@@ -4,6 +4,6 @@ mod rollup;
 mod set;
 mod store_paths;
 
-pub(crate) use delta::{EnvDelta, EnvDeltaInput, is_shell_managed, live_ambient_env};
-pub(crate) use rollup::{RollupResult, rollup_envs};
-pub(crate) use set::EnvSet;
+pub use delta::{EnvDelta, EnvDeltaInput, is_shell_managed, live_ambient_env};
+pub use rollup::{RollupResult, rollup_envs};
+pub use set::EnvSet;
