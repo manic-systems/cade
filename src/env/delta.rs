@@ -1,8 +1,4 @@
-//! Shared environment-diff model.
-//!
-//! Shell activation and `export json` must compute the same variable changes.
-//! Keeping the diff here avoids maintaining a second activation implementation
-//! for editor/direnv compatibility.
+//! environment diffs
 
 use crate::shells::{self, ShellOutput};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -18,9 +14,7 @@ pub(crate) struct EnvDeltaInput<'a> {
     pub(crate) absorb: &'a HashSet<String>,
     pub(crate) unset: &'a [String],
     pub(crate) purified: bool,
-    /// Current process environment after any previous cade/direnv activation.
     pub(crate) live_env: &'a HashMap<String, String>,
-    /// Pre-activation environment for concat/restore semantics.
     pub(crate) baseline: &'a HashMap<String, String>,
 }
 
@@ -43,9 +37,7 @@ impl EnvDelta {
         let mut changes = EnvDiff::new();
 
         if purified {
-            // Pure activation must clear variables from both the current
-            // environment and the original baseline; otherwise a later restore
-            // path can leave behind variables that were absent from `live_env`.
+            // clear live and baseline
             for k in live_env.keys().chain(baseline.keys()) {
                 if !is_pure_preserved_key(k) {
                     record_change(&mut changes, k, None);
@@ -59,7 +51,7 @@ impl EnvDelta {
 
         for (k, v) in env {
             let mut value = v.join(":");
-            // concat vars keep ambient values, appended after .cade values
+            // append ambient after layers
             if !purified
                 && absorb.contains(k)
                 && let Some(amb) = baseline.get(k).filter(|a| !a.is_empty())
@@ -104,16 +96,11 @@ impl EnvDelta {
 }
 
 pub(crate) fn live_ambient_env() -> HashMap<String, String> {
-    // Cade internals describe the active session, not the user's ambient
-    // environment. Treating them as ambient would leak activation bookkeeping
-    // through `export json` and into concat baselines.
     std::env::vars()
         .filter(|(k, _)| !k.starts_with("__CADE_"))
         .collect()
 }
 
-// Keys cade must never set from a layer: the shell owns them, or they're
-// cade's own bookkeeping.
 pub(crate) fn is_shell_managed(key: &str) -> bool {
     matches!(key, "PWD" | "OLDPWD" | "SHLVL" | "_" | "LAST_EXIT_CODE") || key.starts_with("__CADE_")
 }
@@ -168,7 +155,7 @@ mod tests {
             ]),
         };
         let out = delta.to_json();
-        // strict parse proves the U+001F separator was escaped, not emitted raw
+        // strict parse proves escaping
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["A"], "x\x1fy");
         assert!(v["B"].is_null());

@@ -4,7 +4,6 @@ mod config;
 mod core;
 mod direnv_export;
 mod env;
-mod env_delta;
 mod envrc;
 mod expand;
 mod loaders;

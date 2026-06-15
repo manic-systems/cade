@@ -137,8 +137,7 @@ pub fn load_envrc(path: &Path, profile_dir: Option<PathBuf>) -> Result<EnvSet> {
                 merge(&mut out, load_env(&p).context("dotenv")?);
             }
             Directive::Export(key, value) => {
-                let parts: Vec<String> = value.split(':').map(str::to_string).collect();
-                out.append_values(key, parts);
+                out.add_literal_export(key, &value);
             }
             Directive::PathAdd(dirs) => {
                 // PATH_add prepends relative to the .envrc dir
@@ -146,7 +145,7 @@ pub fn load_envrc(path: &Path, profile_dir: Option<PathBuf>) -> Result<EnvSet> {
                     .iter()
                     .map(|d| dir.join(d).to_string_lossy().into_owned())
                     .collect();
-                out.prepend_values("PATH".to_string(), prefix);
+                out.prepend_path_entries(prefix);
             }
             Directive::WatchFile(_) => {}
             Directive::Unhandled(line) => warnings.push(line),
@@ -256,7 +255,7 @@ mod tests {
 
         let env = load_envrc(&path, None).unwrap();
 
-        assert_eq!(env.store_paths(), [STORE_PATH]);
+        assert_eq!(env.derived_store_paths(), [STORE_PATH]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

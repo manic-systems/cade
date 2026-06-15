@@ -232,7 +232,7 @@ fn load_nix_dev_env(
     let mut env = env_set_from_captured_env(stdout, &previous_env)?;
     if let Some(profile) = profile {
         // the profile already roots this cold path
-        env.clear_store_paths();
+        env.discard_store_paths();
         wipe_profile_history(profile);
     }
     Ok(env)
@@ -314,9 +314,7 @@ fn env_set_from_captured_env(raw: &[u8], previous: &HashMap<String, String>) -> 
         );
     }
 
-    let mut env = EnvSet::from_vars(vars);
-    env.refresh_nix_store_paths();
-    Ok(env)
+    Ok(EnvSet::from_captured_vars(vars))
 }
 
 fn wipe_profile_history(profile: &Path) {
@@ -393,6 +391,22 @@ fn clean_captured_path(value: &str, path_suffix: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn env_values(env: &EnvSet, key: &str) -> Vec<String> {
+        serde_json::to_value(env).unwrap()["vars"][key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn env_contains(env: &EnvSet, key: &str) -> bool {
+        serde_json::to_value(env).unwrap()["vars"]
+            .as_object()
+            .unwrap()
+            .contains_key(key)
+    }
 
     #[test]
     fn bare_output_stays_current_dir_installable() {
@@ -506,8 +520,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(env.values("PATH").unwrap(), ["/dev/bin"]);
-        assert_eq!(env.values("FOO").unwrap(), ["bar"]);
+        assert_eq!(env_values(&env, "PATH"), vec!["/dev/bin"]);
+        assert_eq!(env_values(&env, "FOO"), vec!["bar"]);
     }
 
     #[test]
@@ -523,9 +537,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(env.values("NIX_CC").unwrap(), ["/nix/store/gcc-wrapper"]);
-        assert!(!env.contains_key("PKG_CONFIG_PATH"));
-        assert!(!env.contains_key("AMBIENT"));
+        assert_eq!(env_values(&env, "NIX_CC"), vec!["/nix/store/gcc-wrapper"]);
+        assert!(!env_contains(&env, "PKG_CONFIG_PATH"));
+        assert!(!env_contains(&env, "AMBIENT"));
     }
 
     #[cfg(unix)]
@@ -569,7 +583,7 @@ exec "$@"
         let env = load_nix_dev_env(proc, &root, "fake nix", None).unwrap();
         std::fs::remove_dir_all(&root).ok();
 
-        assert_eq!(env.values("FROM_HOOK").unwrap(), ["ok"]);
-        assert_eq!(env.values("PATH").unwrap(), ["/hook/bin"]);
+        assert_eq!(env_values(&env, "FROM_HOOK"), vec!["ok"]);
+        assert_eq!(env_values(&env, "PATH"), vec!["/hook/bin"]);
     }
 }
