@@ -8,7 +8,7 @@
 //! `__CADE_SESSION` snapshots and hook bookkeeping; this adapter returns only
 //! the environment diff expected by direnv-compatible tools.
 
-use crate::env_delta::{EnvDelta, is_shell_managed, live_ambient_env};
+use crate::env::{EnvDelta, is_shell_managed, live_ambient_env};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};

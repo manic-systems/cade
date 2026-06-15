@@ -173,6 +173,6 @@ mod tests {
         layer.push_action(CadeAction::Environ(env));
 
         assert_eq!(layer.nix_store_paths, [STORE_PATH]);
-        assert_eq!(layer.envs.store_paths(), [STORE_PATH]);
+        assert_eq!(layer.envs.derived_store_paths(), [STORE_PATH]);
     }
 }

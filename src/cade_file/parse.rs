@@ -131,21 +131,39 @@ impl FromStr for Keyword {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::env::EnvSet;
+
+    fn env_values(env: &EnvSet, key: &str) -> Vec<String> {
+        serde_json::to_value(env).unwrap()["vars"][key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn env_hard_replace_contains(env: &EnvSet, key: &str) -> bool {
+        serde_json::to_value(env).unwrap()["hard"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == key)
+    }
 
     #[test]
     fn bare_uppercase_assignment_parses() {
         match "FOO=bar".parse::<Keyword>().unwrap() {
-            Keyword::Set(env) => assert_eq!(env.values("FOO").unwrap(), ["bar"]),
+            Keyword::Set(env) => assert_eq!(env_values(&env, "FOO"), vec!["bar"]),
             other => panic!("expected Set, got {other:?}"),
         }
     }
 
     #[test]
-    fn hard_replace_assignment_is_marked() {
+    fn hard_replace_assignment_is_recorded() {
         match "PATH:=/x".parse::<Keyword>().unwrap() {
             Keyword::Set(env) => {
-                assert_eq!(env.values("PATH").unwrap(), ["/x"]);
-                assert!(env.is_hard("PATH"));
+                assert_eq!(env_values(&env, "PATH"), vec!["/x"]);
+                assert!(env_hard_replace_contains(&env, "PATH"));
             }
             other => panic!("expected Set, got {other:?}"),
         }

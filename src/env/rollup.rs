@@ -1,5 +1,5 @@
 use crate::{
-    env_delta::is_shell_managed,
+    env::is_shell_managed,
     types::{CadeLayer, InnerHook},
 };
 use std::collections::{HashMap, HashSet};
@@ -98,21 +98,19 @@ pub(crate) fn rollup_envs(cade_layers: Vec<CadeLayer>) -> RollupResult {
             cleared.insert(var.clone());
         }
 
-        let crate::env::EnvSet { vars, hard, .. } = layer.envs;
-        for (k, v) in vars {
+        for (k, v, replaces) in layer.envs.into_parsed_env().into_entries() {
             if is_shell_managed(&k) {
                 continue;
             }
             cleared.remove(&k);
-            let is_hard = hard.contains(&k);
-            let is_concat = !is_hard && concat_active.contains(&k);
+            let is_concat = !replaces && concat_active.contains(&k);
             if is_concat {
                 absorb.insert(k.clone());
                 let entry = env.entry(k).or_default();
                 let mut combined = v;
                 combined.append(entry);
                 *entry = combined;
-            } else if !is_hard && SPACE_JOINED.contains(&k.as_str()) {
+            } else if !replaces && SPACE_JOINED.contains(&k.as_str()) {
                 absorb.remove(&k);
                 let value = join_space_values(v);
                 if let Some(previous) = env.get(&k).map(|values| join_space_values(values.clone()))
@@ -160,16 +158,23 @@ fn join_space_values(values: Vec<String>) -> String {
 mod tests {
     use super::*;
     use crate::{env::EnvSet, types::CadeAction};
-    use std::{collections::HashMap, path::Path};
+    use std::path::Path;
 
     fn env_layer(pairs: &[(&str, &str)]) -> CadeLayer {
         let mut layer = CadeLayer::new(0, Path::new("/"));
-        let mut map = HashMap::new();
-        for (k, v) in pairs {
-            map.insert(k.to_string(), vec![v.to_string()]);
-        }
-        layer.push_action(CadeAction::Environ(EnvSet::from_vars(map)));
+        layer.push_action(CadeAction::Environ(env_set(pairs)));
         layer
+    }
+
+    fn env_set(pairs: &[(&str, &str)]) -> EnvSet {
+        let mut text = String::new();
+        for (key, value) in pairs {
+            text.push_str(key);
+            text.push('=');
+            text.push_str(value);
+            text.push('\n');
+        }
+        EnvSet::from_envs(&text).unwrap()
     }
 
     #[test]
@@ -240,14 +245,12 @@ mod tests {
     fn hard_replace_overrides_concat_default() {
         let parent = env_layer(&[("PATH", "/parent/bin")]);
         let mut child = CadeLayer::new(1, Path::new("/"));
-        let mut vars = HashMap::new();
-        vars.insert("PATH".to_string(), vec!["/only/child".to_string()]);
-        let mut env = EnvSet::from_vars(vars);
-        env.mark_hard("PATH");
-        child.push_action(CadeAction::Environ(env));
+        child.push_action(CadeAction::Environ(
+            EnvSet::from_envs("PATH:=/only/child\n").unwrap(),
+        ));
         let r = rollup_envs(vec![parent, child]);
         assert_eq!(r.values("PATH"), Some(&["/only/child".into()][..]));
-        assert!(!r.absorbs("PATH"), "hard replace must not absorb ambient");
+        assert!(!r.absorbs("PATH"), "hard replace drops ambient");
     }
 
     #[test]
@@ -290,10 +293,7 @@ mod tests {
         let parent = env_layer(&[("FROM_PARENT", "kept")]);
         let mut child = CadeLayer::new(1, Path::new("/"));
         child.push_action(CadeAction::Purify);
-        child.push_action(CadeAction::Environ(EnvSet::from_vars(HashMap::from([(
-            "FROM_CHILD".to_string(),
-            vec!["c".to_string()],
-        )]))));
+        child.push_action(CadeAction::Environ(env_set(&[("FROM_CHILD", "c")])));
         let r = rollup_envs(vec![parent, child]);
         assert!(r.purified());
         assert_eq!(r.values("FROM_PARENT"), Some(&["kept".into()][..]));

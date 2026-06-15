@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     config,
-    env_delta::is_shell_managed,
+    env::is_shell_managed,
     shells::ShellOutput,
     types::{HookType, InnerHook},
 };

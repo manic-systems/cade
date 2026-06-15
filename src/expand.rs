@@ -34,7 +34,7 @@ fn expand_loadable(loadable: &mut Loadable, lookup: Lookup<'_>) {
 }
 
 fn expand_envset(env: &mut EnvSet, lookup: Lookup<'_>) {
-    env.map_joined_values(|value| expand_plain(value, lookup));
+    env.expand_values(|value| expand_plain(value, lookup));
 }
 
 fn expand_plain(input: &str, lookup: Lookup<'_>) -> String {
@@ -153,6 +153,7 @@ fn expand_ref(inner: &str, lookup: Lookup<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::env::EnvSet;
     use std::collections::HashMap;
 
     fn lookup_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
@@ -167,8 +168,15 @@ mod tests {
         expand_plain(input, &lookup_from(pairs))
     }
 
-    // resolve a `call`/`watch` raw string the way the load path does: expand
-    // (shell-quoting values), then shlex-tokenize
+    fn env_values(env: &EnvSet, key: &str) -> Vec<String> {
+        serde_json::to_value(env).unwrap()["vars"][key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect()
+    }
+
     fn args(input: &str, pairs: &[(&str, &str)]) -> Vec<String> {
         let expanded = expand_shell_args(input, &lookup_from(pairs));
         shlex::split(&expanded).expect("balanced quotes")
@@ -328,7 +336,7 @@ mod tests {
         let mut set = "MODE=${MODE:-dev}".parse::<Keyword>().unwrap();
         expand_keyword_with(&mut set, &lookup);
         match set {
-            Keyword::Set(env) => assert_eq!(env.values("MODE").unwrap(), ["dev"]),
+            Keyword::Set(env) => assert_eq!(env_values(&env, "MODE"), vec!["dev"]),
             other => panic!("expected Set, got {other:?}"),
         }
     }
@@ -339,7 +347,7 @@ mod tests {
         let mut set = "MYPATH=${EXTRA}:/c".parse::<Keyword>().unwrap();
         expand_keyword_with(&mut set, &lookup);
         match set {
-            Keyword::Set(env) => assert_eq!(env.values("MYPATH").unwrap(), ["/a", "/b", "/c"]),
+            Keyword::Set(env) => assert_eq!(env_values(&env, "MYPATH"), vec!["/a", "/b", "/c"]),
             other => panic!("expected Set, got {other:?}"),
         }
     }
@@ -353,7 +361,7 @@ mod tests {
         expand_keyword_with(&mut set, &lookup);
 
         match set {
-            Keyword::Set(env) => assert_eq!(env.store_paths(), [STORE_PATH]),
+            Keyword::Set(env) => assert_eq!(env.derived_store_paths(), [STORE_PATH]),
             other => panic!("expected Set, got {other:?}"),
         }
     }

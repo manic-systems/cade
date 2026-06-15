@@ -6,8 +6,7 @@ use super::{
 };
 use crate::{
     direnv_export,
-    env::{RollupResult, rollup_envs},
-    env_delta::{EnvDelta, EnvDeltaInput, live_ambient_env},
+    env::{EnvDelta, EnvDeltaInput, RollupResult, live_ambient_env, rollup_envs},
     types::CadeLayer,
     verbosity::{self, Verbosity},
 };
@@ -122,7 +121,7 @@ impl Cade {
         let Some(layer) = self.get_cached_layer(dir, token)? else {
             return Ok(None);
         };
-        let store_paths = crate::env::nix_store_paths_from_env_values(&layer.envs);
+        let store_paths = layer.envs.derived_store_paths();
         if store_paths_all_present(&store_paths) {
             verbosity::log(
                 Verbosity::Trace,
