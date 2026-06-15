@@ -105,7 +105,7 @@ const IGNORED_ENV_KEYS: &[&str] = &[
 ];
 
 /// a resolved flake installable
-pub(crate) struct FlakeTarget {
+pub struct FlakeTarget {
     /// dir `nix develop` runs in (the flake's own dir)
     pub cwd: PathBuf,
     /// `nix develop` installable arg, empty for the current-dir default
@@ -120,7 +120,7 @@ impl FlakeTarget {
     /// output (e.g. an `.envrc` `use flake .#dev`) build it directly instead of
     /// re-encoding a `.#output` string that the path classifier would misread
     /// as a directed path
-    pub(crate) fn bare_output(dir: &Path, output: Option<&str>) -> Self {
+    pub fn bare_output(dir: &Path, output: Option<&str>) -> Self {
         match output.filter(|o| !o.is_empty()) {
             Some(o) => FlakeTarget {
                 cwd: dir.to_path_buf(),
@@ -151,7 +151,7 @@ fn looks_like_path(arg: &str) -> bool {
 /// resolved for watch (canonical when present, lexical when not), so a
 /// not-yet-created target still keys watch/spec off its real dir; `nix develop`
 /// surfaces a genuinely missing dir at load time
-pub(crate) fn resolve_flake_target(layer_dir: &Path, arg: Option<&str>) -> FlakeTarget {
+pub fn resolve_flake_target(layer_dir: &Path, arg: Option<&str>) -> FlakeTarget {
     let Some(arg) = arg.filter(|a| !a.is_empty()) else {
         return FlakeTarget::bare_output(layer_dir, None);
     };
@@ -179,7 +179,7 @@ pub(crate) fn resolve_flake_target(layer_dir: &Path, arg: Option<&str>) -> Flake
     }
 }
 
-pub(crate) fn load_flake(target: &FlakeTarget, profile: Option<PathBuf>) -> Result<EnvSet> {
+pub fn load_flake(target: &FlakeTarget, profile: Option<PathBuf>) -> Result<EnvSet> {
     let mut proc = Command::new("nix");
     proc.arg("develop");
     if !target.installable.is_empty() {
@@ -197,7 +197,7 @@ pub(crate) fn load_flake(target: &FlakeTarget, profile: Option<PathBuf>) -> Resu
     )
 }
 
-pub(crate) fn load_shell(file: &Path, profile: Option<PathBuf>) -> Result<EnvSet> {
+pub fn load_shell(file: &Path, profile: Option<PathBuf>) -> Result<EnvSet> {
     // run in the resolved file's own dir so its relative refs resolve
     let cwd = file.parent().unwrap_or(file);
     let file_str = file.to_string_lossy();

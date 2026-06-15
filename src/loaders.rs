@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) use crate::nix_dev_env::{load_flake, load_shell};
+pub use crate::nix_dev_env::{load_flake, load_shell};
 
 const DEFAULT_LONG_RUNNING_WARNING_AFTER: Duration = Duration::from_secs(5);
 const LONG_RUNNING_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -191,7 +191,7 @@ fn handle_stream_event(
 }
 
 /// Run a command, returning stdout on success or an error carrying its stderr
-pub(crate) fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
+pub fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     verbosity::log(Verbosity::Trace, format_args!("cade: running {what}."));
 
     let (tx, rx) = std::sync::mpsc::channel();

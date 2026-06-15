@@ -4,7 +4,7 @@ use std::path::Path;
 
 mod parse;
 
-pub(crate) fn read(path: &Path) -> Result<Vec<Keyword>> {
+pub fn read(path: &Path) -> Result<Vec<Keyword>> {
     let contents = std::fs::read(path).context("reading cade file")?;
     let mut accum = Vec::new();
     for (n, raw) in contents.split(|&b| b == b'\n').enumerate() {
@@ -31,7 +31,7 @@ pub(crate) fn read(path: &Path) -> Result<Vec<Keyword>> {
     Ok(accum)
 }
 
-pub(crate) fn load_dir(dir: &Path) -> Result<Vec<Keyword>> {
+pub fn load_dir(dir: &Path) -> Result<Vec<Keyword>> {
     let mut keywords = if std::fs::exists(dir.join(".cade")).unwrap_or(false) {
         read(&dir.join(".cade")).context("reading cade file")?
     } else {

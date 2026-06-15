@@ -94,7 +94,7 @@ fn merge(out: &mut EnvSet, other: EnvSet) {
     out.merge_loaded(other);
 }
 
-pub(crate) fn envrc_arg(filename: &str) -> &str {
+pub fn envrc_arg(filename: &str) -> &str {
     if filename.is_empty() {
         ".envrc"
     } else {

@@ -4,7 +4,7 @@ use crate::{
 };
 use std::collections::{HashMap, HashSet};
 
-pub(crate) struct RollupResult {
+pub struct RollupResult {
     env: HashMap<String, Vec<String>>,
     absorb: HashSet<String>,
     unset: Vec<String>,
@@ -36,27 +36,27 @@ const PATH_LIKE: &[&str] = &[
 const SPACE_JOINED: &[&str] = &["NIX_CFLAGS_COMPILE", "NIX_HARDENING_ENABLE", "NIX_LDFLAGS"];
 
 impl RollupResult {
-    pub(crate) fn env(&self) -> &HashMap<String, Vec<String>> {
+    pub fn env(&self) -> &HashMap<String, Vec<String>> {
         &self.env
     }
 
-    pub(crate) fn absorb(&self) -> &HashSet<String> {
+    pub fn absorb(&self) -> &HashSet<String> {
         &self.absorb
     }
 
-    pub(crate) fn unset(&self) -> &[String] {
+    pub fn unset(&self) -> &[String] {
         &self.unset
     }
 
-    pub(crate) fn hooks(&self) -> &[InnerHook] {
+    pub fn hooks(&self) -> &[InnerHook] {
         &self.hooks
     }
 
-    pub(crate) fn purified(&self) -> bool {
+    pub fn purified(&self) -> bool {
         self.purified
     }
 
-    pub(crate) fn set_keys(&self) -> Vec<&str> {
+    pub fn set_keys(&self) -> Vec<&str> {
         let mut keys: Vec<&str> = self.env.keys().map(String::as_str).collect();
         keys.sort_unstable();
         keys
@@ -78,7 +78,7 @@ impl RollupResult {
     }
 }
 
-pub(crate) fn rollup_envs(cade_layers: Vec<CadeLayer>) -> RollupResult {
+pub fn rollup_envs(cade_layers: Vec<CadeLayer>) -> RollupResult {
     let mut purified = false;
     let mut env: HashMap<String, Vec<String>> = HashMap::new();
     let mut cleared: HashSet<String> = HashSet::new();

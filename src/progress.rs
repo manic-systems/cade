@@ -65,7 +65,7 @@ impl State {
 }
 
 /// Move the cursor back to the top of a `n`-row block, clearing it on the way.
-pub(crate) fn rewind(err: &mut impl Write, n: usize) {
+pub fn rewind(err: &mut impl Write, n: usize) {
     if n == 0 {
         return;
     }
@@ -76,7 +76,7 @@ pub(crate) fn rewind(err: &mut impl Write, n: usize) {
     let _ = write!(err, "\x1b[{n}F");
 }
 
-pub(crate) fn render_block(err: &mut impl Write, lines: &[String]) -> usize {
+pub fn render_block(err: &mut impl Write, lines: &[String]) -> usize {
     let width = terminal_width().unwrap_or(80).max(1);
     for line in lines {
         let line = fit_terminal_line(line, width);
