@@ -1,7 +1,7 @@
 //! capture the final nix dev-shell process environment
 
 use super::{capture, profile, target::FlakeTarget};
-use crate::{env::EnvSet, loaders::run_checked};
+use crate::{command::run_checked, env::EnvSet};
 use anyhow::{Context, Result};
 use std::{
     collections::HashMap,

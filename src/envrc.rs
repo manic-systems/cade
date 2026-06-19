@@ -2,8 +2,8 @@
 //!
 //! parses the declarative stdlib subset cade can reproduce
 
-use crate::loaders::{load_env, load_shell};
-use crate::nix::{FlakeTarget, load_flake};
+use crate::loaders::load_env;
+use crate::nix::{FlakeTarget, load_flake, load_shell};
 use crate::{
     env::EnvSet,
     verbosity::{self, Verbosity},

@@ -1,19 +1,15 @@
 use crate::{
     config,
-    env::EnvSet,
     nix::NixProgress,
     verbosity::{self, Verbosity},
 };
 use anyhow::{Context, Result, bail};
 use std::{
     io::{IsTerminal, Read, Write},
-    path::Path,
     process::{Command, Output, Stdio},
     sync::mpsc::RecvTimeoutError,
     time::{Duration, Instant},
 };
-
-pub use crate::nix::{load_flake, load_shell};
 
 const DEFAULT_LONG_RUNNING_WARNING_AFTER: Duration = Duration::from_secs(5);
 const LONG_RUNNING_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -71,7 +67,6 @@ impl<'a> LongRunningProgress<'a> {
         }
     }
 
-    /// Whether a live render would actually draw anything.
     fn wants_live(&self) -> bool {
         self.shown && self.enabled && self.interactive
     }
@@ -177,10 +172,8 @@ fn handle_stream_event(
             let recent = nix.recent_lines();
             let bar = nix.bar_line();
             match progress {
-                // No spinner owns the terminal: drive the standalone widget.
                 Some(progress) if progress.wants_live() => progress.update(&recent, bar.as_deref()),
                 Some(_) => {}
-                // Feed the active activation spinner instead.
                 None => {
                     crate::progress::set_recent(recent);
                     crate::progress::set_nix_bar(bar);
@@ -190,7 +183,6 @@ fn handle_stream_event(
     }
 }
 
-/// Run a command, returning stdout on success or an error carrying its stderr
 pub fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     verbosity::log(Verbosity::Trace, format_args!("cade: running {what}."));
 
@@ -212,7 +204,6 @@ pub fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut nix = NixProgress::new();
-    // The activation spinner, when present, subsumes the standalone widget.
     let mut progress = (!crate::progress::is_active()).then(|| LongRunningProgress::new(what));
     let mut warned = false;
     let start = Instant::now();
@@ -272,8 +263,6 @@ pub fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     verbosity::log(Verbosity::Trace, format_args!("cade: finished {what}."));
 
     if !out.status.success() {
-        // prefer the de-jsonified nix messages; fall back to raw stderr for
-        // non-nix commands (whose stderr is plain text already).
         let summary = if nix.saw_nix() {
             nix.error_text()
         } else {
@@ -291,46 +280,4 @@ pub fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
         );
     }
     Ok(out.stdout)
-}
-
-pub fn load_env(path: &Path) -> Result<EnvSet> {
-    let mut file = std::fs::File::open(path)
-        .with_context(|| format!("opening env file at {}", path.display()))?;
-    let mut buf = String::new();
-    file.read_to_string(&mut buf).context("reading env file")?;
-    EnvSet::from_envs(&buf)
-}
-
-pub fn call(path: &Path, argv: Vec<String>) -> Result<EnvSet> {
-    let mut it = argv.iter();
-    // expansion can empty the argv (e.g. `call ${UNSET}`)
-    let program = it.next().context("call has no command")?;
-    let mut process = Command::new(program);
-    process.current_dir(path);
-    process.args(it);
-    let cmdline = argv.join(" ");
-    let stdout = run_checked(process, &format!("call `{cmdline}`"))?;
-
-    let text = String::from_utf8(stdout)
-        .with_context(|| format!("call `{cmdline}` output must be valid UTF-8"))?;
-    EnvSet::from_envs(&text)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn call_output_must_be_utf8() {
-        let dir = std::env::temp_dir();
-        let err = call(
-            &dir,
-            vec!["sh".into(), "-c".into(), "printf 'BAD=\\377\\n'".into()],
-        )
-        .expect_err("invalid UTF-8 call output must fail");
-        assert!(
-            format!("{err:#}").contains("must be valid UTF-8"),
-            "{err:#}"
-        );
-    }
 }
