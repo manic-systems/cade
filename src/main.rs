@@ -1,5 +1,6 @@
 mod cade_file;
 mod cli;
+mod command;
 mod config;
 mod core;
 mod direnv_export;

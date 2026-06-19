@@ -117,7 +117,10 @@ pub(super) fn load_single_layer(
     cade: &Cade,
     session: Option<&str>,
 ) -> Result<CadeLayer> {
-    use crate::loaders::*;
+    use crate::{
+        loaders::{call, load_env},
+        nix::{load_flake, load_shell},
+    };
     use Keyword::*;
 
     let mut layer = CadeLayer::new(layer_count, path);
