@@ -14,7 +14,7 @@ pub(super) use identity::{
 
 const DEFAULT_SHELL_GC_ROOT_TTL_SECS: u64 = 30 * 24 * 3600;
 
-fn shell_gc_root_ttl() -> Duration {
+pub(super) fn shell_gc_root_ttl() -> Duration {
     Duration::from_secs(
         config::shell_gc_root_ttl_seconds().unwrap_or(DEFAULT_SHELL_GC_ROOT_TTL_SECS),
     )

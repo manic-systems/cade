@@ -175,10 +175,13 @@ impl Cade {
             "CREATE TABLE IF NOT EXISTS LayerCache (
                     Dir TEXT PRIMARY KEY,
                     Token TEXT NOT NULL,
-                    Data TEXT NOT NULL
+                    Data TEXT NOT NULL,
+                    LastUsed INTEGER NOT NULL DEFAULT 0
                 );",
         )
         .context("create LayerCache table")?;
+        Cade::ensure_layer_cache_schema(conn).context("migrate LayerCache schema")?;
+        Cade::prune_stale_layer_cache(conn).context("prune stale layer cache entries")?;
         Ok(())
     }
 
