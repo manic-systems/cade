@@ -1,6 +1,6 @@
 use crate::env::EnvSet;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::{collections::HashSet, path::PathBuf};
 
 #[derive(Debug)]
 pub enum CadeAction {
@@ -44,6 +44,29 @@ pub enum Loadable {
     Shell(String),
     Env(String),
     Envrc(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LoadSpec {
+    FlakeDefault,
+    FlakeOutput(String),
+    FlakeInstallable(String),
+    Shell(PathBuf),
+    Env(PathBuf),
+    Envrc(PathBuf),
+}
+
+impl LoadSpec {
+    pub fn cache_key(&self) -> String {
+        match self {
+            LoadSpec::FlakeDefault => "flake".to_string(),
+            LoadSpec::FlakeOutput(output) => format!("flake:{output}"),
+            LoadSpec::FlakeInstallable(installable) => format!("flake:{installable}"),
+            LoadSpec::Shell(path) => format!("shell:{}", path.display()),
+            LoadSpec::Env(path) => format!("env:{}", path.display()),
+            LoadSpec::Envrc(path) => format!("envrc:{}", path.display()),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]

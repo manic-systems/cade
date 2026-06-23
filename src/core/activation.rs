@@ -2,6 +2,7 @@ use super::{
     Cade, DISALLOWED_REMINDER, Keyword, find_cade_root,
     layer::load_single_layer,
     sessions::{direnv_fallback_session_id, direnv_session_id, is_valid_session, new_session_id},
+    shell_state::SESSION_VAR,
     watch::{compute_layer_key, watched_files_for_keywords},
 };
 use crate::{
@@ -142,7 +143,7 @@ impl Cade {
 
     pub(super) fn activation_env_with_snapshot(&self) -> Result<(ActivationEnv, String, bool)> {
         let live = live_ambient_env();
-        match std::env::var("__CADE_SESSION")
+        match std::env::var(SESSION_VAR)
             .ok()
             .filter(|s| is_valid_session(s))
         {
@@ -168,7 +169,7 @@ impl Cade {
     }
 
     fn export_session(&self) -> direnv_export::ExportSession {
-        let snapshot = std::env::var("__CADE_SESSION")
+        let snapshot = std::env::var(SESSION_VAR)
             .ok()
             .and_then(|session| self.read_snapshot(&session));
         direnv_export::capture_session(snapshot)

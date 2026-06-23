@@ -1,7 +1,3 @@
-//! direnv `.envrc` compatibility
-//!
-//! parses the declarative stdlib subset cade can reproduce
-
 use crate::loaders::load_env;
 use crate::nix::{FlakeTarget, load_flake, load_shell};
 use crate::{
@@ -102,9 +98,7 @@ pub fn envrc_arg(filename: &str) -> &str {
     }
 }
 
-/// load recognized `.envrc` directives
 pub fn load_envrc(path: &Path, profile_dir: Option<PathBuf>) -> Result<EnvSet> {
-    // direnv resolves inside the .envrc dir
     let dir = path.parent().unwrap_or(path);
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("reading .envrc at {}", path.display()))?;
@@ -118,7 +112,6 @@ pub fn load_envrc(path: &Path, profile_dir: Option<PathBuf>) -> Result<EnvSet> {
                 let profile = profile_dir
                     .as_ref()
                     .map(|base| base.join(format!("{idx}-flake")));
-                // avoid reclassifying `.#dev` as a directed path
                 let target = FlakeTarget::bare_output(dir, output.as_deref());
                 merge(&mut out, load_flake(&target, profile).context("use flake")?)
             }
@@ -140,7 +133,6 @@ pub fn load_envrc(path: &Path, profile_dir: Option<PathBuf>) -> Result<EnvSet> {
                 out.add_literal_export(key, &value);
             }
             Directive::PathAdd(dirs) => {
-                // PATH_add prepends relative to the .envrc dir
                 let prefix: Vec<String> = dirs
                     .iter()
                     .map(|d| dir.join(d).to_string_lossy().into_owned())
@@ -169,9 +161,7 @@ pub fn load_envrc(path: &Path, profile_dir: Option<PathBuf>) -> Result<EnvSet> {
     Ok(out)
 }
 
-/// files an `.envrc` layer depends on
 pub fn envrc_watch_files(path: &Path) -> Vec<PathBuf> {
-    // keep watch and load path resolution aligned
     let dir = path.parent().unwrap_or(path);
     let mut files = vec![path.to_path_buf()];
     let Ok(contents) = std::fs::read_to_string(path) else {
@@ -239,7 +229,7 @@ mod tests {
         };
         let target = crate::nix::FlakeTarget::bare_output(Path::new("/layer"), output.as_deref());
         assert_eq!(target.installable, ".#dev");
-        assert_eq!(target.spec, "flake:dev");
+        assert_eq!(target.spec.cache_key(), "flake:dev");
         assert_eq!(target.cwd, Path::new("/layer"));
     }
 

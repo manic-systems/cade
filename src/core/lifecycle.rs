@@ -1,14 +1,9 @@
 use super::{
-    Announce, Cade, WatchState, announce_loaded, announce_unloaded, build_watch_state,
-    clear_disallowed_root_marker, files_changed, find_cade_root, is_valid_session, log_hook,
-    log_key_list, mark_disallowed_root, participant_dirs, read_keylist,
+    Announce, Cade, WatchState, announce_loaded, announce_unloaded, clear_disallowed_root_marker,
+    find_cade_root, log_hook, log_key_list, mark_disallowed_root, participant_dirs,
+    shell_state::ShellState,
 };
-use crate::{
-    config,
-    env::is_shell_managed,
-    shells::ShellOutput,
-    types::{HookType, InnerHook},
-};
+use crate::{config, env::is_shell_managed, shells::ShellOutput, types::HookType};
 use anyhow::Result;
 use std::{collections::BTreeSet, collections::HashMap, path::Path};
 
@@ -37,9 +32,6 @@ impl Cade {
         }
 
         self.root_nix_store_paths(&session, &plan.nix_store_paths);
-        if new_session {
-            print!("{}", shell.set_env("__CADE_SESSION", &session));
-        }
 
         let delta = rollup.env_delta(&activation_env);
         print!("{}", delta.render_shell(shell));
@@ -51,43 +43,20 @@ impl Cade {
             }
         }
 
-        let layer_paths: Vec<String> = plan
-            .cade_files
-            .iter()
-            .map(|(p, _)| p.to_string_lossy().to_string())
-            .collect();
-        print!(
-            "{}",
-            shell.set_env("__CADE_LAYERS", &layer_paths.join("\x1F"))
+        let layer_paths: Vec<_> = plan.cade_files.iter().map(|(p, _)| p.clone()).collect();
+        let set_keys: Vec<String> = rollup.set_keys().into_iter().map(str::to_string).collect();
+        let shell_state = ShellState::active(
+            session.clone(),
+            layer_paths.clone(),
+            self.state_dir.clone(),
+            config::current().path.clone(),
+            set_keys.clone(),
+            rollup.unset().to_vec(),
+            rollup.purified(),
+            rollup.hooks().to_vec(),
+            WatchState::capture(&plan.root, layer_paths.clone(), &plan.all_watch_files),
         );
-        print!(
-            "{}",
-            shell.set_env("__CADE_STATE_DIR", &self.state_dir.to_string_lossy())
-        );
-        if let Some(path) = config::current().path.as_deref() {
-            print!(
-                "{}",
-                shell.set_env("__CADE_CONFIG_PATH", &path.to_string_lossy())
-            );
-        }
-
-        let set_keys = rollup.set_keys();
-        print!("{}", shell.set_env("__CADE_SET", &set_keys.join("\x1F")));
-        print!(
-            "{}",
-            shell.set_env("__CADE_UNSET", &rollup.unset().join("\x1F"))
-        );
-        print!(
-            "{}",
-            shell.set_env("__CADE_PURE", if rollup.purified() { "1" } else { "0" })
-        );
-
-        let hooks_json = serde_json::to_string(rollup.hooks()).unwrap_or_default();
-        print!("{}", shell.set_env("__CADE_HOOKS", &hooks_json));
-
-        let watch_state = build_watch_state(&plan.root, layer_paths.clone(), &plan.all_watch_files);
-        let watches_json = serde_json::to_string(&watch_state).unwrap_or_default();
-        print!("{}", shell.set_env("__CADE_WATCHES", &watches_json));
+        print!("{}", shell_state.render_activation(shell, new_session));
 
         match announce {
             Some(announce) => spinner.success(&format!(
@@ -98,7 +67,7 @@ impl Cade {
             )),
             None => spinner.done(),
         }
-        log_key_list("set", set_keys);
+        log_key_list("set", &set_keys);
         log_key_list("cleared", rollup.unset());
 
         println!();
@@ -113,57 +82,42 @@ impl Cade {
         client_id: Option<&str>,
         owner_pid: Option<u32>,
     ) -> Result<()> {
-        let layers = std::env::var("__CADE_LAYERS").ok();
-        let session = std::env::var("__CADE_SESSION").ok();
+        let shell_state = ShellState::from_env();
 
-        if layers.is_none() && session.is_none() && std::env::var("__CADE_SET").is_err() {
+        if shell_state.is_empty() {
             return Ok(());
         }
 
-        let prev_env: HashMap<String, String> = session
-            .as_deref()
+        let prev_env: HashMap<String, String> = shell_state
+            .session()
             .and_then(|s| self.read_snapshot(s))
             .unwrap_or_default();
 
-        let set_keys = read_keylist("__CADE_SET");
-        let unset_keys = read_keylist("__CADE_UNSET");
-        let pure = std::env::var("__CADE_PURE")
-            .map(|v| v == "1")
-            .unwrap_or(false);
-
-        let hooks: Vec<InnerHook> = std::env::var("__CADE_HOOKS")
-            .ok()
-            .and_then(|h| serde_json::from_str(&h).ok())
-            .unwrap_or_default();
-
-        if announce && let Some(layers) = &layers {
-            let paths: Vec<&str> = layers.split('\x1F').filter(|s| !s.is_empty()).collect();
-            if let Some(tip) = paths.last() {
-                announce_unloaded(tip, paths.len());
-            }
+        if announce && let Some((tip, count)) = shell_state.unload_summary() {
+            announce_unloaded(&tip, count);
         }
 
-        for hook in &hooks {
+        for hook in shell_state.hooks() {
             if hook.kind == HookType::UnloadPre {
                 log_hook(hook);
                 print!("{}", shell.emit_hook(&hook.content));
             }
         }
 
-        if pure {
+        if shell_state.pure() {
             for (k, v) in &prev_env {
                 if is_shell_managed(k) {
                     continue;
                 }
                 print!("{}", shell.set_env(k, v));
             }
-            for k in &set_keys {
+            for k in shell_state.set_keys() {
                 if !prev_env.contains_key(k) && !is_shell_managed(k) {
                     print!("{}", shell.unset_env(k));
                 }
             }
         } else {
-            for k in &set_keys {
+            for k in shell_state.set_keys() {
                 if is_shell_managed(k) {
                     continue;
                 }
@@ -174,7 +128,7 @@ impl Cade {
             }
         }
 
-        for k in &unset_keys {
+        for k in shell_state.unset_keys() {
             if is_shell_managed(k) {
                 continue;
             }
@@ -183,37 +137,24 @@ impl Cade {
             }
         }
 
-        for var in [
-            "__CADE_LAYERS",
-            "__CADE_SET",
-            "__CADE_UNSET",
-            "__CADE_PURE",
-            "__CADE_WATCHES",
-            "__CADE_HOOKS",
-            "__CADE_STATE_DIR",
-            "__CADE_CONFIG_PATH",
-        ] {
-            print!("{}", shell.unset_env(var));
-        }
+        print!("{}", shell_state.render_clear(shell, finalise));
 
-        // nested shells share the snapshot
         if finalise {
-            if let Some(session) = session.as_deref() {
+            if let Some(session) = shell_state.session() {
                 self.remove_current_session_holders(session, client_id, owner_pid);
             }
-            self.gc_state(session.as_deref());
-            print!("{}", shell.unset_env("__CADE_SESSION"));
+            self.gc_state(shell_state.session());
         }
 
-        for hook in &hooks {
+        for hook in shell_state.hooks() {
             if hook.kind == HookType::UnloadPost {
                 log_hook(hook);
                 print!("{}", shell.emit_hook(&hook.content));
             }
         }
 
-        log_key_list("restored", &set_keys);
-        log_key_list("restored cleared", &unset_keys);
+        log_key_list("restored", shell_state.set_keys());
+        log_key_list("restored cleared", shell_state.unset_keys());
 
         println!();
         Ok(())
@@ -232,9 +173,9 @@ impl Cade {
             .iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect();
-        let is_active = std::env::var("__CADE_LAYERS").is_ok();
+        let shell_state = ShellState::from_env();
 
-        if !is_active {
+        if !shell_state.is_active() {
             if new_root.is_some() {
                 self.do_activation(shell, Some(Announce::Loaded), client_id, owner_pid)?;
                 self.sync_disallowed_prompt(disallowed_tip.as_deref(), shell);
@@ -244,21 +185,14 @@ impl Cade {
             return Ok(());
         }
 
-        if let Ok(session) = std::env::var("__CADE_SESSION")
-            && is_valid_session(&session)
-        {
-            self.refresh_session_holders(&session, client_id, owner_pid);
+        if let Some(session) = shell_state.valid_session() {
+            self.refresh_session_holders(session, client_id, owner_pid);
         }
 
-        let state = std::env::var("__CADE_WATCHES")
-            .ok()
-            .and_then(|w| serde_json::from_str::<WatchState>(&w).ok());
-        let old_set: BTreeSet<String> = state
-            .as_ref()
-            .map(|s| s.cade_paths.iter().cloned().collect())
-            .unwrap_or_default();
-        let old_root = state.as_ref().map(|s| s.root.clone());
-        let files_stale = state.as_ref().map(files_changed).unwrap_or(true);
+        let state = shell_state.watch_state();
+        let old_set: BTreeSet<String> = state.map(WatchState::cade_path_set).unwrap_or_default();
+        let old_root = state.map(WatchState::root_string);
+        let files_stale = state.map(WatchState::files_changed).unwrap_or(true);
 
         if new_set == old_set && !files_stale {
             self.sync_disallowed_prompt(disallowed_tip.as_deref(), shell);
@@ -310,7 +244,7 @@ impl Cade {
 
     pub fn do_status(&mut self) -> Result<()> {
         let root = find_cade_root(&self.cwd);
-        let active = std::env::var("__CADE_LAYERS").is_ok();
+        let shell_state = ShellState::from_env();
 
         println!("cwd:     {}", self.cwd.display());
         match &root {
@@ -336,15 +270,16 @@ impl Cade {
             None => println!("root:    none (not in a cade project)"),
         }
 
-        println!("active:  {}", if active { "yes" } else { "no" });
-        if active {
-            let set = read_keylist("__CADE_SET");
-            if !set.is_empty() {
-                println!("set:     {}", set.join(", "));
+        println!(
+            "active:  {}",
+            if shell_state.is_active() { "yes" } else { "no" }
+        );
+        if shell_state.is_active() {
+            if !shell_state.set_keys().is_empty() {
+                println!("set:     {}", shell_state.set_keys().join(", "));
             }
-            let unset = read_keylist("__CADE_UNSET");
-            if !unset.is_empty() {
-                println!("cleared: {}", unset.join(", "));
+            if !shell_state.unset_keys().is_empty() {
+                println!("cleared: {}", shell_state.unset_keys().join(", "));
             }
         }
         Ok(())
