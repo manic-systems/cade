@@ -8,17 +8,24 @@ pub struct EnvSet {
     #[serde(default, rename = "hard")]
     hard_replace: HashSet<String>,
     #[serde(default)]
+    clears: HashSet<String>,
+    #[serde(default)]
     nix_store_paths: Vec<String>,
 }
 
 pub(super) struct ParsedEnv {
     vars: HashMap<String, Vec<String>>,
     hard_replace: HashSet<String>,
+    clears: HashSet<String>,
 }
 
 impl ParsedEnv {
     pub(super) fn new(vars: HashMap<String, Vec<String>>, hard_replace: HashSet<String>) -> Self {
-        Self { vars, hard_replace }
+        Self {
+            vars,
+            hard_replace,
+            clears: HashSet::new(),
+        }
     }
 
     pub(super) fn into_entries(self) -> impl Iterator<Item = (String, Vec<String>, bool)> {
@@ -28,6 +35,16 @@ impl ParsedEnv {
             (key, values, replaces)
         })
     }
+
+    pub(super) fn clears(&self) -> impl Iterator<Item = &str> {
+        self.clears.iter().map(String::as_str)
+    }
+}
+
+pub(crate) struct EnvSetMerge {
+    pub(crate) store_paths: Vec<String>,
+    pub(crate) clears: Vec<String>,
+    pub(crate) sets: Vec<String>,
 }
 
 impl EnvSet {
@@ -40,14 +57,22 @@ impl EnvSet {
         let mut env = Self {
             vars: parts.vars,
             hard_replace: parts.hard_replace,
+            clears: HashSet::new(),
             nix_store_paths: Vec::new(),
         };
         env.refresh_store_paths();
         Ok(env)
     }
 
-    pub fn from_captured_vars(vars: HashMap<String, Vec<String>>) -> Self {
+    pub fn from_captured_parts(
+        vars: HashMap<String, Vec<String>>,
+        clears: HashSet<String>,
+    ) -> Self {
         let mut env = Self::from_plain_vars(vars);
+        env.clears = clears
+            .into_iter()
+            .filter(|key| !env.vars.contains_key(key))
+            .collect();
         env.refresh_store_paths();
         env
     }
@@ -56,28 +81,50 @@ impl EnvSet {
         let EnvSet {
             vars,
             hard_replace,
+            clears,
             nix_store_paths,
         } = other;
 
+        for key in clears {
+            self.vars.remove(&key);
+            self.hard_replace.remove(&key);
+            self.clears.insert(key);
+        }
         for (key, values) in vars {
+            self.clears.remove(&key);
             append_entry(&mut self.vars, key, values);
         }
         self.hard_replace.extend(hard_replace);
         self.merge_store_paths(nix_store_paths);
     }
 
-    pub fn merge_layer_env(&mut self, other: EnvSet) -> Vec<String> {
+    pub fn merge_layer_env(&mut self, other: EnvSet) -> EnvSetMerge {
         let EnvSet {
             vars,
             hard_replace,
+            clears,
             nix_store_paths,
         } = other;
 
+        let mut merged_clears = Vec::new();
+        let mut merged_sets = Vec::new();
         self.hard_replace.extend(hard_replace);
+        for key in clears {
+            self.vars.remove(&key);
+            self.hard_replace.remove(&key);
+            self.clears.insert(key.clone());
+            merged_clears.push(key);
+        }
         for (key, values) in vars {
+            self.clears.remove(&key);
+            merged_sets.push(key.clone());
             self.append_values(key, values);
         }
-        nix_store_paths
+        EnvSetMerge {
+            store_paths: nix_store_paths,
+            clears: merged_clears,
+            sets: merged_sets,
+        }
     }
 
     pub fn add_literal_export(&mut self, key: String, value: &str) {
@@ -108,6 +155,7 @@ impl EnvSet {
         ParsedEnv {
             vars: self.vars,
             hard_replace: self.hard_replace,
+            clears: self.clears,
         }
     }
 
@@ -115,16 +163,19 @@ impl EnvSet {
         Self {
             vars,
             hard_replace: HashSet::new(),
+            clears: HashSet::new(),
             nix_store_paths: Vec::new(),
         }
     }
 
     fn append_values(&mut self, key: String, values: Vec<String>) {
+        self.clears.remove(&key);
         self.record_store_paths(&values);
         append_entry(&mut self.vars, key, values);
     }
 
     fn prepend_values(&mut self, key: String, mut values: Vec<String>) {
+        self.clears.remove(&key);
         self.record_store_paths(&values);
         let entry = self.vars.entry(key).or_default();
         values.append(entry);

@@ -1,6 +1,17 @@
 use crate::types::LoadSpec;
 use std::path::{Path, PathBuf};
 
+const FLAKE_WATCH_EXCLUDED_DIRS: &[&str] = &[
+    ".git",
+    ".jj",
+    ".hg",
+    ".svn",
+    ".direnv",
+    "node_modules",
+    "target",
+    "outputs",
+];
+
 pub struct FlakeTarget {
     pub cwd: PathBuf,
     pub installable: String,
@@ -58,6 +69,43 @@ pub fn resolve_flake_target(layer_dir: &Path, arg: Option<&str>) -> FlakeTarget 
     }
 }
 
+pub fn flake_watch_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_flake_watch_files(root, &mut files);
+    files.push(root.join("flake.nix"));
+    files.push(root.join("flake.lock"));
+    files.sort_unstable();
+    files.dedup();
+    files
+}
+
+fn collect_flake_watch_files(path: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let child = entry.path();
+        let file_name = child.file_name().and_then(|name| name.to_str());
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            let excluded = file_name.is_some_and(|name| FLAKE_WATCH_EXCLUDED_DIRS.contains(&name));
+            if !excluded {
+                collect_flake_watch_files(&child, out);
+            }
+        } else if (file_type.is_file() || file_type.is_symlink())
+            && !file_name.is_some_and(is_nix_result_link)
+        {
+            out.push(child);
+        }
+    }
+}
+
+fn is_nix_result_link(name: &str) -> bool {
+    name == "result" || name.starts_with("result-")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +157,57 @@ mod tests {
         assert_eq!(target.cwd, Path::new("/no/such/layer/nope"));
         assert_eq!(target.installable, "/no/such/layer/nope");
         assert_eq!(target.spec.cache_key(), "flake:/no/such/layer/nope");
+    }
+
+    #[test]
+    fn flake_watch_includes_local_imports_and_excludes_build_outputs() {
+        let root = std::env::temp_dir().join(format!(
+            "cade-flake-watch-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::create_dir_all(root.join(".tack")).unwrap();
+        std::fs::create_dir_all(root.join(".jj")).unwrap();
+        std::fs::create_dir_all(root.join("nix")).unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("flake.nix"), "").unwrap();
+        std::fs::write(root.join(".jj").join("repo"), "").unwrap();
+        std::fs::write(root.join(".tack").join("default.nix"), "").unwrap();
+        std::fs::write(root.join("nix").join("package.nix"), "").unwrap();
+        std::fs::write(root.join("result"), "").unwrap();
+        std::fs::write(root.join("result-dev"), "").unwrap();
+        std::fs::write(root.join("target").join("generated.nix"), "").unwrap();
+
+        let watch = flake_watch_files(&root);
+
+        assert!(watch.contains(&root.join("flake.nix")));
+        assert!(watch.contains(&root.join(".tack").join("default.nix")));
+        assert!(watch.contains(&root.join("nix").join("package.nix")));
+        assert!(!watch.contains(&root));
+        assert!(!watch.contains(&root.join(".jj").join("repo")));
+        assert!(!watch.contains(&root.join("result")));
+        assert!(!watch.contains(&root.join("result-dev")));
+        assert!(!watch.contains(&root.join("target").join("generated.nix")));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn flake_watch_tracks_missing_flake_files_without_watching_root_dir() {
+        let root = std::env::temp_dir().join(format!(
+            "cade-flake-watch-missing-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".envrc"), "use flake\n").unwrap();
+
+        let watch = flake_watch_files(&root);
+
+        assert!(watch.contains(&root.join("flake.nix")));
+        assert!(watch.contains(&root.join("flake.lock")));
+        assert!(!watch.contains(&root));
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }

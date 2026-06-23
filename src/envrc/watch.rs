@@ -1,4 +1,4 @@
-use super::directive::{Directive, parse};
+use super::plan::plan_directives;
 use std::path::{Path, PathBuf};
 
 pub fn envrc_watch_files(path: &Path) -> Vec<PathBuf> {
@@ -7,21 +7,8 @@ pub fn envrc_watch_files(path: &Path) -> Vec<PathBuf> {
     let Ok(contents) = std::fs::read_to_string(path) else {
         return files;
     };
-    for directive in parse(&contents) {
-        match directive {
-            Directive::UseFlake(_) => {
-                files.push(dir.join("flake.nix"));
-                files.push(dir.join("flake.lock"));
-            }
-            Directive::UseNix(f) => {
-                files.push(dir.join(if f.is_empty() { "shell.nix" } else { &f }));
-            }
-            Directive::Dotenv { file, .. } => {
-                files.push(dir.join(if file.is_empty() { ".env" } else { &file }));
-            }
-            Directive::WatchFile(ws) => files.extend(ws.iter().map(|w| dir.join(w))),
-            _ => {}
-        }
+    for directive in plan_directives(dir, &contents) {
+        files.extend(directive.watch);
     }
     files
 }

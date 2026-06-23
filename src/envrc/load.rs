@@ -1,6 +1,6 @@
-use super::directive::{Directive, parse};
+use super::plan::{PlannedDirective, plan_directives};
 use crate::loaders::load_env;
-use crate::nix::{FlakeTarget, load_flake, load_shell};
+use crate::nix::{load_flake, load_shell};
 use crate::{
     env::EnvSet,
     verbosity::{self, Verbosity},
@@ -16,41 +16,40 @@ pub fn load_envrc(path: &Path, profile_dir: Option<PathBuf>) -> Result<EnvSet> {
     let mut out = EnvSet::new();
     let mut warnings = Vec::new();
 
-    for (idx, directive) in parse(&contents).into_iter().enumerate() {
-        match directive {
-            Directive::UseFlake(output) => {
-                let profile = profile_dir
-                    .as_ref()
-                    .map(|base| base.join(format!("{idx}-flake")));
-                let target = FlakeTarget::bare_output(dir, output.as_deref());
+    for directive in plan_directives(dir, &contents) {
+        match directive.action {
+            PlannedDirective::UseFlake {
+                target,
+                profile_name,
+            } => {
+                let profile = profile_dir.as_ref().map(|base| base.join(profile_name));
                 out.merge_loaded(load_flake(&target, profile).context("use flake")?);
             }
-            Directive::UseNix(file) => {
-                let profile = profile_dir
-                    .as_ref()
-                    .map(|base| base.join(format!("{idx}-nix")));
-                let shell = dir.join(if file.is_empty() { "shell.nix" } else { &file });
+            PlannedDirective::UseNix {
+                shell,
+                profile_name,
+            } => {
+                let profile = profile_dir.as_ref().map(|base| base.join(profile_name));
                 out.merge_loaded(load_shell(&shell, profile).context("use nix")?);
             }
-            Directive::Dotenv { file, if_exists } => {
-                let p = dir.join(if file.is_empty() { ".env" } else { &file });
-                if if_exists && !p.exists() {
+            PlannedDirective::Dotenv { path, if_exists } => {
+                if if_exists && !path.exists() {
                     continue;
                 }
-                out.merge_loaded(load_env(&p).context("dotenv")?);
+                out.merge_loaded(load_env(&path).context("dotenv")?);
             }
-            Directive::Export(key, value) => {
+            PlannedDirective::Export(key, value) => {
                 out.add_literal_export(key, &value);
             }
-            Directive::PathAdd(dirs) => {
+            PlannedDirective::PathAdd(dirs) => {
                 let prefix: Vec<String> = dirs
                     .iter()
                     .map(|d| dir.join(d).to_string_lossy().into_owned())
                     .collect();
                 out.prepend_path_entries(prefix);
             }
-            Directive::WatchFile(_) => {}
-            Directive::Unhandled(line) => warnings.push(line),
+            PlannedDirective::WatchOnly => {}
+            PlannedDirective::Unhandled(line) => warnings.push(line),
         }
     }
 

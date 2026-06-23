@@ -1,5 +1,8 @@
 use super::filter::{is_kept_nix_env_var, keep_loaded_env_var};
-use crate::env::EnvSet;
+use crate::{
+    core::shell_state::{SET_VAR, decode_key_list},
+    env::EnvSet,
+};
 use anyhow::{Context, Result, bail};
 use std::{collections::HashMap, path::PathBuf, process::Command};
 
@@ -11,6 +14,33 @@ pub(super) fn add_env_command(proc: &mut Command) {
         .arg(find_on_path("sh"))
         .args(["-c", ENV_CAPTURE_SCRIPT, "cade-env"])
         .arg(find_on_path("env"));
+}
+
+pub(super) fn remove_cade_managed_env(previous: &mut HashMap<String, String>, proc: &mut Command) {
+    for key in cade_managed_env_keys(previous) {
+        previous.remove(&key);
+        proc.env_remove(&key);
+    }
+}
+
+fn cade_managed_env_keys(env: &HashMap<String, String>) -> Vec<String> {
+    let mut keys: Vec<String> = env
+        .keys()
+        .filter(|key| key.starts_with("__CADE_"))
+        .cloned()
+        .collect();
+
+    if let Some(set) = env.get(SET_VAR) {
+        keys.extend(
+            decode_key_list(set)
+                .into_iter()
+                .filter(|key| !key.is_empty() && key != "PATH"),
+        );
+    }
+
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 fn find_on_path(name: &str) -> PathBuf {
@@ -40,12 +70,14 @@ pub(super) fn env_set_from_captured_env(
 ) -> Result<EnvSet> {
     let path_suffix = previous.get("PATH").map(String::as_str);
     let mut vars: HashMap<String, Vec<String>> = HashMap::new();
+    let mut seen = std::collections::HashSet::new();
 
     for entry in raw.split(|&b| b == b'\0').filter(|entry| !entry.is_empty()) {
         let text = std::str::from_utf8(entry).context("parsing exported environment")?;
         let Some((key, raw_value)) = text.split_once('=') else {
             continue;
         };
+        seen.insert(key.to_string());
         if !keep_loaded_env_var(key) {
             continue;
         }
@@ -68,7 +100,13 @@ pub(super) fn env_set_from_captured_env(
         );
     }
 
-    Ok(EnvSet::from_captured_vars(vars))
+    let clears = previous
+        .keys()
+        .filter(|key| !seen.contains(*key) && keep_loaded_env_var(key))
+        .cloned()
+        .collect();
+
+    Ok(EnvSet::from_captured_parts(vars, clears))
 }
 
 fn clean_captured_path(value: &str, path_suffix: Option<&str>) -> String {
@@ -108,6 +146,22 @@ mod tests {
             .as_object()
             .unwrap()
             .contains_key(key)
+    }
+
+    #[test]
+    fn cade_managed_env_keys_drop_active_shell_vars_but_keep_path_suffix() {
+        let env = HashMap::from([
+            ("__CADE_SESSION".to_string(), "s1".to_string()),
+            ("__CADE_SET".to_string(), "FOO\x1FPATH\x1FBAR".to_string()),
+            ("FOO".to_string(), "old".to_string()),
+            ("PATH".to_string(), "/old/bin".to_string()),
+            ("BAR".to_string(), "old".to_string()),
+        ]);
+
+        assert_eq!(
+            cade_managed_env_keys(&env),
+            ["BAR", "FOO", "__CADE_SESSION", "__CADE_SET"]
+        );
     }
 
     #[test]
