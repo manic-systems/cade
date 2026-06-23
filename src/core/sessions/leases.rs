@@ -1,5 +1,5 @@
 use super::{
-    LeaseRecord,
+    LeaseRecord, SessionHolder,
     identity::{atomic_write, new_client_id, now_secs, validate_client_id},
     shell_gc_root_ttl,
 };
@@ -123,7 +123,7 @@ impl Cade {
                 let Some(session) = path.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
-                self.remove_session_holder(session, &format!("lease-{client_id}.json"));
+                self.remove_session_holder(session, &SessionHolder::lease(client_id.to_string()));
             }
         }
         Ok(())

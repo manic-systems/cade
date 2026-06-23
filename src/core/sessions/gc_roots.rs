@@ -3,7 +3,6 @@ use super::{
     identity::{
         atomic_write, configured_client_id, is_valid_client_id, is_valid_session, now_secs,
         parent_pid, process_holder_is_live, process_start_time, stable_hash_hex,
-        validate_client_id,
     },
     leases::lease_record_is_live,
     shell_gc_root_ttl,
@@ -35,27 +34,6 @@ fn rooted_store_paths(session_dir: &Path) -> HashSet<String> {
         }
     }
     rooted
-}
-
-fn holder_file_name(holder: &SessionHolder) -> Result<String> {
-    match holder {
-        SessionHolder::Process {
-            pid, start_time, ..
-        } => {
-            if start_time
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
-            {
-                Ok(format!("process-{pid}-{start_time}.json"))
-            } else {
-                bail!("invalid process start time")
-            }
-        }
-        SessionHolder::Lease { client_id } => {
-            validate_client_id(client_id)?;
-            Ok(format!("lease-{client_id}.json"))
-        }
-    }
 }
 
 impl Cade {
@@ -215,15 +193,18 @@ impl Cade {
         }
         let holders_dir = self.holders_dir(session);
         std::fs::create_dir_all(&holders_dir).context("create cade session holders dir")?;
-        let path = holders_dir.join(holder_file_name(holder)?);
+        let path = holders_dir.join(holder.file_name()?);
         let body = serde_json::to_vec(holder).context("serialise cade session holder")?;
         atomic_write(&path, &body).context("write cade session holder")
     }
 
-    pub(super) fn remove_session_holder(&self, session: &str, holder_name: &str) {
+    pub(super) fn remove_session_holder(&self, session: &str, holder: &SessionHolder) {
         if !is_valid_session(session) {
             return;
         }
+        let Ok(holder_name) = holder.file_name() else {
+            return;
+        };
         std::fs::remove_file(self.holders_dir(session).join(holder_name)).ok();
         self.touch_shell_gc_session(session);
     }
@@ -237,11 +218,7 @@ impl Cade {
         };
         self.write_session_holder(
             session,
-            &SessionHolder::Process {
-                pid,
-                start_time,
-                last_seen: now_secs(),
-            },
+            &SessionHolder::process(pid, start_time, now_secs()),
         )
     }
 
@@ -282,19 +259,14 @@ impl Cade {
         {
             self.remove_session_holder(
                 session,
-                &holder_file_name(&SessionHolder::Process {
-                    pid,
-                    start_time,
-                    last_seen: now_secs(),
-                })
-                .unwrap_or_default(),
+                &SessionHolder::process(pid, start_time, now_secs()),
             );
         }
 
         if let Some(client_id) = configured_client_id(client_id)
             && is_valid_client_id(&client_id)
         {
-            self.remove_session_holder(session, &format!("lease-{client_id}.json"));
+            self.remove_session_holder(session, &SessionHolder::lease(client_id));
         }
     }
 
