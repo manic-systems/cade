@@ -98,7 +98,17 @@ pub fn rollup_envs(cade_layers: Vec<CadeLayer>) -> RollupResult {
             cleared.insert(var.clone());
         }
 
-        for (k, v, replaces) in layer.envs.into_parsed_env().into_entries() {
+        let parsed = layer.envs.into_parsed_env();
+        for var in parsed.clears() {
+            if is_shell_managed(var) {
+                continue;
+            }
+            env.remove(var);
+            absorb.remove(var);
+            cleared.insert(var.to_string());
+        }
+
+        for (k, v, replaces) in parsed.into_entries() {
             if is_shell_managed(&k) {
                 continue;
             }

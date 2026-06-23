@@ -7,7 +7,7 @@ mod permissions;
 mod reload;
 mod restore;
 mod sessions;
-mod shell_state;
+pub mod shell_state;
 mod snapshot;
 mod status;
 mod watch;

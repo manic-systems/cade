@@ -1,5 +1,6 @@
 mod directive;
 mod load;
+mod plan;
 mod watch;
 
 pub use load::load_envrc;

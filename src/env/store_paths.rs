@@ -37,6 +37,10 @@ fn is_store_name_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
 }
 
+fn is_store_hash_char(byte: u8) -> bool {
+    matches!(byte, b'0'..=b'9' | b'a'..=b'd' | b'f'..=b'n' | b'p'..=b's' | b'v'..=b'z')
+}
+
 fn collect_from_str(text: &str, out: &mut HashSet<String>) {
     let mut offset = 0;
     while let Some(relative_start) = text[offset..].find(NIX_STORE_PREFIX) {
@@ -44,7 +48,12 @@ fn collect_from_str(text: &str, out: &mut HashSet<String>) {
         let hash_start = start + NIX_STORE_PREFIX.len();
         let hash_end = hash_start + NIX_STORE_HASH_LEN;
         let bytes = text.as_bytes();
-        if bytes.len() <= hash_end || bytes.get(hash_end) != Some(&b'-') {
+        if bytes.len() <= hash_end
+            || bytes.get(hash_end) != Some(&b'-')
+            || !bytes[hash_start..hash_end]
+                .iter()
+                .all(|byte| is_store_hash_char(*byte))
+        {
             offset = hash_start;
             continue;
         }
@@ -57,5 +66,28 @@ fn collect_from_str(text: &str, out: &mut HashSet<String>) {
             out.insert(text[start..end].to_string());
         }
         offset = end;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ignores_nix_placeholder_hashes() {
+        let paths = from_values(
+            ["-fmacro-prefix-map=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-gcc/include"]
+                .into_iter(),
+        );
+
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn keeps_valid_nix_store_hashes() {
+        let path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-demo";
+        let paths = from_values([path].into_iter());
+
+        assert_eq!(paths, [path]);
     }
 }

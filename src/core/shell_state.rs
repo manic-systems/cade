@@ -8,7 +8,7 @@ pub(super) const SESSION_VAR: &str = "__CADE_SESSION";
 pub(super) const LAYERS_VAR: &str = "__CADE_LAYERS";
 pub(super) const STATE_DIR_VAR: &str = "__CADE_STATE_DIR";
 pub(super) const CONFIG_PATH_VAR: &str = "__CADE_CONFIG_PATH";
-pub(super) const SET_VAR: &str = "__CADE_SET";
+pub const SET_VAR: &str = "__CADE_SET";
 pub(super) const UNSET_VAR: &str = "__CADE_UNSET";
 pub(super) const PURE_VAR: &str = "__CADE_PURE";
 pub(super) const HOOKS_VAR: &str = "__CADE_HOOKS";
@@ -67,6 +67,7 @@ impl ShellState {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn active(
         session: String,
         layers: Vec<PathBuf>,
@@ -175,7 +176,7 @@ impl ShellState {
     }
 }
 
-pub(super) fn decode_key_list(raw: &str) -> Vec<String> {
+pub fn decode_key_list(raw: &str) -> Vec<String> {
     raw.split(KEY_SEPARATOR)
         .filter(|item| !item.is_empty())
         .map(str::to_string)
