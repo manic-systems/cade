@@ -5,12 +5,13 @@ mod lifecycle;
 mod participants;
 mod permissions;
 mod sessions;
+mod shell_state;
 mod snapshot;
 mod watch;
 
 use participants::{find_cade_root, participant_dirs};
 use sessions::is_valid_session;
-use watch::{WatchState, build_watch_state, files_changed};
+use watch::WatchState;
 
 use crate::{
     shells::ShellOutput,
@@ -135,22 +136,9 @@ fn announce_loaded(dir: &str) {
     );
 }
 
-fn read_keylist(var: &str) -> Vec<String> {
-    std::env::var(var)
-        .ok()
-        .map(|raw| {
-            raw.split('\x1F')
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 impl Cade {
     pub fn init() -> anyhow::Result<Cade> {
-        let state_dir = if let Ok(dir) = std::env::var("__CADE_STATE_DIR") {
-            let path = PathBuf::from(dir);
+        let state_dir = if let Some(path) = shell_state::state_dir_from_env() {
             std::fs::create_dir_all(&path).context("create cade state path")?;
             path
         } else {

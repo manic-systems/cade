@@ -1,7 +1,7 @@
 use super::Cade;
 use crate::{
     env::EnvSet,
-    types::{CadeAction, CadeLayer, Keyword, Loadable},
+    types::{CadeAction, CadeLayer, Keyword, LoadSpec, Loadable},
 };
 use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
@@ -49,7 +49,7 @@ enum LoadRun {
 
 pub(super) struct ResolvedLoad {
     run: LoadRun,
-    spec: String,
+    spec: LoadSpec,
     pub(super) watch: Vec<PathBuf>,
 }
 
@@ -84,7 +84,7 @@ impl Loadable {
             Loadable::Shell(_) => {
                 let file = resolve_for_watch(layer_dir, self.file_arg().unwrap());
                 ResolvedLoad {
-                    spec: format!("shell:{}", file.display()),
+                    spec: LoadSpec::Shell(file.clone()),
                     watch: vec![file.clone()],
                     run: LoadRun::Shell(file),
                 }
@@ -92,7 +92,7 @@ impl Loadable {
             Loadable::Env(_) => {
                 let file = resolve_for_watch(layer_dir, self.file_arg().unwrap());
                 ResolvedLoad {
-                    spec: format!("env:{}", file.display()),
+                    spec: LoadSpec::Env(file.clone()),
                     watch: vec![file.clone()],
                     run: LoadRun::Env(file),
                 }
@@ -101,7 +101,7 @@ impl Loadable {
                 let path = resolve_for_watch(layer_dir, self.file_arg().unwrap());
                 let watch = crate::envrc::envrc_watch_files(&path);
                 ResolvedLoad {
-                    spec: format!("envrc:{}", path.display()),
+                    spec: LoadSpec::Envrc(path.clone()),
                     watch,
                     run: LoadRun::Envrc(path),
                 }
@@ -132,8 +132,9 @@ pub(super) fn load_single_layer(
                 .map(CadeAction::Environ),
             Load(loadable) => {
                 let resolved = loadable.resolve(path);
+                let spec_key = resolved.spec.cache_key();
                 let profile = session.and_then(|session| {
-                    cade.nix_profile_path(session, layer_count, action_index, path, &resolved.spec)
+                    cade.nix_profile_path(session, layer_count, action_index, path, &spec_key)
                 });
                 match resolved.run {
                     LoadRun::Flake(target) => load_flake(&target, profile).context("loading flake"),

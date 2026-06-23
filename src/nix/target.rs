@@ -1,9 +1,10 @@
+use crate::types::LoadSpec;
 use std::path::{Path, PathBuf};
 
 pub struct FlakeTarget {
     pub cwd: PathBuf,
     pub installable: String,
-    pub spec: String,
+    pub spec: LoadSpec,
 }
 
 impl FlakeTarget {
@@ -12,12 +13,12 @@ impl FlakeTarget {
             Some(o) => FlakeTarget {
                 cwd: dir.to_path_buf(),
                 installable: format!(".#{o}"),
-                spec: format!("flake:{o}"),
+                spec: LoadSpec::FlakeOutput(o.to_string()),
             },
             None => FlakeTarget {
                 cwd: dir.to_path_buf(),
                 installable: String::new(),
-                spec: "flake".to_string(),
+                spec: LoadSpec::FlakeDefault,
             },
         }
     }
@@ -50,11 +51,10 @@ pub fn resolve_flake_target(layer_dir: &Path, arg: Option<&str>) -> FlakeTarget 
         Some(o) if !o.is_empty() => format!("{}#{o}", dir.display()),
         _ => dir.display().to_string(),
     };
-    let spec = format!("flake:{installable}");
     FlakeTarget {
         cwd: dir,
+        spec: LoadSpec::FlakeInstallable(installable.clone()),
         installable,
-        spec,
     }
 }
 
@@ -68,7 +68,7 @@ mod tests {
         let target = resolve_flake_target(layer, Some("dev"));
         assert_eq!(target.installable, ".#dev");
         assert_eq!(target.cwd, layer);
-        assert_eq!(target.spec, "flake:dev");
+        assert_eq!(target.spec.cache_key(), "flake:dev");
     }
 
     #[test]
@@ -77,7 +77,7 @@ mod tests {
         let target = resolve_flake_target(layer, None);
         assert!(target.installable.is_empty());
         assert_eq!(target.cwd, layer);
-        assert_eq!(target.spec, "flake");
+        assert_eq!(target.spec.cache_key(), "flake");
     }
 
     #[test]
@@ -108,6 +108,6 @@ mod tests {
         let target = resolve_flake_target(layer, Some("./nope"));
         assert_eq!(target.cwd, Path::new("/no/such/layer/nope"));
         assert_eq!(target.installable, "/no/such/layer/nope");
-        assert_eq!(target.spec, "flake:/no/such/layer/nope");
+        assert_eq!(target.spec.cache_key(), "flake:/no/such/layer/nope");
     }
 }

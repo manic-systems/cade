@@ -1326,6 +1326,7 @@ fn reload_descending_into_child_loads_the_new_layer() {
     let root_str = sb.root.to_string_lossy().to_string();
     let sub_str = sub.to_string_lossy().to_string();
     let watches = serde_json::json!({
+        "version": "layer-cache-v3",
         "root": root_str,
         "cade_paths": [root_str],
         "files": []
@@ -1418,6 +1419,7 @@ fn reload_into_disallowed_child_keeps_the_approved_parent() {
 
     let root_str = sb.root.to_string_lossy().to_string();
     let watches = serde_json::json!({
+        "version": "layer-cache-v3",
         "root": root_str,
         "cade_paths": [root_str],
         "files": []
