@@ -6,9 +6,6 @@ use std::{
     sync::OnceLock,
 };
 
-// These variants are hand-mirrored in the Nix module's `direnvCompat` enum
-// (`nix/module.nix`, the `enum [ "none" "shim" "envrc" "full" ]`). Keep the two
-// in sync: adding or renaming a mode here means updating that option too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DirenvMode {
     None,
@@ -248,7 +245,7 @@ mod tests {
         ] {
             assert_eq!(text.parse::<DirenvMode>().unwrap(), mode);
         }
-        // omitting direnv defaults to envrc
+
         let raw = RawConfig::default();
         assert_eq!(Config::try_from(raw).unwrap().direnv, DirenvMode::Envrc);
     }

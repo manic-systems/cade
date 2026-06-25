@@ -16,7 +16,6 @@ use std::{
     process::Command,
 };
 
-// compare symlink targets for idempotent rooting
 fn rooted_store_paths(session_dir: &Path) -> HashSet<String> {
     let mut rooted = HashSet::new();
     let Ok(entries) = std::fs::read_dir(session_dir) else {
@@ -127,7 +126,7 @@ impl Cade {
         let mut live = false;
         for entry in entries.flatten() {
             let path = entry.path();
-            // ignore atomic_write temps
+
             if entry.file_name().to_string_lossy().starts_with('.') {
                 continue;
             }
@@ -235,7 +234,6 @@ impl Cade {
             );
         }
         if let Some(client_id) = configured_client_id(client_id) {
-            // stale leases must not abort activation
             let result = self
                 .read_lease_record(&client_id)
                 .and_then(|lease| self.write_session_holder(session, &lease.session_holder()));
@@ -306,7 +304,6 @@ impl Cade {
         }
         let session_dir = self.shell_gc_root_session_dir(session);
 
-        // compare targets because batched roots get positional names
         let already_rooted = rooted_store_paths(&session_dir);
 
         let mut seen = HashSet::new();
@@ -329,14 +326,12 @@ impl Cade {
         }
         to_root.sort_unstable();
 
-        // key root names by the whole set
         let base = session_dir.join(format!("cade-{}", stable_hash_hex(&to_root.join("\n"))));
         let status = Command::new("nix-store")
             .args(["--add-root"])
             .arg(&base)
             .args(["--indirect", "-r"])
             .args(&to_root)
-            // stdout is shell output here
             .stdout(std::process::Stdio::null())
             .status();
         match status {

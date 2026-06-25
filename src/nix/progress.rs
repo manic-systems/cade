@@ -1,5 +1,3 @@
-//! reconstructs nix progress from `--log-format internal-json`
-
 use cognos::internal::json::{Actions, Activities, ResultType, Verbosity, parse_line};
 use std::collections::{HashMap, VecDeque};
 

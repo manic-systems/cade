@@ -1,13 +1,3 @@
-//! Animated activation spinner rendered on stderr.
-//!
-//! One spinner is active per process while an environment activates. A
-//! background thread repaints a bracketed `/ | \ -` frame in blue; `run_checked`
-//! feeds it recent command output and flips it into the yellow long-running
-//! state; `do_activation` resolves it to a green tick or red cross next to the
-//! `cade: loaded ...` message. Every other stderr writer goes through
-//! [`log_line`] (via `verbosity::log`) so its output never collides with the
-//! live spinner.
-
 use crate::verbosity::{self, Verbosity};
 use std::io::{IsTerminal, Write};
 use std::sync::Mutex;
@@ -16,13 +6,12 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 const FRAMES: [char; 4] = ['/', '-', '\\', '|'];
-const LOADED: char = '\u{2192}'; // → layer applied
-const EVICTED: char = '\u{2190}'; // ← layer peeled off
-const CROSS: char = '\u{2717}'; // ✗ ballot x
+const LOADED: char = '\u{2192}';
+const EVICTED: char = '\u{2190}';
+const CROSS: char = '\u{2717}';
 const FRAME_INTERVAL: Duration = Duration::from_millis(100);
 const RECENT_LINES: usize = 5;
 
-// Standard ANSI colours only.
 const BLUE: &str = "\x1b[34m";
 const YELLOW: &str = "\x1b[33m";
 const GREEN: &str = "\x1b[32m";
@@ -64,7 +53,6 @@ impl State {
     }
 }
 
-/// Move the cursor back to the top of a `n`-row block, clearing it on the way.
 pub fn rewind(err: &mut impl Write, n: usize) {
     if n == 0 {
         return;
@@ -155,10 +143,9 @@ fn take_visible_columns(line: &str, columns: usize) -> String {
 #[cfg(unix)]
 fn terminal_width() -> Option<usize> {
     let mut size = std::mem::MaybeUninit::<libc::winsize>::zeroed();
-    // SAFETY: ioctl writes a winsize into the valid out pointer when stderr is a tty.
+
     let result = unsafe { libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, size.as_mut_ptr()) };
     if result == 0 {
-        // SAFETY: ioctl returned success, so the winsize has been initialized.
         let size = unsafe { size.assume_init() };
         (size.ws_col > 0).then_some(size.ws_col as usize)
     } else {
@@ -166,19 +153,10 @@ fn terminal_width() -> Option<usize> {
     }
 }
 
-#[cfg(not(unix))]
-fn terminal_width() -> Option<usize> {
-    None
-}
-
-/// True while a live spinner owns the terminal.
 pub fn is_active() -> bool {
     ACTIVE.load(Ordering::Acquire)
 }
 
-/// A bracketed yellow `[←]` eviction marker for unload notices, mirroring the
-/// green `[→]` load arrow. Empty when stderr is not a terminal, so piped output
-/// stays plain.
 pub fn eviction_marker() -> String {
     if std::io::stderr().is_terminal() {
         format!("[{YELLOW}{EVICTED}{RESET}] ")
@@ -187,7 +165,6 @@ pub fn eviction_marker() -> String {
     }
 }
 
-/// green `[→]` marker for layer notices emitted outside the spinner; empty off-terminal
 pub fn load_marker() -> String {
     if std::io::stderr().is_terminal() {
         format!("[{GREEN}{LOADED}{RESET}] ")
@@ -196,7 +173,6 @@ pub fn load_marker() -> String {
     }
 }
 
-/// Replace the spinner's recent-output tail (shown once long-running).
 pub fn set_recent(lines: Vec<String>) {
     if !is_active() {
         return;
@@ -210,7 +186,6 @@ pub fn set_recent(lines: Vec<String>) {
     }
 }
 
-/// Replace the reconstructed nix progress bar shown below the recent output.
 pub fn set_nix_bar(bar: Option<String>) {
     if !is_active() {
         return;
@@ -223,7 +198,6 @@ pub fn set_nix_bar(bar: Option<String>) {
     }
 }
 
-/// Flip the spinner into its yellow long-running state with a new message.
 pub fn mark_long_running(message: String) {
     if !is_active() {
         return;
@@ -245,7 +219,6 @@ fn durable_recent_block(state: &State) -> Vec<String> {
     lines
 }
 
-/// Emit a stderr line, stepping around the live spinner if one is drawing.
 pub fn log_line(line: &str) {
     if !is_active() {
         eprintln!("{line}");
@@ -264,8 +237,6 @@ pub fn log_line(line: &str) {
     }
 }
 
-/// Start a spinner labelled for `subject` (a path). Inert (a no-op handle) when
-/// stderr is not a terminal, output is quiet, or one is already running.
 pub fn start(subject: &str) -> Spinner {
     if !verbosity::enabled(Verbosity::Normal)
         || !std::io::stderr().is_terminal()
@@ -305,8 +276,6 @@ fn run_loop() {
     }
 }
 
-/// Handle to the running spinner. Resolves to a green tick on [`Spinner::success`]
-/// and, if dropped without one (an error unwound past it), to a red cross.
 pub struct Spinner {
     active: bool,
     resolved: bool,
@@ -314,7 +283,6 @@ pub struct Spinner {
 }
 
 impl Spinner {
-    /// Resolve to a green tick beside `message`.
     pub fn success(mut self, message: &str) {
         self.resolved = true;
         if self.active {
@@ -324,7 +292,6 @@ impl Spinner {
         }
     }
 
-    /// resolve with no message; for a silent recompose where another notice carries the news
     pub fn done(mut self) {
         self.resolved = true;
         if !self.active {

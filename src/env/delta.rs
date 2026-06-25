@@ -1,5 +1,3 @@
-//! environment diffs
-
 use crate::shells::{self, ShellOutput};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -37,7 +35,6 @@ impl EnvDelta {
         let mut changes = EnvDiff::new();
 
         if purified {
-            // clear live and baseline
             for k in live_env.keys().chain(baseline.keys()) {
                 if !is_pure_preserved_key(k) {
                     record_change(&mut changes, k, None);
@@ -51,7 +48,7 @@ impl EnvDelta {
 
         for (k, v) in env {
             let mut value = v.join(":");
-            // append ambient after layers
+
             if !purified
                 && absorb.contains(k)
                 && let Some(amb) = baseline.get(k).filter(|a| !a.is_empty())
@@ -155,7 +152,7 @@ mod tests {
             ]),
         };
         let out = delta.to_json();
-        // strict parse proves escaping
+
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["A"], "x\x1fy");
         assert!(v["B"].is_null());

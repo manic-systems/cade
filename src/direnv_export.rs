@@ -1,13 +1,3 @@
-//! Direnv-compatible JSON export for editors and tools such as Zed.
-//!
-//! `DIRENV_DIFF` only tracks the previous values for variables cade changed.
-//! That keeps repeated `direnv export json` calls idempotent when the caller
-//! preserves the returned project environment between calls.
-//!
-//! This is deliberately not cade's interactive shell path. Shell hooks get
-//! `__CADE_SESSION` snapshots and hook bookkeeping; this adapter returns only
-//! the environment diff expected by direnv-compatible tools.
-
 use crate::env::{EnvDelta, is_shell_managed, live_ambient_env};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -39,9 +29,7 @@ pub struct ExportSession {
 pub fn capture_session(snapshot: Option<HashMap<String, String>>) -> ExportSession {
     let live = live_ambient_env();
     let previous = export_state(&live);
-    // Prefer DIRENV_DIFF when present because it is the only state a direct
-    // direnv caller, such as Zed, carries between invocations. Native cade
-    // shells still use their __CADE_SESSION snapshot as the baseline.
+
     let baseline = previous
         .as_ref()
         .map(|state| state.baseline_from_live(&live))
@@ -60,9 +48,6 @@ pub fn inactive_delta(previous: Option<ExportState>) -> EnvDelta {
         return EnvDelta::empty();
     };
 
-    // Direnv asks for a diff on every directory change. When the new directory
-    // has no active cade project, returning `{}` would leave the old project's
-    // PATH and variables stuck in the editor environment.
     let mut delta = EnvDelta::empty();
     restore_applied(&mut delta, &previous);
     delta.record(DIRENV_DIFF, None);
@@ -81,9 +66,6 @@ pub fn active_delta(
     let applied = tracked_delta_keys(&delta);
 
     if let Some(previous) = previous.as_ref() {
-        // If a variable was changed by the previous activation but is not
-        // produced by the new one, restore its preimage. This is what prevents
-        // stale variables from surviving reloads or project switches.
         for (key, preimage) in previous.tracked_preimages() {
             if delta.contains(key) {
                 continue;
@@ -95,9 +77,6 @@ pub fn active_delta(
     let preimage = applied
         .iter()
         .map(|key| {
-            // Preserve the original preimage across repeated exports. Reading
-            // from `live` here would make PATH grow as callers feed the prior
-            // exported environment back into the next `direnv export json`.
             let value = previous
                 .as_ref()
                 .and_then(|state| state.preimage.get(key).cloned())
@@ -163,9 +142,7 @@ impl ExportState {
 
     fn baseline_from_live(&self, live: &HashMap<String, String>) -> HashMap<String, String> {
         let mut baseline = live_baseline(live);
-        // Reconstruct the user's original environment by undoing only the
-        // variables cade previously touched. Untouched variables are left as
-        // they appear in the caller's current project environment.
+
         for (key, preimage) in &self.preimage {
             match preimage {
                 Some(value) => {

@@ -1,5 +1,3 @@
-//! path topology only
-
 use crate::{config, types::Keyword};
 use std::path::{Path, PathBuf};
 
@@ -21,7 +19,6 @@ fn dir_kind(dir: &Path) -> Option<DirKind> {
     }
 }
 
-// malformed .cade caps like disinherit
 fn caps_the_cascade(dir: &Path) -> bool {
     match crate::cade_file::read(&dir.join(".cade")) {
         Ok(kws) => kws.iter().any(|kw| matches!(kw, Keyword::Disinherit)),
@@ -29,7 +26,6 @@ fn caps_the_cascade(dir: &Path) -> bool {
     }
 }
 
-// tip-first .cade cascade plus nearest .envrc
 pub(super) fn participant_dirs(start: &Path) -> Vec<PathBuf> {
     let mut cade_chain: Vec<PathBuf> = Vec::new();
     let mut nearest_envrc: Option<PathBuf> = None;

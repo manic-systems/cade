@@ -1,5 +1,3 @@
-//! capture the final nix dev-shell process environment
-
 use super::{capture, profile, target::FlakeTarget};
 use crate::{command::run_checked, env::EnvSet};
 use anyhow::{Context, Result};
@@ -49,7 +47,8 @@ fn load_nix_dev_env(
     what: &str,
     profile: Option<&Path>,
 ) -> Result<EnvSet> {
-    let previous_env: HashMap<_, _> = std::env::vars().collect();
+    let mut previous_env: HashMap<_, _> = std::env::vars().collect();
+    capture::remove_cade_managed_env(&mut previous_env, &mut proc);
     proc.current_dir(path);
     if let Some(parent) = profile.and_then(Path::parent) {
         std::fs::create_dir_all(parent)
