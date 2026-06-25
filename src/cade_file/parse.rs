@@ -1,4 +1,7 @@
-use crate::{env::EnvSet, types::*};
+use crate::{
+    env::EnvSet,
+    types::{HookType, InnerHook, Keyword, Loadable},
+};
 use std::{fmt::Display, str::FromStr};
 
 #[derive(Debug)]
@@ -36,7 +39,7 @@ impl FromStr for Keyword {
             return Err(ParseError::EmptyLine);
         }
 
-        use crate::types::Keyword::*;
+        use Keyword::*;
 
         if let Some((lhs, _)) = trimmed.split_once('=') {
             let key = lhs.strip_suffix(':').unwrap_or(lhs).trim_end();
@@ -76,7 +79,7 @@ impl FromStr for Keyword {
                 }
             }
             "hook" => {
-                use crate::types::HookType::*;
+                use HookType::*;
                 let (phase, command) = match rest_raw.split_once(char::is_whitespace) {
                     Some((p, c)) => (p, c.trim_start()),
                     None => (rest_raw, ""),
@@ -91,7 +94,7 @@ impl FromStr for Keyword {
                 if content.is_empty() {
                     return Err(ParseError::TooFewOptions);
                 }
-                Hook(crate::types::InnerHook {
+                Hook(InnerHook {
                     kind,
                     content: content.to_string(),
                 })

@@ -1,12 +1,15 @@
 mod activation;
 mod cache;
+mod enter;
 mod layer;
-mod lifecycle;
 mod participants;
 mod permissions;
+mod reload;
+mod restore;
 mod sessions;
 mod shell_state;
 mod snapshot;
+mod status;
 mod watch;
 
 use participants::{find_cade_root, participant_dirs};
