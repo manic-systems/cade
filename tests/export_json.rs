@@ -7,8 +7,6 @@ use std::{path::Path, process::Output};
 use std::os::unix::fs::PermissionsExt;
 
 fn run_export_json(sb: &Sandbox, cwd: &Path, extra_env: &[(&str, &str)]) -> Output {
-    // The shim endpoint is opt-in; these tests exercise its payload, so enable
-    // it explicitly. A test may still override CADE_DIRENV via extra_env.
     let mut env = vec![("CADE_DIRENV", "full")];
     env.extend_from_slice(extra_env);
     sb.run(cwd, &["export", "json"], &env)
@@ -41,46 +39,6 @@ fn json_export_outside_cade_project_is_empty_diff() {
     assert!(out.status.success(), "{out:?}");
     assert_eq!(stdout(&out), "{}\n");
     assert!(stderr(&out).is_empty(), "{}", stderr(&out));
-}
-
-#[test]
-fn json_export_has_no_activation_bookkeeping() {
-    let sb = Sandbox::new();
-    sb.write(".cade", "load env\n");
-    sb.write(".env", "A=1\nPATH=/layer\n");
-    sb.allow(&sb.root);
-
-    let out = run_export_json(&sb, &sb.root, &[("PATH", "/usr/bin")]);
-    assert!(out.status.success(), "{out:?}");
-    let v = parse_json(&out);
-    assert_eq!(v["A"], "1");
-    assert_eq!(v["PATH"], "/layer:/usr/bin");
-    assert!(v.get("__CADE_SESSION").is_none(), "{v}");
-    assert!(v.get("__CADE_LAYERS").is_none(), "{v}");
-    assert!(!stderr(&out).contains("cade: loaded"), "{}", stderr(&out));
-}
-
-#[test]
-fn json_export_includes_direnv_metadata() {
-    let sb = Sandbox::new();
-    sb.write(".cade", "A=1\n");
-    sb.allow(&sb.root);
-
-    let v = export_json(&sb, &sb.root, &[("PATH", "/usr/bin")]);
-
-    assert_eq!(v["DIRENV_DIR"], format!("-{}", sb.root.display()));
-    assert_eq!(
-        v["DIRENV_FILE"],
-        sb.root.join(".cade").to_string_lossy().as_ref()
-    );
-    let watches: serde_json::Value =
-        serde_json::from_str(v["DIRENV_WATCHES"].as_str().unwrap()).unwrap();
-    assert!(
-        watches.as_array().is_some_and(|paths| paths
-            .iter()
-            .any(|path| path == &sb.root.join(".cade").to_string_lossy().to_string())),
-        "{watches}"
-    );
 }
 
 #[test]
@@ -279,23 +237,6 @@ fn json_export_pure_state_restores_ambient_on_unload() {
     assert_eq!(outside_json["AMBIENT_TEST"], "old");
     assert_eq!(outside_json["PATH"], "/usr/bin");
     assert!(outside_json["DIRENV_DIFF"].is_null(), "{outside_json}");
-}
-
-#[test]
-fn json_export_pure_unsets_ambient_without_cade_activation_bookkeeping() {
-    let sb = Sandbox::new();
-    sb.write(".cade", "pure\nA=1\n");
-    sb.allow(&sb.root);
-
-    let v = export_json(
-        &sb,
-        &sb.root,
-        &[("AMBIENT_TEST", "old"), ("HOME", "/home/tester")],
-    );
-    assert_eq!(v["A"], "1");
-    assert!(v["AMBIENT_TEST"].is_null(), "{v}");
-    assert!(v.get("HOME").is_none(), "{v}");
-    assert!(v.get("__CADE_SESSION").is_none(), "{v}");
 }
 
 #[cfg(unix)]

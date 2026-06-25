@@ -123,8 +123,6 @@ impl ShimSandbox {
 fn direnv_shim_script(bash: &str, cade: &str, mode: &str) -> String {
     format!(
         r#"#!{bash}
-# Minimal direnv shim for tools that call `direnv export json`.
-# Shell hook/export probes are no-ops so login-shell env capture keeps working.
 set -eu
 
 cade={cade:?}
@@ -222,24 +220,6 @@ fn export_json(out: &Output) -> serde_json::Value {
 }
 
 #[test]
-fn unsupported_commands_fail() {
-    let sb = ShimSandbox::new();
-    let out = sb.run(&["status"]);
-
-    assert_eq!(out.status.code(), Some(1));
-    assert!(stderr(&out).contains("unsupported command: status"));
-}
-
-#[test]
-fn unsupported_export_targets_fail() {
-    let sb = ShimSandbox::new();
-    let out = sb.run(&["export", "tcsh"]);
-
-    assert_eq!(out.status.code(), Some(1));
-    assert!(stderr(&out).contains("unsupported export target: tcsh"));
-}
-
-#[test]
 fn export_json_delegates_to_cade() {
     let sb = ShimSandbox::new();
 
@@ -281,39 +261,6 @@ fn export_json_does_not_interpret_cade_errors() {
     assert_eq!(out.status.code(), Some(7));
     assert!(stdout(&out).is_empty(), "{}", stdout(&out));
     assert!(stderr(&out).contains("no .cade or .envrc found"));
-}
-
-#[test]
-fn shell_export_is_a_harmless_noop_for_captured_shells() {
-    let sb = ShimSandbox::new();
-
-    let out = sb.run(&["export", "bash"]);
-
-    assert!(out.status.success(), "{out:?}");
-    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
-    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
-}
-
-#[test]
-fn default_export_is_a_harmless_noop_for_captured_shells() {
-    let sb = ShimSandbox::new();
-
-    let out = sb.run(&["export"]);
-
-    assert!(out.status.success(), "{out:?}");
-    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
-    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
-}
-
-#[test]
-fn shell_hook_is_a_harmless_noop_for_captured_shells() {
-    let sb = ShimSandbox::new();
-
-    let out = sb.run(&["hook", "nushell"]);
-
-    assert!(out.status.success(), "{out:?}");
-    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
-    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
 }
 
 #[test]

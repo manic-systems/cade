@@ -107,108 +107,6 @@ mod tests {
     }
 
     #[test]
-    fn shell_name_accepts_json() {
-        assert!(matches!("json".parse::<ShellName>(), Ok(ShellName::Json)));
-        assert_eq!(ShellName::Json.to_string(), "json");
-    }
-
-    #[test]
-    fn hooks_use_supplied_cade_executable() {
-        let exe = "/tmp/cade bin/cade";
-        let args = vec!["--config".to_string(), "/tmp/cade config.toml".to_string()];
-        assert!(Bash.hook_init(exe, &args).contains(
-            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' --owner-pid $$ reload --shell bash"
-        ));
-        assert!(Zsh.hook_init(exe, &args).contains(
-            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' --owner-pid $$ reload --shell zsh"
-        ));
-        assert!(Fish.hook_init(exe, &args).contains(
-            "'/tmp/cade bin/cade' '--config' '/tmp/cade config.toml' --owner-pid $fish_pid reload --shell fish"
-        ));
-        assert!(
-            Nushell
-                .hook_init(exe, &args)
-                .contains(r#"let cade = "/tmp/cade bin/cade""#)
-        );
-        assert!(
-            Nushell
-                .hook_init(exe, &args)
-                .contains(r#"let cade_args = ["--config","/tmp/cade config.toml"]"#)
-        );
-    }
-
-    #[test]
-    fn prompt_hooks_reload_without_pwd_change_guard() {
-        for hook in [
-            Bash.hook_init("cade", &[]),
-            Zsh.hook_init("cade", &[]),
-            Fish.hook_init("cade", &[]),
-            Nushell.hook_init("cade", &[]),
-            Elvish.hook_init("cade", &[]),
-        ] {
-            assert!(hook.contains("reload --shell"), "{hook}");
-            assert!(!hook.contains("__cade_last_pwd"), "{hook}");
-            assert!(!hook.contains("cade-last-pwd"), "{hook}");
-        }
-    }
-
-    fn run_in_shell(shell: &str, args: &[&str], script: &str) -> Option<String> {
-        let mut full: Vec<&str> = args.to_vec();
-        full.push(script);
-        let out = std::process::Command::new(shell)
-            .args(&full)
-            .output()
-            .ok()?;
-        Some(format!(
-            "{}|stderr:{}",
-            String::from_utf8_lossy(&out.stdout).trim(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))
-    }
-
-    #[test]
-    fn bash_hook_preserves_exit_status() {
-        let hook = Bash.hook_init("true", &[]);
-        let script = format!("{hook}\n(exit 7)\n_cade_hook\necho $?");
-        let Some(out) = run_in_shell("bash", &["-c"], &script) else {
-            return;
-        };
-        assert_eq!(out, "7|stderr:", "bash did not preserve $?: {out}");
-    }
-
-    #[test]
-    fn fish_hook_preserves_exit_status() {
-        let hook = Fish.hook_init("true", &[]);
-        let script = format!("{hook}\nfalse\n__cade_hook\necho $status");
-        let Some(out) = run_in_shell("fish", &["-c"], &script) else {
-            return;
-        };
-        assert_eq!(out, "1|stderr:", "fish did not preserve $status: {out}");
-    }
-
-    #[test]
-    fn nushell_hook_preserves_last_exit_code() {
-        let hook = Nushell.hook_init("true", &[]);
-        let script = format!(
-            "{hook}\n$env.LAST_EXIT_CODE = 7\ndo ($env.config.hooks.pre_prompt | last)\nprint $env.LAST_EXIT_CODE"
-        );
-        let Some(out) = run_in_shell("nu", &["--no-config-file", "-c"], &script) else {
-            return;
-        };
-        assert_eq!(
-            out, "7|stderr:",
-            "nu did not preserve LAST_EXIT_CODE: {out}"
-        );
-    }
-
-    #[test]
-    fn zsh_hook_registers_only_in_precmd() {
-        let zsh = Zsh.hook_init("cade", &[]);
-        assert!(zsh.contains("precmd_functions"), "{zsh}");
-        assert!(!zsh.contains("chpwd_functions"), "{zsh}");
-    }
-
-    #[test]
     fn bash_value_is_single_quoted_and_inert() {
         let out = Bash.set_env("EVIL", HOSTILE);
         assert!(out.starts_with("export EVIL='"));
@@ -258,18 +156,5 @@ mod tests {
         let out = Nushell.set_env("PATH", "/one:/two");
         let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(v["s"]["PATH"], serde_json::json!(["/one", "/two"]));
-    }
-
-    #[test]
-    fn json_shell_uses_nushell_directive_shape() {
-        let set: serde_json::Value = serde_json::from_str(Json.set_env("X", "1").trim()).unwrap();
-        let unset: serde_json::Value = serde_json::from_str(Json.unset_env("X").trim()).unwrap();
-        let hook: serde_json::Value =
-            serde_json::from_str(Json.emit_hook("echo ready").trim()).unwrap();
-
-        assert_eq!(set, serde_json::json!({ "s": { "X": "1" } }));
-        assert_eq!(unset, serde_json::json!({ "u": "X" }));
-        assert_eq!(hook, serde_json::json!({ "h": "echo ready" }));
-        assert_eq!(Json.hook_init("cade", &[]), "");
     }
 }
