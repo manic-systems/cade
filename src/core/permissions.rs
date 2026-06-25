@@ -10,7 +10,7 @@ impl Cade {
         if !permission {
             return self.set_permission(&root, false);
         }
-        // gap-fill follows participants not parents
+
         let chain = participant_dirs(&root);
         if chain.is_empty() {
             return Ok(());
@@ -41,7 +41,6 @@ impl Cade {
         Ok(())
     }
 
-    // silent db write
     fn record_permission(&self, path: &Path, permission: bool) -> Result<()> {
         self.db.execute(
             "INSERT OR REPLACE INTO WorkingPaths (Path, Permission) VALUES (:path, :perm);",
@@ -79,7 +78,6 @@ impl Cade {
         }
     }
 
-    // tip first run anchored at the deepest approval
     fn approved_participants(&mut self, participants: &[PathBuf]) -> Result<Vec<PathBuf>> {
         let mut active = Vec::new();
         let mut anchored = false;

@@ -29,7 +29,6 @@ fn try_main() -> Result<()> {
     }
     use cli::pound::CliAction::*;
 
-    // static hook path
     if let Hook { shell } = &args.action {
         let shell_name: crate::shells::ShellName = (*shell).into();
         let output = shell_name.get_output();
@@ -105,7 +104,7 @@ fn try_main() -> Result<()> {
                 .spawn()
                 .context("spawn editor process")?;
             session.wait().context("wait for editor process")?;
-            // edit targets ./.cade
+
             let cwd = std::env::current_dir().context("determine cwd")?;
             cade.set_permission(&cwd, true)?;
         }
@@ -132,7 +131,6 @@ fn try_main() -> Result<()> {
 
 fn main() {
     if let Err(e) = try_main() {
-        // keep the context chain
         eprintln!("failed to {e:#}");
         std::process::exit(1);
     }

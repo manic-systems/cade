@@ -112,7 +112,6 @@ impl Cade {
         }))
     }
 
-    // nix cache hits must still point at live store paths
     fn reusable_cached_layer(
         &self,
         dir: &str,
@@ -148,7 +147,6 @@ impl Cade {
             .filter(|s| is_valid_session(s))
         {
             Some(session) => {
-                // never baseline from a mutated cade env
                 let baseline = self.read_snapshot(&session).unwrap_or_else(|| live.clone());
                 Ok((ActivationEnv { live, baseline }, session, false))
             }
@@ -187,7 +185,7 @@ impl Cade {
         let Some(root) = find_cade_root(&self.cwd) else {
             return Ok(direnv_export::inactive_delta(export.previous));
         };
-        // direnv cannot persist cade session env
+
         let session = direnv_session_id(client_id, owner_pid)
             .unwrap_or_else(|| direnv_fallback_session_id(&root));
         let Some(plan) = self.maybe_activation_plan_for_root(root, Some(&session))? else {

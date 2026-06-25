@@ -25,7 +25,12 @@ impl CadeLayer {
                 self.purify = true;
             }
             Environ(env) => {
-                self.nix_store_paths.extend(self.envs.merge_layer_env(env));
+                let merged = self.envs.merge_layer_env(env);
+                for key in merged.sets {
+                    self.clears.remove(&key);
+                }
+                self.clears.extend(merged.clears);
+                self.nix_store_paths.extend(merged.store_paths);
             }
             Hook(hook) => {
                 self.hooks.push(hook);
@@ -63,7 +68,6 @@ impl Loadable {
         }
     }
 
-    // one target owns loading and watching
     pub(super) fn resolve(&self, layer_dir: &Path) -> ResolvedLoad {
         use crate::path_resolve::resolve_for_watch;
         match self {
@@ -72,9 +76,9 @@ impl Loadable {
                     Loadable::Flake(a) => Some(a.as_str()),
                     _ => None,
                 };
-                // let nix report missing flake dirs
+
                 let target = crate::nix::resolve_flake_target(layer_dir, arg);
-                let watch = vec![target.cwd.join("flake.nix"), target.cwd.join("flake.lock")];
+                let watch = crate::nix::flake_watch_files(&target.cwd);
                 ResolvedLoad {
                     spec: target.spec.clone(),
                     watch,
@@ -150,7 +154,7 @@ pub(super) fn load_single_layer(
             Clear(vars) => Ok(CadeAction::Clear(vars.clone())),
             Concat(vars) => Ok(CadeAction::Concat(vars.clone())),
             Set(env) => Ok(CadeAction::Environ(env.clone())),
-            // chain only
+
             Watch(_) | Disinherit => continue,
         }?;
         layer.push_action(act);

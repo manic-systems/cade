@@ -6,7 +6,6 @@ const BIN: &str = env!("CARGO_BIN_EXE_cade");
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-/// An isolated sandbox: a project tree plus a private cade state directory.
 pub struct Sandbox {
     pub root: PathBuf,
     pub state: PathBuf,
@@ -35,15 +34,12 @@ impl Sandbox {
         p
     }
 
-    /// Write a pre-activation snapshot for `session` (as cade stores it under
-    /// the state dir), so restore tests can simulate an active session.
     pub fn write_snapshot(&self, session: &str, contents: &str) {
         let dir = self.state.join("cade").join("snapshots");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(format!("{session}.env")), contents).unwrap();
     }
 
-    /// Run `cade <args>` in `cwd` with an isolated, mostly-empty environment.
     pub fn run(&self, cwd: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
         let mut cmd = Command::new(BIN);
         cmd.args(args)

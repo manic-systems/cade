@@ -1,14 +1,5 @@
-//! resolve loader target paths against a layer's own directory
-//!
-//! relative paths resolve against the layer dir; `.`, `..`, absolute paths, and
-//! a leading `~/` (expanded to $HOME) are all accepted. trust is the allowed
-//! layer dir: a directed target is still just a nix/dotenv source inside an
-//! already-approved layer, never a cade layer of its own
-
 use std::path::{Path, PathBuf};
 
-/// expand a leading `~`/`~/...` to $HOME; other uses of `~` are left untouched,
-/// matching the conservative expansion shells apply
 fn expand_tilde(arg: &str) -> PathBuf {
     expand_tilde_with(arg, home_dir())
 }
@@ -32,10 +23,6 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// resolve `arg` against the layer dir without requiring the result to exist.
-/// absolute and `~`-prefixed args are taken as is, everything else joins onto
-/// `layer_dir`. normalised lexically, not canonicalised, so it works for
-/// not-yet-created paths
 pub fn resolve_against(layer_dir: &Path, arg: &str) -> PathBuf {
     let expanded = expand_tilde(arg);
     let joined = if expanded.is_absolute() {
@@ -46,16 +33,11 @@ pub fn resolve_against(layer_dir: &Path, arg: &str) -> PathBuf {
     normalize_lexical(&joined)
 }
 
-/// watch-set identity: the canonical path when the target exists (matching the
-/// gc-root/spec key the load path derives), else the lexical path so creating
-/// the file still trips the watcher
 pub fn resolve_for_watch(layer_dir: &Path, arg: &str) -> PathBuf {
     std::fs::canonicalize(resolve_against(layer_dir, arg))
         .unwrap_or_else(|_| resolve_against(layer_dir, arg))
 }
 
-/// collapse `.` and `..` lexically, leaving symlinks alone, so a target's path
-/// is stable for hashing/watching even before it exists
 fn normalize_lexical(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
@@ -63,7 +45,6 @@ fn normalize_lexical(path: &Path) -> PathBuf {
         match component {
             Component::CurDir => {}
             Component::ParentDir => match out.components().next_back() {
-                // keep `..` that can't be collapsed
                 Some(Component::Normal(_)) => {
                     out.pop();
                 }
@@ -110,9 +91,6 @@ mod tests {
 
     #[test]
     fn watch_canonicalises_through_symlink() {
-        // the watch set and the gc-root/spec key both derive from
-        // resolve_for_watch, so the same physical file reached via a symlink
-        // shares one identity and an edit through it trips the watcher
         let base = std::env::temp_dir().join(format!(
             "cade-symlink-{}-{}",
             std::process::id(),
@@ -125,7 +103,6 @@ mod tests {
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
-        // both the symlinked dir and the real dir resolve to one canonical file
         let via_link = resolve_for_watch(&link, ".env");
         let via_real = resolve_for_watch(&real, ".env");
         assert_eq!(via_link, via_real);
@@ -136,7 +113,6 @@ mod tests {
 
     #[test]
     fn watch_falls_back_to_lexical_when_missing() {
-        // a not-yet-created file still gets a watch entry so creating it reloads
         assert_eq!(
             resolve_for_watch(Path::new("/no/such/layer"), "shell.nix"),
             PathBuf::from("/no/such/layer/shell.nix")
@@ -151,7 +127,7 @@ mod tests {
             PathBuf::from("/home/tester/proj")
         );
         assert_eq!(expand_tilde_with("~", home), PathBuf::from("/home/tester"));
-        // bare `~user` (no slash) left untouched, like shells
+
         assert_eq!(
             expand_tilde_with("~other/x", Some(PathBuf::from("/home/tester"))),
             PathBuf::from("~other/x")

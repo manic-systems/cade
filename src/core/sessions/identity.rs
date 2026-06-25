@@ -4,7 +4,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-// atomic rename avoids partial state files
 pub(in crate::core) fn atomic_write(path: &Path, body: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let stem = path.file_name().and_then(|n| n.to_str()).unwrap_or("cade");
@@ -27,7 +26,6 @@ pub(super) fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-// path-safe session ids only
 pub(in crate::core) fn is_valid_session(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 128
@@ -123,19 +121,9 @@ pub(super) fn process_start_time(pid: u32) -> Option<String> {
         .then(|| format!("{}-{}", info.pbi_start_tvsec, info.pbi_start_tvusec))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(super) fn process_start_time(_pid: u32) -> Option<String> {
-    None
-}
-
 #[cfg(unix)]
 pub(super) fn parent_pid() -> Option<u32> {
     u32::try_from(unsafe { libc::getppid() }).ok()
-}
-
-#[cfg(not(unix))]
-pub(super) fn parent_pid() -> Option<u32> {
-    None
 }
 
 pub(super) fn process_holder_is_live(pid: u32, start_time: &str) -> bool {
