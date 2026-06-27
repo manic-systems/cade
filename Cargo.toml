@@ -1,6 +1,6 @@
 [package]
 name = "cade"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 license = "EUPL-1.2"
 description = "an intelligent, cascading environment manager"

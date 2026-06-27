@@ -57,27 +57,27 @@ pub enum CliAction {
         #[pound(long)]
         shell: CliShell,
     },
-    /// Deactivate cade and restore the shell environment from its snapshot.
+
     Exit {
         #[pound(long)]
         shell: CliShell,
     },
-    /// Re-evaluate cade after a directory change and update the shell.
+
     Reload {
         #[pound(long)]
         shell: CliShell,
     },
-    /// Allow cade to load the current .cade directory.
+
     Allow,
-    /// Block cade from loading the current .cade directory.
+
     Disallow,
-    /// Open ./.cade in $EDITOR and allow this directory.
+
     Edit,
-    /// Print shell hook initialization code.
+
     Hook {
         shell: CliShell,
     },
-    /// Internal compatibility endpoint used by the direnv shim.
+
     #[pound(hidden)]
     Export {
         format: CliExportFormat,
@@ -87,7 +87,7 @@ pub enum CliAction {
         #[pound(subcommand)]
         action: LeaseAction,
     },
-    /// Show activation state, layer chain, permissions, and leases.
+
     Status,
 }
 
@@ -103,7 +103,7 @@ pub enum LeaseAction {
         #[pound(long)]
         ttl_seconds: Option<u64>,
     },
-    /// Extend an existing client lease.
+
     Refresh {
         #[pound(long)]
         client_id: String,
@@ -111,7 +111,7 @@ pub enum LeaseAction {
         #[pound(long)]
         ttl_seconds: Option<u64>,
     },
-    /// Close an existing client lease.
+
     Close {
         #[pound(long)]
         client_id: String,
