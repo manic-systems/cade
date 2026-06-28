@@ -1,6 +1,10 @@
-use super::layer::tokenize_args;
+use super::{
+    Cade,
+    layer::tokenize_args,
+    sessions::{atomic_write, is_valid_session, stable_hash_hex},
+};
 use crate::types::Keyword;
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -83,6 +87,36 @@ impl WatchState {
     }
 }
 
+impl Cade {
+    // Named by hash rather than session so a subshell's reload doesn't
+    // replace the file its parent still diffs against.
+    pub(super) fn persist_watch_state(
+        &self,
+        session: &str,
+        watches: &WatchState,
+    ) -> Result<String> {
+        if !is_valid_session(session) {
+            bail!("invalid cade session id")
+        }
+        let body = serde_json::to_vec(watches).context("serialize watch state")?;
+        let dir = self.state_dir.join("watches");
+        std::fs::create_dir_all(&dir).context("create watches dir")?;
+        let hash = stable_hash_hex(&String::from_utf8_lossy(&body));
+        let path = dir.join(format!("{session}-{hash}.json"));
+        atomic_write(&path, &body).context("write watch state")?;
+        Ok(path.to_string_lossy().to_string())
+    }
+}
+
+// Inline json is the pre-file format still living in older shells.
+pub fn load_watch_ref(raw: &str) -> Option<WatchState> {
+    if raw.starts_with('{') {
+        return serde_json::from_str(raw).ok();
+    }
+    let body = std::fs::read_to_string(raw).ok()?;
+    serde_json::from_str(&body).ok()
+}
+
 pub(super) fn watched_files_for_keywords(dir: &Path, keywords: &[Keyword]) -> Result<Vec<PathBuf>> {
     let mut files = vec![dir.join(".cade")];
     for kw in keywords {
@@ -150,6 +184,37 @@ mod tests {
         let state: WatchState = serde_json::from_str(raw).unwrap();
 
         assert!(state.files_changed());
+    }
+
+    #[test]
+    fn watch_ref_stays_short_for_huge_watch_lists() {
+        let state_dir = std::env::temp_dir().join(format!("cade-watchref-{}", std::process::id()));
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let cade = Cade {
+            db: rusqlite::Connection::open_in_memory().unwrap(),
+            cwd: state_dir.clone(),
+            state_dir: state_dir.clone(),
+        };
+        let files = (0..5000)
+            .map(|i| PathBuf::from(format!("/project/third_party/component-{i}/package.json")))
+            .collect::<Vec<PathBuf>>();
+        let state = WatchState::capture(
+            Path::new("/project"),
+            vec![PathBuf::from("/project")],
+            &files,
+        );
+
+        let watch_ref = cade.persist_watch_state("bigsession", &state).unwrap();
+
+        assert!(watch_ref.len() < 512);
+        assert_eq!(load_watch_ref(&watch_ref).unwrap().files.len(), 5000);
+        std::fs::remove_dir_all(state_dir).ok();
+    }
+
+    #[test]
+    fn load_watch_ref_reads_legacy_inline_json() {
+        let raw = r#"{"version":"layer-cache-v3","root":"/project","cade_paths":["/project"],"files":[]}"#;
+        assert_eq!(load_watch_ref(raw).unwrap().root_string(), "/project");
     }
 
     #[test]

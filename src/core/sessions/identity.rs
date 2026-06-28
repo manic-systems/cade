@@ -75,7 +75,7 @@ pub(in crate::core) fn new_session_id() -> String {
     format!("{}-{nanos}", std::process::id())
 }
 
-pub(super) fn stable_hash_hex(text: &str) -> String {
+pub fn stable_hash_hex(text: &str) -> String {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in text.as_bytes() {
         hash ^= u64::from(*byte);

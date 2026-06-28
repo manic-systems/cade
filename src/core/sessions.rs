@@ -10,6 +10,7 @@ use std::time::Duration;
 use identity::validate_client_id;
 pub(super) use identity::{
     atomic_write, direnv_fallback_session_id, direnv_session_id, is_valid_session, new_session_id,
+    stable_hash_hex,
 };
 
 const DEFAULT_SHELL_GC_ROOT_TTL_SECS: u64 = 30 * 24 * 3600;

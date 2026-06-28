@@ -37,12 +37,14 @@ pub(super) struct ShellState {
     pure: bool,
     hooks: Vec<InnerHook>,
     watches: Option<WatchState>,
+    watches_ref: Option<String>,
 }
 
 impl ShellState {
     pub(super) fn from_env() -> Self {
         let layers = std::env::var(LAYERS_VAR).ok();
         let set = std::env::var(SET_VAR).ok();
+        let watches_ref = std::env::var(WATCHES_VAR).ok();
         Self {
             layers_present: layers.is_some(),
             session: std::env::var(SESSION_VAR).ok(),
@@ -61,9 +63,10 @@ impl ShellState {
                 .ok()
                 .and_then(|h| serde_json::from_str(&h).ok())
                 .unwrap_or_default(),
-            watches: std::env::var(WATCHES_VAR)
-                .ok()
-                .and_then(|w| serde_json::from_str(&w).ok()),
+            watches: watches_ref
+                .as_deref()
+                .and_then(super::watch::load_watch_ref),
+            watches_ref,
         }
     }
 
@@ -77,7 +80,7 @@ impl ShellState {
         unset_keys: Vec<String>,
         pure: bool,
         hooks: Vec<InnerHook>,
-        watches: WatchState,
+        watches_ref: String,
     ) -> Self {
         Self {
             layers_present: true,
@@ -90,7 +93,8 @@ impl ShellState {
             unset_keys,
             pure,
             hooks,
-            watches: Some(watches),
+            watches: None,
+            watches_ref: Some(watches_ref),
         }
     }
 
@@ -155,11 +159,8 @@ impl ShellState {
             HOOKS_VAR,
             &serde_json::to_string(&self.hooks).unwrap_or_default(),
         ));
-        if let Some(watches) = &self.watches {
-            out.push_str(&shell.set_env(
-                WATCHES_VAR,
-                &serde_json::to_string(watches).unwrap_or_default(),
-            ));
+        if let Some(watches_ref) = &self.watches_ref {
+            out.push_str(&shell.set_env(WATCHES_VAR, watches_ref));
         }
         out
     }

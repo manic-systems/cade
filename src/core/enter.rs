@@ -43,6 +43,9 @@ impl Cade {
 
         let layer_paths: Vec<_> = plan.cade_files.iter().map(|(p, _)| p.clone()).collect();
         let set_keys: Vec<String> = rollup.set_keys().into_iter().map(str::to_string).collect();
+        let watch_state =
+            WatchState::capture(&plan.root, layer_paths.clone(), &plan.all_watch_files);
+        let watches_ref = self.persist_watch_state(&session, &watch_state)?;
         let shell_state = super::shell_state::ShellState::active(
             session.clone(),
             layer_paths.clone(),
@@ -52,7 +55,7 @@ impl Cade {
             rollup.unset().to_vec(),
             rollup.purified(),
             rollup.hooks().to_vec(),
-            WatchState::capture(&plan.root, layer_paths.clone(), &plan.all_watch_files),
+            watches_ref,
         );
         print!("{}", shell_state.render_activation(shell, new_session));
 
