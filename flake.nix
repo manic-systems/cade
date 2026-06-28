@@ -18,6 +18,18 @@
           pkgs.wild
           pkgs.clang
         ];
+      devPackages =
+        pkgs: system:
+        [
+          pkgs.rustc
+          pkgs.cargo
+          pkgs.rust-analyzer
+          fenix.packages.${system}.latest.rustfmt
+          pkgs.clippy
+          pkgs.just
+          pkgs.sqlite
+        ]
+        ++ nativeDeps pkgs;
       testShells = pkgs: [
         pkgs.bashInteractive
         pkgs.zsh
@@ -76,17 +88,14 @@
         pkgs: system: {
           default = pkgs.mkShell {
             RUSTFLAGS = "-C prefer-dynamic=yes";
-            packages = [
-              pkgs.rustc
-              pkgs.cargo
-              pkgs.rust-analyzer
-              fenix.packages.${system}.latest.rustfmt
-              pkgs.clippy
-              pkgs.just
-              pkgs.sqlite
-            ]
-            ++ nativeDeps pkgs
-            ++ testShells pkgs;
+            packages = devPackages pkgs system;
+          };
+
+          # Separate from `default` so `load flake` doesn't shadow the user's own
+          # interactive shells on PATH. Run the suite with `nix develop .#test`.
+          test = pkgs.mkShell {
+            RUSTFLAGS = "-C prefer-dynamic=yes";
+            packages = devPackages pkgs system ++ testShells pkgs;
           };
 
           fmt = pkgs.mkShellNoCC {
