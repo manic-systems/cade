@@ -12,6 +12,51 @@ const FLAKE_WATCH_EXCLUDED_DIRS: &[&str] = &[
     "outputs",
 ];
 
+// Dependency manifests nix may read to build a dev shell
+const FLAKE_WATCH_MANIFESTS: &[&str] = &[
+    "Cargo.toml",
+    "rust-toolchain",
+    "rust-toolchain.toml",
+    "go.mod",
+    "go.sum",
+    "gomod2nix.toml",
+    "package.json",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "pnpm-lock.yaml",
+    "bun.lock",
+    "bun.lockb",
+    "pyproject.toml",
+    "requirements.txt",
+    "Pipfile",
+    "setup.py",
+    "setup.cfg",
+    "composer.json",
+    "Gemfile",
+    "mix.exs",
+    "pubspec.yaml",
+    "stack.yaml",
+    "package.yaml",
+    "cabal.project",
+    "cabal.project.freeze",
+    "shard.yml",
+    "build.zig.zon",
+    "packages.lock.json",
+    "pom.xml",
+    "dune-project",
+    "Package.swift",
+    "Package.resolved",
+    "cpanfile",
+    "rebar.config",
+];
+
+fn is_flake_input_file(name: &str) -> bool {
+    matches!(
+        Path::new(name).extension().and_then(|ext| ext.to_str()),
+        Some("nix" | "lock" | "cabal" | "opam")
+    ) || FLAKE_WATCH_MANIFESTS.contains(&name)
+}
+
 pub struct FlakeTarget {
     pub cwd: PathBuf,
     pub installable: String,
@@ -95,15 +140,11 @@ fn collect_flake_watch_files(path: &Path, out: &mut Vec<PathBuf>) {
                 collect_flake_watch_files(&child, out);
             }
         } else if (file_type.is_file() || file_type.is_symlink())
-            && !file_name.is_some_and(is_nix_result_link)
+            && file_name.is_some_and(is_flake_input_file)
         {
             out.push(child);
         }
     }
-}
-
-fn is_nix_result_link(name: &str) -> bool {
-    name == "result" || name.starts_with("result-")
 }
 
 #[cfg(test)]
@@ -177,17 +218,29 @@ mod tests {
         std::fs::write(root.join("result"), "").unwrap();
         std::fs::write(root.join("result-dev"), "").unwrap();
         std::fs::write(root.join("target").join("generated.nix"), "").unwrap();
+        // dependency manifests nix may read still need watching
+        std::fs::write(root.join("Cargo.lock"), "").unwrap();
+        std::fs::write(root.join("gomod2nix.toml"), "").unwrap();
+        std::fs::write(root.join("nix").join("requirements.txt"), "").unwrap();
+        // plain source is irrelevant to the dev env and must not be watched
+        std::fs::write(root.join("main.cpp"), "").unwrap();
+        std::fs::write(root.join("nix").join("notes.md"), "").unwrap();
 
         let watch = flake_watch_files(&root);
 
         assert!(watch.contains(&root.join("flake.nix")));
         assert!(watch.contains(&root.join(".tack").join("default.nix")));
         assert!(watch.contains(&root.join("nix").join("package.nix")));
+        assert!(watch.contains(&root.join("Cargo.lock")));
+        assert!(watch.contains(&root.join("gomod2nix.toml")));
+        assert!(watch.contains(&root.join("nix").join("requirements.txt")));
         assert!(!watch.contains(&root));
         assert!(!watch.contains(&root.join(".jj").join("repo")));
         assert!(!watch.contains(&root.join("result")));
         assert!(!watch.contains(&root.join("result-dev")));
         assert!(!watch.contains(&root.join("target").join("generated.nix")));
+        assert!(!watch.contains(&root.join("main.cpp")));
+        assert!(!watch.contains(&root.join("nix").join("notes.md")));
 
         std::fs::remove_dir_all(&root).ok();
     }
