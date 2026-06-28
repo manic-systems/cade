@@ -50,12 +50,22 @@ impl Cade {
 
     pub(in crate::core) fn gc_state(&self, protected_session: Option<&str>) {
         let live_sessions = self.gc_shell_roots(protected_session);
-        self.gc_snapshots(&live_sessions);
+        self.gc_session_files(&self.state_dir.join("snapshots"), &live_sessions, |name| {
+            name.strip_suffix(".env")
+        });
+        self.gc_session_files(&self.state_dir.join("watches"), &live_sessions, |name| {
+            name.strip_suffix(".json")?.rsplit_once('-').map(|(s, _)| s)
+        });
     }
 
-    fn gc_snapshots(&self, live_sessions: &HashSet<String>) {
+    fn gc_session_files(
+        &self,
+        dir: &Path,
+        live_sessions: &HashSet<String>,
+        session_of: fn(&str) -> Option<&str>,
+    ) {
         let max_age = shell_gc_root_ttl();
-        let Ok(entries) = std::fs::read_dir(self.state_dir.join("snapshots")) else {
+        let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
         for entry in entries.flatten() {
@@ -63,7 +73,7 @@ impl Cade {
             let active = path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .and_then(|n| n.strip_suffix(".env"))
+                .and_then(session_of)
                 .map(|session| live_sessions.contains(session))
                 .unwrap_or(false);
             if active {
@@ -354,6 +364,42 @@ impl Cade {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gc_state_removes_stale_watch_files_for_dead_sessions_only() {
+        let state_dir = std::env::temp_dir().join(format!(
+            "cade-gc-watches-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let watches = state_dir.join("watches");
+        std::fs::remove_dir_all(&state_dir).ok();
+        std::fs::create_dir_all(&watches).unwrap();
+        let dead = watches.join("deadsession-0123456789abcdef.json");
+        let live = watches.join("livesession-0123456789abcdef.json");
+        let long_ago =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(400 * 24 * 3600);
+        for path in [&dead, &live] {
+            std::fs::write(path, b"{}").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(long_ago)
+                .unwrap();
+        }
+        let cade = Cade {
+            db: rusqlite::Connection::open_in_memory().unwrap(),
+            cwd: state_dir.clone(),
+            state_dir: state_dir.clone(),
+        };
+
+        cade.gc_state(Some("livesession"));
+
+        assert!(!dead.exists());
+        assert!(live.exists());
+        std::fs::remove_dir_all(&state_dir).ok();
+    }
 
     #[cfg(unix)]
     #[test]
