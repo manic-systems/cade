@@ -182,6 +182,17 @@ impl Cade {
         .context("create LayerCache table")?;
         Cade::ensure_layer_cache_schema(conn).context("migrate LayerCache schema")?;
         Cade::prune_stale_layer_cache(conn).context("prune stale layer cache entries")?;
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS WatchDiscovery (
+                    Dir TEXT PRIMARY KEY,
+                    Token TEXT NOT NULL,
+                    Files TEXT NOT NULL,
+                    LastUsed INTEGER NOT NULL DEFAULT 0
+                );",
+        )
+        .context("create WatchDiscovery table")?;
+        Cade::prune_stale_watch_discovery(conn).context("prune stale watch discovery entries")?;
         Ok(())
     }
 
