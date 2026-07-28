@@ -117,7 +117,30 @@ pub fn load_watch_ref(raw: &str) -> Option<WatchState> {
     serde_json::from_str(&body).ok()
 }
 
-pub(super) fn watched_files_for_keywords(dir: &Path, keywords: &[Keyword]) -> Result<Vec<PathBuf>> {
+impl Cade {
+    // Rediscovery has to walk the tree, so it is skipped while every file found
+    // last time still has the mtime and size it had then. Any edit that could
+    // pull a new file into the dev shell must touch one of them first.
+    pub(super) fn layer_watch(
+        &self,
+        dir: &Path,
+        keywords: &[Keyword],
+    ) -> Result<(Vec<PathBuf>, String)> {
+        let key = dir.to_string_lossy();
+        if let Some((files, token)) = self.get_watch_discovery(&key)
+            && compute_layer_key(&files) == token
+        {
+            return Ok((files, token));
+        }
+
+        let files = watched_files_for_keywords(dir, keywords)?;
+        let token = compute_layer_key(&files);
+        self.store_watch_discovery(&key, &files, &token)?;
+        Ok((files, token))
+    }
+}
+
+fn watched_files_for_keywords(dir: &Path, keywords: &[Keyword]) -> Result<Vec<PathBuf>> {
     let mut files = vec![dir.join(".cade")];
     for kw in keywords {
         match kw {
@@ -165,6 +188,50 @@ fn mtime_nanos(meta: &std::fs::Metadata) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watch_discovery_refreshes_only_when_a_watched_file_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "cade-watch-discovery-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::create_dir_all(root.join("nix")).unwrap();
+        std::fs::write(root.join(".envrc"), "use flake\n").unwrap();
+        std::fs::write(root.join("flake.nix"), "{}\n").unwrap();
+
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE WatchDiscovery (
+                Dir TEXT PRIMARY KEY,
+                Token TEXT NOT NULL,
+                Files TEXT NOT NULL,
+                LastUsed INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .unwrap();
+        let cade = Cade {
+            db,
+            cwd: root.clone(),
+            state_dir: root.clone(),
+        };
+        let keywords = [Keyword::Load(crate::types::Loadable::Envrc(String::new()))];
+        let extra = root.join("nix").join("extra.nix");
+
+        let (first, _) = cade.layer_watch(&root, &keywords).unwrap();
+        assert!(first.contains(&root.join("flake.nix")));
+        assert!(!first.contains(&extra));
+
+        std::fs::write(&extra, "{}\n").unwrap();
+        let (reused, _) = cade.layer_watch(&root, &keywords).unwrap();
+        assert!(!reused.contains(&extra));
+
+        std::fs::write(root.join("flake.nix"), "{ inputs = {}; }\n").unwrap();
+        let (rediscovered, _) = cade.layer_watch(&root, &keywords).unwrap();
+        assert!(rediscovered.contains(&extra));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn old_watch_state_versions_are_stale() {

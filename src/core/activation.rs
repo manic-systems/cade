@@ -3,7 +3,6 @@ use super::{
     layer::load_single_layer,
     sessions::{direnv_fallback_session_id, direnv_session_id, is_valid_session, new_session_id},
     shell_state::SESSION_VAR,
-    watch::{compute_layer_key, watched_files_for_keywords},
 };
 use crate::{
     direnv_export,
@@ -78,10 +77,9 @@ impl Cade {
         let mut nix_store_paths: Vec<String> = Vec::new();
 
         for (layer_count, (path, keywords)) in cade_files.iter().enumerate() {
-            let watch_files = watched_files_for_keywords(path, keywords)?;
-            all_watch_files.extend(watch_files.clone());
+            let (watch_files, token) = self.layer_watch(path, keywords)?;
+            all_watch_files.extend(watch_files);
 
-            let token = compute_layer_key(&watch_files);
             let dir = path.to_string_lossy();
 
             let (layer, store_paths) = match self.reusable_cached_layer(&dir, &token, path)? {
