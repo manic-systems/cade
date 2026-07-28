@@ -17,6 +17,8 @@ const YELLOW: &str = "\x1b[33m";
 const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
 const RESET: &str = "\x1b[0m";
+const HIDE_CURSOR: &str = "\x1b[?25l";
+const SHOW_CURSOR: &str = "\x1b[?25h";
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -27,7 +29,7 @@ struct State {
     long_running: bool,
     recent: Vec<String>,
     nix_bar: Option<String>,
-    visible_rows: usize,
+    renderer: LiveRenderer,
 }
 
 impl State {
@@ -47,30 +49,69 @@ impl State {
     fn render(&mut self) {
         let block = self.block();
         let mut err = std::io::stderr().lock();
-        rewind(&mut err, self.visible_rows);
-        self.visible_rows = render_block(&mut err, &block);
+        self.renderer.render(&mut err, &block);
         let _ = err.flush();
     }
 }
 
-pub fn rewind(err: &mut impl Write, n: usize) {
-    if n == 0 {
-        return;
-    }
-    let _ = write!(err, "\x1b[{n}F");
-    for _ in 0..n {
-        let _ = writeln!(err, "\x1b[2K");
-    }
-    let _ = write!(err, "\x1b[{n}F");
+#[derive(Default)]
+pub(crate) struct LiveRenderer {
+    lines: Vec<String>,
 }
 
-pub fn render_block(err: &mut impl Write, lines: &[String]) -> usize {
-    let width = terminal_width().unwrap_or(80).max(1);
-    for line in lines {
-        let line = fit_terminal_line(line, width);
-        let _ = write!(err, "{line}\x1b[K\r\n");
+impl LiveRenderer {
+    pub(crate) fn render(&mut self, err: &mut impl Write, lines: &[String]) {
+        let width = terminal_width().unwrap_or(80).max(1);
+        self.render_at_width(err, lines, width);
     }
-    lines.len()
+
+    pub(crate) fn clear(&mut self, err: &mut impl Write) {
+        self.update(err, Vec::new());
+    }
+
+    fn render_at_width(&mut self, err: &mut impl Write, lines: &[String], width: usize) {
+        let lines: Vec<_> = lines
+            .iter()
+            .map(|line| fit_terminal_line(line, width))
+            .collect();
+        self.update(err, lines);
+    }
+
+    fn update(&mut self, err: &mut impl Write, lines: Vec<String>) {
+        if self.lines == lines {
+            return;
+        }
+        let _ = write!(err, "{HIDE_CURSOR}");
+        update_block(err, &self.lines, &lines);
+        let _ = write!(err, "{SHOW_CURSOR}");
+        self.lines = lines;
+    }
+}
+
+fn update_block(err: &mut impl Write, previous: &[String], next: &[String]) {
+    let extent = previous.len().max(next.len());
+    let mut cursor_row = previous.len();
+    for index in 0..extent {
+        if previous.get(index) == next.get(index) {
+            continue;
+        }
+        move_to_row(err, cursor_row, index);
+        if let Some(line) = next.get(index) {
+            let _ = write!(err, "{line}\x1b[K\r\n");
+        } else {
+            let _ = write!(err, "\x1b[2K\r\n");
+        }
+        cursor_row = index + 1;
+    }
+    move_to_row(err, cursor_row, next.len());
+}
+
+fn move_to_row(err: &mut impl Write, from: usize, to: usize) {
+    if from > to {
+        let _ = write!(err, "\x1b[{}F", from - to);
+    } else if from < to {
+        let _ = write!(err, "\x1b[{}E", to - from);
+    }
 }
 
 fn fit_terminal_line(line: &str, width: usize) -> String {
@@ -173,28 +214,14 @@ pub fn load_marker() -> String {
     }
 }
 
-pub fn set_recent(lines: Vec<String>) {
+pub fn set_command_progress(lines: Vec<String>, nix_bar: Option<String>) {
     if !is_active() {
         return;
     }
     if let Some(state) = STATE.lock().unwrap().as_mut() {
         let start = lines.len().saturating_sub(RECENT_LINES);
         state.recent = lines[start..].to_vec();
-        if state.long_running {
-            state.render();
-        }
-    }
-}
-
-pub fn set_nix_bar(bar: Option<String>) {
-    if !is_active() {
-        return;
-    }
-    if let Some(state) = STATE.lock().unwrap().as_mut() {
-        state.nix_bar = bar;
-        if state.long_running {
-            state.render();
-        }
+        state.nix_bar = nix_bar;
     }
 }
 
@@ -228,8 +255,7 @@ pub fn log_line(line: &str) {
     match guard.as_mut() {
         Some(state) => {
             let mut err = std::io::stderr().lock();
-            rewind(&mut err, state.visible_rows);
-            state.visible_rows = 0;
+            state.renderer.clear(&mut err);
             let _ = writeln!(err, "{line}");
             let _ = err.flush();
         }
@@ -255,7 +281,7 @@ pub fn start(subject: &str) -> Spinner {
         long_running: false,
         recent: Vec::new(),
         nix_bar: None,
-        visible_rows: 0,
+        renderer: LiveRenderer::default(),
     });
 
     let thread = std::thread::spawn(run_loop);
@@ -302,16 +328,14 @@ impl Spinner {
             thread.thread().unpark();
             let _ = thread.join();
         }
-        let (visible, recent) = STATE
-            .lock()
-            .unwrap()
-            .take()
-            .map(|state| (state.visible_rows, durable_recent_block(&state)))
-            .unwrap_or((0, Vec::new()));
+        let state = STATE.lock().unwrap().take();
         let mut err = std::io::stderr().lock();
-        rewind(&mut err, visible);
-        for line in recent {
-            let _ = writeln!(err, "{line}");
+        if let Some(mut state) = state {
+            let recent = durable_recent_block(&state);
+            state.renderer.clear(&mut err);
+            for line in recent {
+                let _ = writeln!(err, "{line}");
+            }
         }
         let _ = err.flush();
     }
@@ -322,14 +346,15 @@ impl Spinner {
             thread.thread().unpark();
             let _ = thread.join();
         }
-        let (visible, recent) = STATE
-            .lock()
-            .unwrap()
-            .take()
-            .map(|state| (state.visible_rows, durable_recent_block(&state)))
-            .unwrap_or((0, Vec::new()));
+        let state = STATE.lock().unwrap().take();
         let mut err = std::io::stderr().lock();
-        rewind(&mut err, visible);
+        let recent = if let Some(mut state) = state {
+            let recent = durable_recent_block(&state);
+            state.renderer.clear(&mut err);
+            recent
+        } else {
+            Vec::new()
+        };
         let _ = writeln!(err, "[{colour}{symbol}{RESET}] {message}");
         for line in recent {
             let _ = writeln!(err, "{line}");
@@ -343,5 +368,92 @@ impl Drop for Spinner {
         if self.active && !self.resolved {
             self.finish(RED, CROSS, "cade: environment failed to load.".to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LiveRenderer;
+
+    fn lines(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn unchanged_block_emits_nothing() {
+        let mut renderer = LiveRenderer::default();
+        let mut output = Vec::new();
+        let block = lines(&["spinner", "detail", "progress"]);
+
+        renderer.render_at_width(&mut output, &block, 80);
+        output.clear();
+        renderer.render_at_width(&mut output, &block, 80);
+
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn changing_first_row_does_not_repaint_unchanged_rows() {
+        let mut renderer = LiveRenderer::default();
+        let mut output = Vec::new();
+        renderer.render_at_width(
+            &mut output,
+            &lines(&["frame one", "detail", "progress"]),
+            80,
+        );
+
+        output.clear();
+        renderer.render_at_width(
+            &mut output,
+            &lines(&["frame two", "detail", "progress"]),
+            80,
+        );
+
+        assert_eq!(
+            output,
+            b"\x1b[?25l\x1b[3Fframe two\x1b[K\r\n\x1b[2E\x1b[?25h"
+        );
+    }
+
+    #[test]
+    fn changing_last_row_only_repaints_last_row() {
+        let mut renderer = LiveRenderer::default();
+        let mut output = Vec::new();
+        renderer.render_at_width(&mut output, &lines(&["spinner", "detail", "10%"]), 80);
+
+        output.clear();
+        renderer.render_at_width(&mut output, &lines(&["spinner", "detail", "20%"]), 80);
+
+        assert_eq!(output, b"\x1b[?25l\x1b[1F20%\x1b[K\r\n\x1b[?25h");
+    }
+
+    #[test]
+    fn separated_changes_do_not_repaint_rows_between_them() {
+        let mut renderer = LiveRenderer::default();
+        let mut output = Vec::new();
+        renderer.render_at_width(&mut output, &lines(&["frame one", "detail", "10%"]), 80);
+
+        output.clear();
+        renderer.render_at_width(&mut output, &lines(&["frame two", "detail", "20%"]), 80);
+
+        assert_eq!(
+            output,
+            b"\x1b[?25l\x1b[3Fframe two\x1b[K\r\n\x1b[1E20%\x1b[K\r\n\x1b[?25h"
+        );
+    }
+
+    #[test]
+    fn clear_restores_the_cursor() {
+        let mut renderer = LiveRenderer::default();
+        let mut output = Vec::new();
+        renderer.render_at_width(&mut output, &lines(&["spinner", "detail"]), 80);
+
+        output.clear();
+        renderer.clear(&mut output);
+
+        assert_eq!(
+            output,
+            b"\x1b[?25l\x1b[2F\x1b[2K\r\n\x1b[2K\r\n\x1b[2F\x1b[?25h"
+        );
     }
 }

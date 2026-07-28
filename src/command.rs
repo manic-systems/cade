@@ -36,8 +36,8 @@ struct LongRunningProgress<'a> {
     enabled: bool,
     interactive: bool,
     shown: bool,
-    visible_rows: usize,
-    last_block: Vec<String>,
+    renderer: crate::progress::LiveRenderer,
+    last_render: Option<Instant>,
 }
 
 impl<'a> LongRunningProgress<'a> {
@@ -47,8 +47,8 @@ impl<'a> LongRunningProgress<'a> {
             enabled: verbosity::enabled(Verbosity::Normal),
             interactive: std::io::stderr().is_terminal(),
             shown: false,
-            visible_rows: 0,
-            last_block: Vec::new(),
+            renderer: crate::progress::LiveRenderer::default(),
+            last_render: None,
         }
     }
 
@@ -72,7 +72,11 @@ impl<'a> LongRunningProgress<'a> {
     }
 
     fn update(&mut self, recent: &[String], bar: Option<&str>) {
-        if self.wants_live() {
+        if self.wants_live()
+            && self
+                .last_render
+                .is_none_or(|last| last.elapsed() >= LONG_RUNNING_POLL_INTERVAL)
+        {
             self.render(recent, bar);
         }
     }
@@ -93,25 +97,16 @@ impl<'a> LongRunningProgress<'a> {
 
     fn render(&mut self, recent: &[String], bar: Option<&str>) {
         let block = self.block(recent, bar);
-        if block == self.last_block {
-            return;
-        }
-        self.clear();
         let mut err = std::io::stderr().lock();
-        self.visible_rows = crate::progress::render_block(&mut err, &block);
-        self.last_block = block;
+        self.renderer.render(&mut err, &block);
         let _ = err.flush();
+        self.last_render = Some(Instant::now());
     }
 
     fn clear(&mut self) {
-        if self.visible_rows == 0 {
-            return;
-        }
         let mut err = std::io::stderr().lock();
-        crate::progress::rewind(&mut err, self.visible_rows);
+        self.renderer.clear(&mut err);
         let _ = err.flush();
-        self.visible_rows = 0;
-        self.last_block.clear();
     }
 
     fn block(&self, recent: &[String], bar: Option<&str>) -> Vec<String> {
@@ -174,10 +169,7 @@ fn handle_stream_event(
             match progress {
                 Some(progress) if progress.wants_live() => progress.update(&recent, bar.as_deref()),
                 Some(_) => {}
-                None => {
-                    crate::progress::set_recent(recent);
-                    crate::progress::set_nix_bar(bar);
-                }
+                None => crate::progress::set_command_progress(recent, bar),
             }
         }
     }
@@ -221,7 +213,6 @@ pub fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
                     crate::progress::mark_long_running(format!(
                         "cade: {what} is taking a long time; press Ctrl-C to stop and inspect the command."
                     ));
-                    crate::progress::set_nix_bar(nix.bar_line());
                 }
             }
         }
@@ -238,7 +229,11 @@ pub fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
             Ok(event) => {
                 handle_stream_event(event, &mut stdout, &mut stderr, &mut nix, progress.as_mut())
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                if let Some(progress) = progress.as_mut().filter(|progress| progress.wants_live()) {
+                    progress.update(&nix.recent_lines(), nix.bar_line().as_deref());
+                }
+            }
             Err(RecvTimeoutError::Disconnected) => {
                 break child.wait().context("waiting for command status")?;
             }
