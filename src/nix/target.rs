@@ -124,27 +124,33 @@ pub fn flake_watch_files(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn collect_flake_watch_files(path: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let child = entry.path();
-        let file_name = child.file_name().and_then(|name| name.to_str());
-        let Ok(file_type) = entry.file_type() else {
+// Nix reads only VCS-tracked files when evaluating a local flake, so an ignored
+// subtree cannot affect the dev shell.
+fn collect_flake_watch_files(root: &Path, out: &mut Vec<PathBuf>) {
+    let walk = ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .require_git(false)
+        .filter_entry(|entry| entry.depth() == 0 || !is_excluded_dir(entry))
+        .build();
+
+    for entry in walk.flatten() {
+        let Some(file_type) = entry.file_type() else {
             continue;
         };
-        if file_type.is_dir() {
-            let excluded = file_name.is_some_and(|name| FLAKE_WATCH_EXCLUDED_DIRS.contains(&name));
-            if !excluded {
-                collect_flake_watch_files(&child, out);
-            }
-        } else if (file_type.is_file() || file_type.is_symlink())
-            && file_name.is_some_and(is_flake_input_file)
+        if (file_type.is_file() || file_type.is_symlink())
+            && entry.file_name().to_str().is_some_and(is_flake_input_file)
         {
-            out.push(child);
+            out.push(entry.into_path());
         }
     }
+}
+
+fn is_excluded_dir(entry: &ignore::DirEntry) -> bool {
+    entry.file_type().is_some_and(|ty| ty.is_dir())
+        && entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| FLAKE_WATCH_EXCLUDED_DIRS.contains(&name))
 }
 
 #[cfg(test)]
@@ -241,6 +247,28 @@ mod tests {
         assert!(!watch.contains(&root.join("target").join("generated.nix")));
         assert!(!watch.contains(&root.join("main.cpp")));
         assert!(!watch.contains(&root.join("nix").join("notes.md")));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn flake_watch_skips_vcs_ignored_trees() {
+        let root = std::env::temp_dir().join(format!(
+            "cade-flake-watch-ignored-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::create_dir_all(root.join("out").join("deep")).unwrap();
+        std::fs::create_dir_all(root.join("nix")).unwrap();
+        std::fs::write(root.join(".gitignore"), "out/\n").unwrap();
+        std::fs::write(root.join("flake.nix"), "").unwrap();
+        std::fs::write(root.join("nix").join("package.nix"), "").unwrap();
+        std::fs::write(root.join("out").join("deep").join("generated.nix"), "").unwrap();
+
+        let watch = flake_watch_files(&root);
+
+        assert!(watch.contains(&root.join("nix").join("package.nix")));
+        assert!(!watch.contains(&root.join("out").join("deep").join("generated.nix")));
 
         std::fs::remove_dir_all(&root).ok();
     }
