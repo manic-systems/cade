@@ -4,7 +4,7 @@ use crate::{
     env::EnvSet,
 };
 use anyhow::{Context, Result, bail};
-use std::{collections::HashMap, path::PathBuf, process::Command};
+use std::{collections::HashMap, os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
 
 const ENV_MARKER: &[u8] = b"\0__CADE_ENV_BEGIN__\0";
 const ENV_CAPTURE_SCRIPT: &str = "printf '\\0__CADE_ENV_BEGIN__\\0'\nexec \"$1\" -0";
@@ -48,7 +48,11 @@ fn find_on_path(name: &str) -> PathBuf {
         .and_then(|path| {
             std::env::split_paths(&path)
                 .map(|dir| dir.join(name))
-                .find(|candidate| candidate.is_file())
+                .find(|candidate| {
+                    candidate.metadata().is_ok_and(|metadata| {
+                        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                    })
+                })
         })
         .unwrap_or_else(|| PathBuf::from(name))
 }
