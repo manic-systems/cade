@@ -129,6 +129,7 @@ pub fn flake_watch_files(root: &Path) -> Vec<PathBuf> {
 fn collect_flake_watch_files(root: &Path, out: &mut Vec<PathBuf>) {
     let walk = ignore::WalkBuilder::new(root)
         .hidden(false)
+        .ignore(false)
         .require_git(false)
         .filter_entry(|entry| entry.depth() == 0 || !is_excluded_dir(entry))
         .build();
