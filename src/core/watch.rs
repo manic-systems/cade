@@ -118,9 +118,8 @@ pub fn load_watch_ref(raw: &str) -> Option<WatchState> {
 }
 
 impl Cade {
-    // Rediscovery has to walk the tree, so it is skipped while every file found
-    // last time still has the mtime and size it had then. Any edit that could
-    // pull a new file into the dev shell must touch one of them first.
+    // The walk is skipped while every file found last time keeps its mtime and
+    // size, so a new file goes unseen until an already-watched one changes.
     pub(super) fn layer_watch(
         &self,
         dir: &Path,
