@@ -64,6 +64,12 @@ impl Cade {
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .ok()?;
+        self.db
+            .execute(
+                "UPDATE WatchDiscovery SET LastUsed=(?2) WHERE Dir=(?1)",
+                (dir, now_secs()),
+            )
+            .ok()?;
         Some((serde_json::from_str(&files).ok()?, token))
     }
 
