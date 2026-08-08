@@ -52,6 +52,11 @@ impl NixProgress {
         }
     }
 
+    pub fn finish(&mut self) {
+        let line = std::mem::take(&mut self.carry);
+        self.line(&line);
+    }
+
     fn line(&mut self, raw: &[u8]) {
         let text = String::from_utf8_lossy(raw);
         if let Some(action) = parse_line(&text) {
@@ -60,7 +65,8 @@ impl NixProgress {
         } else {
             let line = sanitize(raw);
             if !line.is_empty() {
-                self.push_recent(line);
+                self.push_recent(line.clone());
+                self.push_transcript(line);
             }
         }
     }

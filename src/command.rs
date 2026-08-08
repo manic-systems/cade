@@ -246,6 +246,7 @@ pub fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     while let Ok(event) = rx.try_recv() {
         handle_stream_event(event, &mut stdout, &mut stderr, &mut nix, progress.as_mut());
     }
+    nix.finish();
     if let Some(mut progress) = progress {
         progress.finish(&nix.recent_lines());
     }
