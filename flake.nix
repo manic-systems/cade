@@ -1,9 +1,19 @@
 {
-  # nixpkgs, systems, and fenix are pinned with tack (see ./.tack), not flake inputs
+  inputs = {
+    nixpkgs.url = "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz";
+    systems.url = "github:nix-systems/default-linux";
+    fenix.url = "github:nix-community/fenix";
+    fenix.inputs.nixpkgs.follows = "nixpkgs";
+  };
+
   outputs =
-    { self, ... }@args:
+    {
+      self,
+      nixpkgs,
+      systems,
+      fenix,
+    }:
     let
-      inherit (import ./.tack { overrides = args.tackOverrides or { }; }) nixpkgs systems fenix;
       forAllSystems =
         function:
         nixpkgs.lib.genAttrs (import systems) (system: function nixpkgs.legacyPackages.${system} system);
