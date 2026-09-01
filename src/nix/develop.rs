@@ -1,23 +1,28 @@
 use super::{capture, profile, target::FlakeTarget};
-use crate::{command::run_checked, env::EnvSet};
+use crate::{
+    command::{run_checked, run_checked_output},
+    env::EnvSet,
+    types::NixDevEnv,
+};
 use anyhow::{Context, Result};
 use std::{
     collections::HashMap,
+    io::Write,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
 };
 
-pub fn load_flake(target: &FlakeTarget, profile: Option<PathBuf>) -> Result<EnvSet> {
+pub fn prepare_flake(target: &FlakeTarget, profile: Option<PathBuf>) -> Result<NixDevEnv> {
     let mut proc = Command::new("nix");
-    proc.arg("develop");
+    proc.arg("print-dev-env");
     if !target.installable.is_empty() {
         proc.arg(&target.installable);
     }
     add_log_format(&mut proc);
     add_profile(&mut proc, profile.as_deref());
-    capture::add_env_command(&mut proc);
 
-    load_nix_dev_env(
+    prepare_nix_dev_env(
         proc,
         &target.cwd,
         &format!("at {}", target.cwd.display()),
@@ -25,15 +30,14 @@ pub fn load_flake(target: &FlakeTarget, profile: Option<PathBuf>) -> Result<EnvS
     )
 }
 
-pub fn load_shell(file: &Path, profile: Option<PathBuf>) -> Result<EnvSet> {
+pub fn prepare_shell(file: &Path, profile: Option<PathBuf>) -> Result<NixDevEnv> {
     let cwd = file.parent().unwrap_or(file);
     let file_str = file.to_string_lossy();
     let mut proc = Command::new("nix");
-    proc.args(["develop", "-f"]).arg(file);
+    proc.args(["print-dev-env", "-f"]).arg(file);
     add_log_format(&mut proc);
     add_profile(&mut proc, profile.as_deref());
-    capture::add_env_command(&mut proc);
-    load_nix_dev_env(
+    prepare_nix_dev_env(
         proc,
         cwd,
         &format!("-f {file_str} at {}", cwd.display()),
@@ -41,27 +45,53 @@ pub fn load_shell(file: &Path, profile: Option<PathBuf>) -> Result<EnvSet> {
     )
 }
 
-fn load_nix_dev_env(
+fn prepare_nix_dev_env(
     mut proc: Command,
     path: &Path,
     what: &str,
     profile: Option<&Path>,
-) -> Result<EnvSet> {
-    let mut previous_env: HashMap<_, _> = std::env::vars().collect();
-    capture::remove_cade_managed_env(&mut previous_env, &mut proc);
+) -> Result<NixDevEnv> {
     proc.current_dir(path);
     if let Some(parent) = profile.and_then(Path::parent) {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating nix profile dir at {}", parent.display()))?;
     }
-    let stdout = run_checked(proc, &format!("nix develop {what}"))?;
-    let stdout = capture::captured_env_stdout(&stdout, what)?;
-    let mut env = capture::env_set_from_captured_env(stdout, &previous_env)?;
+    let stdout = run_checked(proc, &format!("nix print-dev-env {what}"))?;
+    let script = String::from_utf8(stdout).context("reading nix dev environment script")?;
     if let Some(profile) = profile {
-        env.discard_store_paths();
         profile::wipe_history(profile);
     }
-    Ok(env)
+    Ok(NixDevEnv {
+        script,
+        cwd: path.to_path_buf(),
+    })
+}
+
+impl NixDevEnv {
+    pub fn activate(&self) -> Result<EnvSet> {
+        let mut previous_env: HashMap<_, _> = std::env::vars().collect();
+        let mut proc = Command::new(find_on_path("bash"));
+        let script = format!("{}\n{}", self.script, capture::env_capture_script());
+        proc.args(["-c", &script, "cade-dev-env"])
+            .arg(find_on_path("env"))
+            .current_dir(&self.cwd);
+        capture::remove_cade_managed_env(&mut previous_env, &mut proc);
+
+        let output = run_checked_output(
+            proc,
+            &format!("entering nix dev shell at {}", self.cwd.display()),
+        )?;
+        let (hook_stdout, raw_env) =
+            capture::captured_env_output(&output.stdout, &format!("at {}", self.cwd.display()))?;
+        let mut stderr = std::io::stderr().lock();
+        stderr
+            .write_all(hook_stdout)
+            .context("write nix shellHook output")?;
+        stderr
+            .write_all(&output.stderr)
+            .context("write nix shellHook error output")?;
+        capture::env_set_from_captured_env(raw_env, &previous_env)
+    }
 }
 
 fn add_profile(proc: &mut Command, profile: Option<&Path>) {
@@ -72,6 +102,20 @@ fn add_profile(proc: &mut Command, profile: Option<&Path>) {
 
 fn add_log_format(proc: &mut Command) {
     proc.args(["--log-format", "internal-json"]);
+}
+
+fn find_on_path(name: &str) -> PathBuf {
+    std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join(name))
+                .find(|candidate| {
+                    candidate.metadata().is_ok_and(|metadata| {
+                        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                    })
+                })
+        })
+        .unwrap_or_else(|| PathBuf::from(name))
 }
 
 #[cfg(test)]
@@ -88,58 +132,38 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn find_on_path(name: &str) -> PathBuf {
-        std::env::var_os("PATH")
-            .and_then(|path| {
-                std::env::split_paths(&path)
-                    .map(|dir| dir.join(name))
-                    .find(|candidate| candidate.is_file())
-            })
-            .unwrap_or_else(|| PathBuf::from(name))
-    }
-
-    #[cfg(unix)]
     #[test]
-    fn nix_dev_env_capture_keeps_shell_hook_path_changes() {
-        use std::os::unix::fs::PermissionsExt;
-
+    fn cached_nix_dev_env_replays_shell_hook_changes() {
         let root = std::env::temp_dir().join(format!(
             "cade-loader-{}-{}",
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let fake_nix = root.join("nix");
-        let shell = find_on_path("sh");
+        let hook_log = root.join("hook.log");
         let script = format!(
-            r#"#!{}
-set -eu
-while [ "$#" -gt 0 ] && [ "$1" != "--command" ]; do
-  shift
-done
-if [ "$#" -eq 0 ]; then
-  exit 64
-fi
-shift
+            r#"shellHook='printf ran\\n >> "{}"
 PATH="/hook/bin:/path-not-set:${{PATH:-}}"
 export PATH
 FROM_HOOK=ok
-export FROM_HOOK
-exec "$@"
+export FROM_HOOK'
+export shellHook
+eval "${{shellHook:-}}"
 "#,
-            shell.display()
+            hook_log.display()
         );
-        std::fs::write(&fake_nix, script).unwrap();
-        let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&fake_nix, permissions).unwrap();
+        let dev_env = NixDevEnv {
+            script,
+            cwd: root.clone(),
+        };
+        let env = dev_env.activate().unwrap();
+        let second = dev_env.activate().unwrap();
 
-        let mut proc = Command::new(&fake_nix);
-        capture::add_env_command(&mut proc);
-        let env = load_nix_dev_env(proc, &root, "fake nix", None).unwrap();
+        assert_eq!(std::fs::read_to_string(&hook_log).unwrap(), "ran\nran\n");
         std::fs::remove_dir_all(&root).ok();
 
         assert_eq!(env_values(&env, "FROM_HOOK"), vec!["ok"]);
         assert_eq!(env_values(&env, "PATH"), vec!["/hook/bin"]);
+        assert_eq!(env_values(&second, "FROM_HOOK"), vec!["ok"]);
     }
 }

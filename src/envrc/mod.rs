@@ -3,7 +3,7 @@ mod load;
 mod plan;
 mod watch;
 
-pub use load::load_envrc;
+pub use load::prepare_envrc;
 pub use watch::envrc_watch_files;
 
 pub fn envrc_arg(filename: &str) -> &str {

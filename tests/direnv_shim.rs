@@ -40,19 +40,18 @@ esac
 const FAKE_NIX: &str = r#"#!@bash@
 set -eu
 
-while [ "$#" -gt 0 ] && [ "$1" != "--command" ]; do
-  shift
-done
-if [ "$#" -eq 0 ]; then
+if [ "${1:-}" = profile ]; then
+  exit 0
+fi
+if [ "${1:-}" != print-dev-env ]; then
   exit 64
 fi
-shift
-
+cat <<'EOF'
 PATH="/fake-dev/bin:${PATH:-}"
 export PATH
 FROM_FAKE_NIX=ok
 export FROM_FAKE_NIX
-exec "$@"
+EOF
 "#;
 
 struct ShimSandbox {

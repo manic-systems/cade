@@ -4,16 +4,13 @@ use crate::{
     env::EnvSet,
 };
 use anyhow::{Context, Result, bail};
-use std::{collections::HashMap, os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
+use std::{collections::HashMap, process::Command};
 
 const ENV_MARKER: &[u8] = b"\0__CADE_ENV_BEGIN__\0";
 const ENV_CAPTURE_SCRIPT: &str = "printf '\\0__CADE_ENV_BEGIN__\\0'\nexec \"$1\" -0";
 
-pub(super) fn add_env_command(proc: &mut Command) {
-    proc.args(["--command"])
-        .arg(find_on_path("sh"))
-        .args(["-c", ENV_CAPTURE_SCRIPT, "cade-env"])
-        .arg(find_on_path("env"));
+pub(super) fn env_capture_script() -> &'static str {
+    ENV_CAPTURE_SCRIPT
 }
 
 pub(super) fn remove_cade_managed_env(previous: &mut HashMap<String, String>, proc: &mut Command) {
@@ -43,21 +40,10 @@ fn cade_managed_env_keys(env: &HashMap<String, String>) -> Vec<String> {
     keys
 }
 
-fn find_on_path(name: &str) -> PathBuf {
-    std::env::var_os("PATH")
-        .and_then(|path| {
-            std::env::split_paths(&path)
-                .map(|dir| dir.join(name))
-                .find(|candidate| {
-                    candidate.metadata().is_ok_and(|metadata| {
-                        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-                    })
-                })
-        })
-        .unwrap_or_else(|| PathBuf::from(name))
-}
-
-pub(super) fn captured_env_stdout<'a>(stdout: &'a [u8], what: &str) -> Result<&'a [u8]> {
+pub(super) fn captured_env_output<'a>(
+    stdout: &'a [u8],
+    what: &str,
+) -> Result<(&'a [u8], &'a [u8])> {
     let Some(start) = stdout
         .windows(ENV_MARKER.len())
         .position(|window| window == ENV_MARKER)
@@ -65,7 +51,7 @@ pub(super) fn captured_env_stdout<'a>(stdout: &'a [u8], what: &str) -> Result<&'
         bail!("nix develop {what} did not emit a captured environment marker");
     };
 
-    Ok(&stdout[start + ENV_MARKER.len()..])
+    Ok((&stdout[..start], &stdout[start + ENV_MARKER.len()..]))
 }
 
 pub(super) fn env_set_from_captured_env(
@@ -169,24 +155,10 @@ mod tests {
     }
 
     #[test]
-    fn add_env_command_uses_resolved_env_binary() {
-        let mut proc = Command::new("nix");
-        add_env_command(&mut proc);
-        let args: Vec<_> = proc.get_args().map(|arg| arg.to_owned()).collect();
-
-        assert_eq!(args[0], "--command");
-        assert!(std::path::Path::new(&args[1]).is_absolute() || args[1] == "sh");
-        assert_eq!(args[2], "-c");
-        assert_eq!(args[3], ENV_CAPTURE_SCRIPT);
-        assert_eq!(args[4], "cade-env");
-        assert!(std::path::Path::new(&args[5]).is_absolute() || args[5] == "env");
-    }
-
-    #[test]
     fn captured_env_stdout_skips_hook_output() {
         let stdout = b"hello from hook\n\0__CADE_ENV_BEGIN__\0PATH=/dev/bin\0";
         assert_eq!(
-            captured_env_stdout(stdout, "test").unwrap(),
+            captured_env_output(stdout, "test").unwrap().1,
             b"PATH=/dev/bin\0"
         );
     }

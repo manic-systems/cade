@@ -342,12 +342,12 @@ the `CADE_DIRENV` environment variable overrides the config value the same way.
 anything cade can't faithfully reproduce (shell expansion, conditionals,
 `layout`, `source_up`, functions, unknown flags) is skipped with a warning.
 
-for Nix dev shells, cade captures the final process environment from
-`nix develop --command` rather than parsing `nix print-dev-env --json`. the JSON
-form misses setup done by bash while entering the shell, including `shellHook`
-and devshell PATH changes. the shell-script form of `print-dev-env` can express
-that setup, but would require cade to evaluate bash itself; `nix develop` keeps
-that responsibility inside Nix.
+for Nix dev shells, cade caches the shell-script form of `nix print-dev-env`
+and evaluates it with bash on each environment entry. this preserves setup done
+while entering the shell—including `shellHook` and devshell PATH changes—while
+reusing Nix evaluation and already-realised dependencies until an input's
+content changes. `shellHook` output is sent to stderr so it cannot corrupt the
+shell commands cade emits on stdout.
 
 ### the direnv shim
 

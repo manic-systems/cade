@@ -175,7 +175,7 @@ fn handle_stream_event(
     }
 }
 
-pub fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
+pub fn run_checked_output(mut cmd: Command, what: &str) -> Result<Output> {
     verbosity::log(Verbosity::Trace, format_args!("cade: running {what}."));
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -275,5 +275,9 @@ pub fn run_checked(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
             }
         );
     }
-    Ok(out.stdout)
+    Ok(out)
+}
+
+pub fn run_checked(cmd: Command, what: &str) -> Result<Vec<u8>> {
+    Ok(run_checked_output(cmd, what)?.stdout)
 }
