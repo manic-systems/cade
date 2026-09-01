@@ -253,16 +253,19 @@ fn json_export_materializes_nix_shell_with_profile_without_live_holder() {
         &fake_nix,
         r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = profile ]; then
+  exit 0
+fi
+if [ "${1:-}" != print-dev-env ]; then
+  printf 'unexpected nix command: %s\n' "$*" >&2
+  exit 64
+fi
 profile=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --profile)
       shift
       profile="${1:-}"
-      ;;
-    --command)
-      shift
-      break
       ;;
   esac
   shift
@@ -272,11 +275,12 @@ if [ -z "$profile" ]; then
   exit 86
 fi
 printf '%s\n' "$profile" > "$CADE_FAKE_NIX_PROFILE_LOG"
+cat <<'EOF'
 PATH="/materialized/bin:${PATH:-}"
 export PATH
 FROM_PROFILE_NIX=ok
 export FROM_PROFILE_NIX
-exec "$@"
+EOF
 "#,
     );
 

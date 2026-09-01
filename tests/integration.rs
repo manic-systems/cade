@@ -610,7 +610,7 @@ fn cache_invalidates_when_env_file_changes() {
 
 #[cfg(unix)]
 #[test]
-fn timestamp_only_change_does_not_rematerialize_nix_layer() {
+fn timestamp_only_change_reuses_nix_evaluation() {
     use std::os::unix::fs::PermissionsExt;
 
     let sb = Sandbox::new();
@@ -626,23 +626,17 @@ set -eu
 if [ "${1:-}" = profile ]; then
   exit 0
 fi
-if [ "${1:-}" != develop ]; then
+if [ "${1:-}" != print-dev-env ]; then
   printf 'unexpected nix command: %s\n' "$*" >&2
   exit 64
 fi
-printf 'develop\n' >> "$CADE_FAKE_NIX_CALL_LOG"
-while [ "$#" -gt 0 ] && [ "$1" != "--command" ]; do
-  shift
-done
-if [ "$#" -eq 0 ]; then
-  exit 64
-fi
-shift
+printf 'print-dev-env\n' >> "$CADE_FAKE_NIX_CALL_LOG"
+cat <<'EOF'
 PATH="/dev/bin:${PATH:-}"
 export PATH
 FROM_FAKE_NIX=ok
 export FROM_FAKE_NIX
-exec "$@"
+EOF
 "#,
     )
     .unwrap();
@@ -686,7 +680,98 @@ exec "$@"
             stdout(out)
         );
     }
-    assert_eq!(std::fs::read_to_string(&call_log).unwrap(), "develop\n");
+    assert_eq!(
+        std::fs::read_to_string(&call_log).unwrap(),
+        "print-dev-env\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn nix_shell_hook_runs_on_every_native_and_envrc_entry_without_reevaluating() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let sb = Sandbox::new();
+    sb.write(".cade", "load flake\n");
+    sb.allow(&sb.root);
+
+    let fake_bin = sb.dir("fake-bin");
+    let fake_nix = fake_bin.join("nix");
+    std::fs::write(
+        &fake_nix,
+        r#"#!/bin/sh
+set -eu
+if [ "${1:-}" = profile ]; then
+  exit 0
+fi
+if [ "${1:-}" != print-dev-env ]; then
+  printf 'unexpected nix command: %s\n' "$*" >&2
+  exit 64
+fi
+printf 'print-dev-env\n' >> "$CADE_FAKE_NIX_CALL_LOG"
+cat <<'EOF'
+PATH="/dev/bin:/path-not-set:${PATH:-}"
+export PATH
+shellHook='printf "hook-ran\n" >> "$CADE_HOOK_LOG"
+printf "visible shellHook output\n"
+FROM_SHELL_HOOK=ok
+export FROM_SHELL_HOOK'
+export shellHook
+eval "${shellHook:-}"
+EOF
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_nix, permissions).unwrap();
+
+    let hook_log = sb.state.join("hook.log");
+    let call_log = sb.state.join("nix.log");
+    let host_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin.clone()).chain(std::env::split_paths(&host_path)),
+    )
+    .unwrap()
+    .to_string_lossy()
+    .to_string();
+    let hook_log = hook_log.to_string_lossy().to_string();
+    let call_log = call_log.to_string_lossy().to_string();
+    let env = [
+        ("PATH", path.as_str()),
+        ("CADE_HOOK_LOG", hook_log.as_str()),
+        ("CADE_FAKE_NIX_CALL_LOG", call_log.as_str()),
+    ];
+
+    let first = sb.enter(&sb.root, &env);
+    let second = sb.enter(&sb.root, &env);
+
+    sb.write(".cade", "load envrc\n");
+    sb.write(".envrc", "use flake\n");
+    let third = sb.enter(&sb.root, &env);
+    let fourth = sb.enter(&sb.root, &env);
+
+    for out in [&first, &second, &third, &fourth] {
+        assert!(out.status.success(), "{out:?}");
+        assert!(
+            stdout(out).contains("export FROM_SHELL_HOOK='ok';"),
+            "{}",
+            stdout(out)
+        );
+        assert!(
+            stderr(out).contains("visible shellHook output"),
+            "{}",
+            stderr(out)
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(&hook_log).unwrap(),
+        "hook-ran\nhook-ran\nhook-ran\nhook-ran\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&call_log).unwrap(),
+        "print-dev-env\nprint-dev-env\n"
+    );
 }
 
 fn exported_value(script: &str, key: &str) -> String {
@@ -852,7 +937,7 @@ fn reload_into_disallowed_child_keeps_the_approved_parent() {
 
     let root_str = sb.root.to_string_lossy().to_string();
     let watches = serde_json::json!({
-        "version": "layer-cache-v4",
+        "version": "layer-cache-v5",
         "root": root_str,
         "cade_paths": [root_str],
         "files": []

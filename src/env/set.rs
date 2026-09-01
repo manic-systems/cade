@@ -143,10 +143,6 @@ impl EnvSet {
         self.refresh_store_paths();
     }
 
-    pub fn discard_store_paths(&mut self) {
-        self.nix_store_paths.clear();
-    }
-
     pub fn derived_store_paths(&self) -> Vec<String> {
         store_paths::from_env(&self.vars)
     }

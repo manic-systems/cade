@@ -15,6 +15,7 @@ impl CadeLayer {
             clears: std::collections::HashSet::new(),
             concat: std::collections::HashSet::new(),
             nix_store_paths: Vec::new(),
+            entry_actions: Vec::new(),
         }
     }
 
@@ -32,6 +33,9 @@ impl CadeLayer {
                 self.clears.extend(merged.clears);
                 self.nix_store_paths.extend(merged.store_paths);
             }
+            NixDevEnv(_) | Envrc(_) => {
+                unreachable!("entry environments must be materialized first")
+            }
             Hook(hook) => {
                 self.hooks.push(hook);
             }
@@ -42,6 +46,31 @@ impl CadeLayer {
                 self.concat.extend(vars);
             }
         }
+    }
+}
+
+impl CadeLayer {
+    pub(super) fn replay_entry_actions(&mut self) -> Result<()> {
+        if self.entry_actions.is_empty() {
+            return Ok(());
+        }
+
+        let actions = self.entry_actions.clone();
+        let mut materialized = CadeLayer::new(0, Path::new("/"));
+        for action in &actions {
+            materialized.push_action(materialize_action(action)?);
+        }
+        materialized.entry_actions = actions;
+        *self = materialized;
+        Ok(())
+    }
+}
+
+fn materialize_action(action: &CadeAction) -> Result<CadeAction> {
+    match action {
+        CadeAction::NixDevEnv(dev_env) => dev_env.activate().map(CadeAction::Environ),
+        CadeAction::Envrc(envrc) => envrc.activate().map(CadeAction::Environ),
+        action => Ok(action.clone()),
     }
 }
 
@@ -123,11 +152,11 @@ pub(super) fn load_single_layer(
 ) -> Result<CadeLayer> {
     use crate::{
         loaders::{call, load_env},
-        nix::{load_flake, load_shell},
+        nix::{prepare_flake, prepare_shell},
     };
     use Keyword::*;
 
-    let mut layer = CadeLayer::new(layer_count, path);
+    let mut actions = Vec::new();
     for (action_index, kw) in keywords.iter().enumerate() {
         let act = match kw {
             Pure => Ok(CadeAction::Purify),
@@ -141,14 +170,19 @@ pub(super) fn load_single_layer(
                     cade.nix_profile_path(session, layer_count, action_index, path, &spec_key)
                 });
                 match resolved.run {
-                    LoadRun::Flake(target) => load_flake(&target, profile).context("loading flake"),
-                    LoadRun::Shell(file) => load_shell(&file, profile).context("loading shell"),
-                    LoadRun::Env(file) => load_env(&file).context("loading env file"),
-                    LoadRun::Envrc(p) => {
-                        crate::envrc::load_envrc(&p, profile).context("loading .envrc")
-                    }
+                    LoadRun::Flake(target) => prepare_flake(&target, profile)
+                        .context("loading flake")
+                        .map(CadeAction::NixDevEnv),
+                    LoadRun::Shell(file) => prepare_shell(&file, profile)
+                        .context("loading shell")
+                        .map(CadeAction::NixDevEnv),
+                    LoadRun::Env(file) => load_env(&file)
+                        .context("loading env file")
+                        .map(CadeAction::Environ),
+                    LoadRun::Envrc(p) => crate::envrc::prepare_envrc(&p, profile)
+                        .context("loading .envrc")
+                        .map(CadeAction::Envrc),
                 }
-                .map(CadeAction::Environ)
             }
             Hook(hook) => Ok(CadeAction::Hook(hook.clone())),
             Clear(vars) => Ok(CadeAction::Clear(vars.clone())),
@@ -157,7 +191,20 @@ pub(super) fn load_single_layer(
 
             Watch(_) | Disinherit => continue,
         }?;
-        layer.push_action(act);
+        actions.push(act);
+    }
+
+    let replay_on_entry = actions.iter().any(|action| match action {
+        CadeAction::NixDevEnv(_) => true,
+        CadeAction::Envrc(envrc) => envrc.replays_on_entry(),
+        _ => false,
+    });
+    let mut layer = CadeLayer::new(layer_count, path);
+    for action in &actions {
+        layer.push_action(materialize_action(action)?);
+    }
+    if replay_on_entry {
+        layer.entry_actions = actions;
     }
     Ok(layer)
 }

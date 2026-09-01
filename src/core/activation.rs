@@ -116,11 +116,15 @@ impl Cade {
         token: &str,
         path: &Path,
     ) -> Result<Option<(CadeLayer, Vec<String>)>> {
-        let Some(layer) = self.get_cached_layer(dir, token)? else {
+        let Some(mut layer) = self.get_cached_layer(dir, token)? else {
             return Ok(None);
         };
         let store_paths = layer.envs.derived_store_paths();
         if store_paths_all_present(&store_paths) {
+            layer
+                .replay_entry_actions()
+                .with_context(|| format!("replaying entry actions for {}", path.display()))?;
+            let store_paths = layer.envs.derived_store_paths();
             verbosity::log(
                 Verbosity::Trace,
                 format_args!("cade: using cached layer {}.", path.display()),
