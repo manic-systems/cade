@@ -437,8 +437,9 @@ two escape hatches:
    untouched. after `pure`, the discarded ambient environment is restored from a
    snapshot.
 
-loaded layers are cached per directory and re-evaluated when a `.cade` file or
-any input it references changes.
+loaded layers are cached per directory and re-evaluated when the content of a
+`.cade` file or any input it references changes. metadata-only changes such as
+touching a file do not invalidate the layer.
 
 ## license
 
