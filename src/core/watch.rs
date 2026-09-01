@@ -8,10 +8,11 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
+    io::Read,
     path::{Path, PathBuf},
 };
 
-pub(super) const LAYER_CACHE_VERSION: &str = "layer-cache-v3";
+pub(super) const LAYER_CACHE_VERSION: &str = "layer-cache-v4";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct WatchEntry {
@@ -28,14 +29,21 @@ impl WatchEntry {
     }
 
     fn changed(&self) -> bool {
-        watch_file_state(&self.path) != self.state
+        self.state.changed(&self.path)
     }
 
     fn token_part(&self) -> String {
         match &self.state {
-            WatchFileState::Present { mtime, size } => {
-                format!("{}:present:{mtime}:{size}", self.path.display())
-            }
+            WatchFileState::Present {
+                mtime,
+                size,
+                content_hash,
+            } => match content_hash {
+                Some(content_hash) => {
+                    format!("{}:present:{size}:{content_hash:016x}", self.path.display())
+                }
+                None => format!("{}:present-unreadable:{mtime}:{size}", self.path.display()),
+            },
             WatchFileState::Missing => format!("{}:missing", self.path.display()),
         }
     }
@@ -44,8 +52,42 @@ impl WatchEntry {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 enum WatchFileState {
-    Present { mtime: u64, size: u64 },
+    Present {
+        mtime: u64,
+        size: u64,
+        content_hash: Option<u64>,
+    },
     Missing,
+}
+
+impl WatchFileState {
+    fn changed(&self, path: &Path) -> bool {
+        let Ok(meta) = std::fs::metadata(path) else {
+            return *self != WatchFileState::Missing;
+        };
+        let current_mtime = mtime_nanos(&meta);
+        let current_size = meta.len();
+
+        match self {
+            WatchFileState::Missing => true,
+            WatchFileState::Present {
+                mtime,
+                size,
+                content_hash,
+            } => {
+                if *mtime == current_mtime && *size == current_size {
+                    return false;
+                }
+                if *size != current_size {
+                    return true;
+                }
+                match content_hash {
+                    Some(expected) => content_hash_for(path) != Some(*expected),
+                    None => true,
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -171,8 +213,25 @@ fn watch_file_state(path: &Path) -> WatchFileState {
         Ok(meta) => WatchFileState::Present {
             mtime: mtime_nanos(&meta),
             size: meta.len(),
+            content_hash: content_hash_for(path),
         },
         Err(_) => WatchFileState::Missing,
+    }
+}
+
+fn content_hash_for(path: &Path) -> Option<u64> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hash = 0xcbf29ce484222325u64;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file.read(&mut buffer).ok()?;
+        if read == 0 {
+            return Some(hash);
+        }
+        for byte in &buffer[..read] {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
     }
 }
 
@@ -230,6 +289,35 @@ mod tests {
         assert!(rediscovered.contains(&extra));
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn timestamp_only_changes_do_not_invalidate_content_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "cade-watch-content-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("flake.nix");
+        std::fs::write(&path, "same\n").unwrap();
+
+        let entry = WatchEntry::capture(&path);
+        let token = compute_layer_key(std::slice::from_ref(&path));
+        let old_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(old_mtime + std::time::Duration::from_secs(1)),
+        )
+        .unwrap();
+
+        assert!(!entry.changed());
+        assert_eq!(compute_layer_key(std::slice::from_ref(&path)), token);
+
+        std::fs::write(&path, "else\n").unwrap();
+        assert!(entry.changed());
+        assert_ne!(compute_layer_key(std::slice::from_ref(&path)), token);
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -294,6 +382,7 @@ mod tests {
                 state: WatchFileState::Present {
                     mtime: 1_780_000_000_000_000_000,
                     size: 10,
+                    content_hash: Some(42),
                 },
             }],
         };

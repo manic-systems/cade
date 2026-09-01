@@ -608,6 +608,87 @@ fn cache_invalidates_when_env_file_changes() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn timestamp_only_change_does_not_rematerialize_nix_layer() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let sb = Sandbox::new();
+    sb.write(".cade", "load flake\n");
+    sb.allow(&sb.root);
+
+    let fake_bin = sb.dir("fake-bin");
+    let fake_nix = fake_bin.join("nix");
+    std::fs::write(
+        &fake_nix,
+        r#"#!/bin/sh
+set -eu
+if [ "${1:-}" = profile ]; then
+  exit 0
+fi
+if [ "${1:-}" != develop ]; then
+  printf 'unexpected nix command: %s\n' "$*" >&2
+  exit 64
+fi
+printf 'develop\n' >> "$CADE_FAKE_NIX_CALL_LOG"
+while [ "$#" -gt 0 ] && [ "$1" != "--command" ]; do
+  shift
+done
+if [ "$#" -eq 0 ]; then
+  exit 64
+fi
+shift
+PATH="/dev/bin:${PATH:-}"
+export PATH
+FROM_FAKE_NIX=ok
+export FROM_FAKE_NIX
+exec "$@"
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_nix, permissions).unwrap();
+
+    let call_log = sb.state.join("nix.log");
+    let host_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin.clone()).chain(std::env::split_paths(&host_path)),
+    )
+    .unwrap()
+    .to_string_lossy()
+    .to_string();
+    let call_log = call_log.to_string_lossy().to_string();
+    let env = [
+        ("PATH", path.as_str()),
+        ("CADE_FAKE_NIX_CALL_LOG", call_log.as_str()),
+    ];
+
+    let first = sb.enter(&sb.root, &env);
+    let cade_path = sb.root.join(".cade");
+    let old_mtime = std::fs::metadata(&cade_path).unwrap().modified().unwrap();
+    let cade_file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&cade_path)
+        .unwrap();
+    cade_file
+        .set_times(
+            std::fs::FileTimes::new().set_modified(old_mtime + std::time::Duration::from_secs(1)),
+        )
+        .unwrap();
+    let second = sb.enter(&sb.root, &env);
+
+    for out in [&first, &second] {
+        assert!(out.status.success(), "{out:?}");
+        assert!(
+            stdout(out).contains("export FROM_FAKE_NIX='ok';"),
+            "{}",
+            stdout(out)
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&call_log).unwrap(), "develop\n");
+}
+
 fn exported_value(script: &str, key: &str) -> String {
     let prefix = format!("export {key}='");
     let start = script
@@ -771,7 +852,7 @@ fn reload_into_disallowed_child_keeps_the_approved_parent() {
 
     let root_str = sb.root.to_string_lossy().to_string();
     let watches = serde_json::json!({
-        "version": "layer-cache-v3",
+        "version": "layer-cache-v4",
         "root": root_str,
         "cade_paths": [root_str],
         "files": []
