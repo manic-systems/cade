@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(super) const LAYER_CACHE_VERSION: &str = "layer-cache-v5";
+pub(super) const LAYER_CACHE_VERSION: &str = "layer-cache-v6";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum WatchChange {

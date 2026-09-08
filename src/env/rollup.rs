@@ -168,11 +168,12 @@ fn join_space_values(values: Vec<String>) -> String {
 mod tests {
     use super::*;
     use crate::{env::EnvSet, types::CadeAction};
-    use std::path::Path;
 
     fn env_layer(pairs: &[(&str, &str)]) -> CadeLayer {
-        let mut layer = CadeLayer::new(0, Path::new("/"));
-        layer.push_action(CadeAction::Environ(env_set(pairs)));
+        let mut layer = CadeLayer::default();
+        layer
+            .push_action(&CadeAction::Environ(env_set(pairs)))
+            .unwrap();
         layer
     }
 
@@ -254,10 +255,12 @@ mod tests {
     #[test]
     fn hard_replace_overrides_concat_default() {
         let parent = env_layer(&[("PATH", "/parent/bin")]);
-        let mut child = CadeLayer::new(1, Path::new("/"));
-        child.push_action(CadeAction::Environ(
-            EnvSet::from_envs("PATH:=/only/child\n").unwrap(),
-        ));
+        let mut child = CadeLayer::default();
+        child
+            .push_action(&CadeAction::Environ(
+                EnvSet::from_envs("PATH:=/only/child\n").unwrap(),
+            ))
+            .unwrap();
         let r = rollup_envs(vec![parent, child]);
         assert_eq!(r.values("PATH"), Some(&["/only/child".into()][..]));
         assert!(!r.absorbs("PATH"), "hard replace drops ambient");
@@ -266,7 +269,9 @@ mod tests {
     #[test]
     fn concat_directive_marks_custom_var() {
         let mut parent = env_layer(&[("MYLIST", "/p")]);
-        parent.push_action(CadeAction::Concat(vec!["MYLIST".to_string()]));
+        parent
+            .push_action(&CadeAction::Concat(vec!["MYLIST".to_string()]))
+            .unwrap();
         let child = env_layer(&[("MYLIST", "/c")]);
         let r = rollup_envs(vec![parent, child]);
         assert_eq!(r.values("MYLIST"), Some(&["/c".into(), "/p".into()][..]));
@@ -276,8 +281,10 @@ mod tests {
     #[test]
     fn clear_removes_inherited_and_is_reported_as_unset() {
         let parent = env_layer(&[("DROP_ME", "x"), ("KEEP", "y")]);
-        let mut child = CadeLayer::new(1, Path::new("/"));
-        child.push_action(CadeAction::Clear(vec!["DROP_ME".into()]));
+        let mut child = CadeLayer::default();
+        child
+            .push_action(&CadeAction::Clear(vec!["DROP_ME".into()]))
+            .unwrap();
         let r = rollup_envs(vec![parent, child]);
         assert!(!r.contains_key("DROP_ME"));
         assert!(r.contains_key("KEEP"));
@@ -287,8 +294,9 @@ mod tests {
     #[test]
     fn clear_then_reset_in_later_layer_cancels_unset() {
         let l1 = env_layer(&[("X", "1")]);
-        let mut l2 = CadeLayer::new(1, Path::new("/"));
-        l2.push_action(CadeAction::Clear(vec!["X".into()]));
+        let mut l2 = CadeLayer::default();
+        l2.push_action(&CadeAction::Clear(vec!["X".into()]))
+            .unwrap();
         let l3 = env_layer(&[("X", "2")]);
         let r = rollup_envs(vec![l1, l2, l3]);
         assert_eq!(r.values("X"), Some(&["2".into()][..]));
@@ -301,9 +309,11 @@ mod tests {
     #[test]
     fn pure_flag_does_not_drop_inherited_layers() {
         let parent = env_layer(&[("FROM_PARENT", "kept")]);
-        let mut child = CadeLayer::new(1, Path::new("/"));
-        child.push_action(CadeAction::Purify);
-        child.push_action(CadeAction::Environ(env_set(&[("FROM_CHILD", "c")])));
+        let mut child = CadeLayer::default();
+        child.push_action(&CadeAction::Purify).unwrap();
+        child
+            .push_action(&CadeAction::Environ(env_set(&[("FROM_CHILD", "c")])))
+            .unwrap();
         let r = rollup_envs(vec![parent, child]);
         assert!(r.purified());
         assert_eq!(r.values("FROM_PARENT"), Some(&["kept".into()][..]));

@@ -1,6 +1,6 @@
 use super::watch::LAYER_CACHE_VERSION;
 use super::{Cade, sessions::shell_gc_root_ttl};
-use crate::types::CadeLayer;
+use crate::types::layer::CachedLayer;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
@@ -87,7 +87,7 @@ impl Cade {
         Ok(())
     }
 
-    pub(super) fn get_cached_layer(&self, dir: &str, token: &str) -> Result<Option<CadeLayer>> {
+    pub(super) fn get_cached_layer(&self, dir: &str, token: &str) -> Result<Option<CachedLayer>> {
         match self.db.query_row(
             "SELECT Data FROM LayerCache WHERE Dir=(?1) AND Token=(?2)",
             [dir, token],
@@ -112,7 +112,7 @@ impl Cade {
         &self,
         dir: &str,
         token: &str,
-        layer: &CadeLayer,
+        layer: &CachedLayer,
     ) -> Result<()> {
         let data = serde_json::to_string(layer)?;
         self.db.execute(

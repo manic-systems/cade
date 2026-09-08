@@ -17,7 +17,7 @@ impl Cade {
         let spinner = crate::progress::start(&root_hint.display().to_string());
 
         let (activation_env, session, new_session) = self.activation_env_with_snapshot()?;
-        let plan = self.activation_plan(Some(&session))?;
+        let plan = self.activation_plan(&session)?;
         self.refresh_session_holders(&session, client_id, owner_pid);
         clear_disallowed_root_marker(shell);
         let rollup = &plan.rollup;

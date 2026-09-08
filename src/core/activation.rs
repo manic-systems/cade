@@ -43,17 +43,13 @@ impl RollupResult {
 }
 
 impl Cade {
-    pub(super) fn activation_plan(&mut self, session: Option<&str>) -> Result<ActivationPlan> {
+    pub(super) fn activation_plan(&mut self, session: &str) -> Result<ActivationPlan> {
         let root = find_cade_root(&self.cwd)
             .context("no .cade or .envrc found in this directory or any parent")?;
         self.activation_plan_for_root(root, session)
     }
 
-    fn activation_plan_for_root(
-        &mut self,
-        root: PathBuf,
-        session: Option<&str>,
-    ) -> Result<ActivationPlan> {
+    fn activation_plan_for_root(&mut self, root: PathBuf, session: &str) -> Result<ActivationPlan> {
         self.maybe_activation_plan_for_root(root, session)?
             .ok_or_else(|| anyhow!("{DISALLOWED_REMINDER}"))
     }
@@ -61,7 +57,7 @@ impl Cade {
     fn maybe_activation_plan_for_root(
         &mut self,
         root: PathBuf,
-        session: Option<&str>,
+        session: &str,
     ) -> Result<Option<ActivationPlan>> {
         let cade_files = self.approved_chain(&root)?;
         if cade_files.is_empty() {
@@ -89,8 +85,9 @@ impl Cade {
                         Verbosity::Trace,
                         format_args!("cade: loading layer {}.", path.display()),
                     );
-                    let layer = load_single_layer(layer_count, path, keywords, self, session)?;
-                    self.store_cached_layer(&dir, &token, &layer)?;
+                    let (cached, layer) =
+                        load_single_layer(layer_count, path, keywords, self, session)?;
+                    self.store_cached_layer(&dir, &token, &cached)?;
                     let store_paths = layer.nix_store_paths.clone();
                     (layer, store_paths)
                 }
@@ -116,15 +113,14 @@ impl Cade {
         token: &str,
         path: &Path,
     ) -> Result<Option<(CadeLayer, Vec<String>)>> {
-        let Some(mut layer) = self.get_cached_layer(dir, token)? else {
+        let Some(cached) = self.get_cached_layer(dir, token)? else {
             return Ok(None);
         };
-        let store_paths = layer.envs.derived_store_paths();
-        if store_paths_all_present(&store_paths) {
-            layer
-                .replay_entry_actions()
+        if store_paths_all_present(&cached.nix_store_paths) {
+            let layer = cached
+                .activate()
                 .with_context(|| format!("replaying entry actions for {}", path.display()))?;
-            let store_paths = layer.envs.derived_store_paths();
+            let store_paths = layer.nix_store_paths.clone();
             verbosity::log(
                 Verbosity::Trace,
                 format_args!("cade: using cached layer {}.", path.display()),
@@ -190,7 +186,7 @@ impl Cade {
 
         let session = direnv_session_id(client_id, owner_pid)
             .unwrap_or_else(|| direnv_fallback_session_id(&root));
-        let Some(plan) = self.maybe_activation_plan_for_root(root, Some(&session))? else {
+        let Some(plan) = self.maybe_activation_plan_for_root(root, &session)? else {
             if export.previous.is_some() {
                 return Ok(direnv_export::inactive_delta(export.previous));
             }

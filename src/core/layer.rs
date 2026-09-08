@@ -1,4 +1,8 @@
-use super::Cade;
+use crate::core::Cade;
+use crate::envrc::load::{activate_envrc, load_envrc};
+use crate::loaders::{call, load_env};
+use crate::nix::{prepare_flake, prepare_shell};
+use crate::types::layer::CachedLayer;
 use crate::{
     env::EnvSet,
     types::{CadeAction, CadeLayer, Keyword, LoadSpec, Loadable},
@@ -7,70 +11,39 @@ use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
 
 impl CadeLayer {
-    pub fn new(_layer: usize, _origin: &Path) -> Self {
-        Self {
-            envs: EnvSet::new(),
-            hooks: Vec::new(),
-            purify: false,
-            clears: std::collections::HashSet::new(),
-            concat: std::collections::HashSet::new(),
-            nix_store_paths: Vec::new(),
-            entry_actions: Vec::new(),
+    pub fn merge_env(&mut self, env: EnvSet) {
+        let merged = self.envs.merge_layer_env(env);
+        for key in merged.sets {
+            self.clears.remove(&key);
         }
+        self.clears.extend(merged.clears);
+        self.nix_store_paths.extend(merged.store_paths);
     }
 
-    pub fn push_action(&mut self, action: CadeAction) {
-        use CadeAction::*;
+    pub fn push_action(&mut self, action: &CadeAction) -> Result<()> {
         match action {
-            Purify => {
-                self.purify = true;
+            CadeAction::Purify => self.purify = true,
+            CadeAction::Environ(env) => self.merge_env(env.clone()),
+            CadeAction::EnvFile(file) => {
+                self.merge_env(load_env(file).context("loading env file")?);
             }
-            Environ(env) => {
-                let merged = self.envs.merge_layer_env(env);
-                for key in merged.sets {
-                    self.clears.remove(&key);
-                }
-                self.clears.extend(merged.clears);
-                self.nix_store_paths.extend(merged.store_paths);
-            }
-            NixDevEnv(_) | Envrc(_) => {
-                unreachable!("entry environments must be materialized first")
-            }
-            Hook(hook) => {
-                self.hooks.push(hook);
-            }
-            Clear(vars) => {
-                self.clears.extend(vars);
-            }
-            Concat(vars) => {
-                self.concat.extend(vars);
-            }
+            CadeAction::NixDevEnv(dev_env) => self.merge_env(dev_env.activate()?),
+            CadeAction::Envrc(actions) => self.merge_env(activate_envrc(actions)?),
+            CadeAction::Hook(hook) => self.hooks.push(hook.clone()),
+            CadeAction::Clear(vars) => self.clears.extend(vars.iter().cloned()),
+            CadeAction::Concat(vars) => self.concat.extend(vars.iter().cloned()),
         }
-    }
-}
-
-impl CadeLayer {
-    pub(super) fn replay_entry_actions(&mut self) -> Result<()> {
-        if self.entry_actions.is_empty() {
-            return Ok(());
-        }
-
-        let actions = self.entry_actions.clone();
-        let mut materialized = CadeLayer::new(0, Path::new("/"));
-        for action in &actions {
-            materialized.push_action(materialize_action(action)?);
-        }
-        materialized.entry_actions = actions;
-        *self = materialized;
         Ok(())
     }
 }
 
-fn materialize_action(action: &CadeAction) -> Result<CadeAction> {
-    match action {
-        CadeAction::NixDevEnv(dev_env) => dev_env.activate().map(CadeAction::Environ),
-        CadeAction::Envrc(envrc) => envrc.activate().map(CadeAction::Environ),
-        action => Ok(action.clone()),
+impl CachedLayer {
+    pub(super) fn activate(&self) -> Result<CadeLayer> {
+        let mut layer = CadeLayer::default();
+        for action in &self.actions {
+            layer.push_action(action)?;
+        }
+        Ok(layer)
     }
 }
 
@@ -148,65 +121,61 @@ pub(super) fn load_single_layer(
     path: &Path,
     keywords: &[Keyword],
     cade: &Cade,
-    session: Option<&str>,
-) -> Result<CadeLayer> {
-    use crate::{
-        loaders::{call, load_env},
-        nix::{prepare_flake, prepare_shell},
-    };
-    use Keyword::*;
-
+    session: &str,
+) -> Result<(CachedLayer, CadeLayer)> {
     let mut actions = Vec::new();
-    for (action_index, kw) in keywords.iter().enumerate() {
-        let act = match kw {
-            Pure => Ok(CadeAction::Purify),
-            Call(raw) => call(path, tokenize_args(raw)?)
-                .context("calling process")
-                .map(CadeAction::Environ),
-            Load(loadable) => {
+    let mut layer = CadeLayer::default();
+
+    for (action_index, keyword) in keywords.iter().enumerate() {
+        let action = match keyword {
+            Keyword::Pure => CadeAction::Purify,
+            Keyword::Call(raw) => {
+                CadeAction::Environ(call(path, tokenize_args(raw)?).context("calling process")?)
+            }
+            Keyword::Load(loadable) => {
                 let resolved = loadable.resolve(path);
                 let spec_key = resolved.spec.cache_key();
-                let profile = session.and_then(|session| {
-                    cade.nix_profile_path(session, layer_count, action_index, path, &spec_key)
-                });
-                match resolved.run {
-                    LoadRun::Flake(target) => prepare_flake(&target, profile)
-                        .context("loading flake")
-                        .map(CadeAction::NixDevEnv),
-                    LoadRun::Shell(file) => prepare_shell(&file, profile)
-                        .context("loading shell")
-                        .map(CadeAction::NixDevEnv),
-                    LoadRun::Env(file) => load_env(&file)
-                        .context("loading env file")
-                        .map(CadeAction::Environ),
-                    LoadRun::Envrc(p) => crate::envrc::prepare_envrc(&p, profile)
-                        .context("loading .envrc")
-                        .map(CadeAction::Envrc),
-                }
+                let profile =
+                    cade.nix_profile_path(session, layer_count, action_index, path, &spec_key);
+                let (loaded_action, env) = match resolved.run {
+                    LoadRun::Flake(target) => {
+                        let dev_env = prepare_flake(&target, profile).context("loading flake")?;
+                        let env = dev_env.activate()?;
+                        (CadeAction::NixDevEnv(dev_env), env)
+                    }
+                    LoadRun::Shell(file) => {
+                        let dev_env = prepare_shell(&file, profile).context("loading shell")?;
+                        let env = dev_env.activate()?;
+                        (CadeAction::NixDevEnv(dev_env), env)
+                    }
+                    LoadRun::Env(file) => {
+                        let env = load_env(&file).context("loading env file")?;
+                        (CadeAction::EnvFile(file), env)
+                    }
+                    LoadRun::Envrc(file) => {
+                        let (envrc, env) = load_envrc(&file, profile).context("loading .envrc")?;
+                        (CadeAction::Envrc(envrc), env)
+                    }
+                };
+                layer.merge_env(env);
+                actions.push(loaded_action);
+                continue;
             }
-            Hook(hook) => Ok(CadeAction::Hook(hook.clone())),
-            Clear(vars) => Ok(CadeAction::Clear(vars.clone())),
-            Concat(vars) => Ok(CadeAction::Concat(vars.clone())),
-            Set(env) => Ok(CadeAction::Environ(env.clone())),
-
-            Watch(_) | Disinherit => continue,
-        }?;
-        actions.push(act);
+            Keyword::Hook(hook) => CadeAction::Hook(hook.clone()),
+            Keyword::Clear(vars) => CadeAction::Clear(vars.clone()),
+            Keyword::Concat(vars) => CadeAction::Concat(vars.clone()),
+            Keyword::Set(env) => CadeAction::Environ(env.clone()),
+            Keyword::Watch(_) | Keyword::Disinherit => continue,
+        };
+        layer.push_action(&action)?;
+        actions.push(action);
     }
 
-    let replay_on_entry = actions.iter().any(|action| match action {
-        CadeAction::NixDevEnv(_) => true,
-        CadeAction::Envrc(envrc) => envrc.replays_on_entry(),
-        _ => false,
-    });
-    let mut layer = CadeLayer::new(layer_count, path);
-    for action in &actions {
-        layer.push_action(materialize_action(action)?);
-    }
-    if replay_on_entry {
-        layer.entry_actions = actions;
-    }
-    Ok(layer)
+    let cached = CachedLayer {
+        actions,
+        nix_store_paths: layer.nix_store_paths.clone(),
+    };
+    Ok((cached, layer))
 }
 
 pub(super) fn tokenize_args(raw: &str) -> Result<Vec<String>> {
@@ -223,9 +192,9 @@ mod tests {
     #[test]
     fn layer_merge_preserves_store_path_metadata() {
         let env = EnvSet::from_envs(&format!("TOOL={STORE_PATH}\n")).unwrap();
-        let mut layer = CadeLayer::new(0, Path::new("/"));
+        let mut layer = CadeLayer::default();
 
-        layer.push_action(CadeAction::Environ(env));
+        layer.push_action(&CadeAction::Environ(env)).unwrap();
 
         assert_eq!(layer.nix_store_paths, [STORE_PATH]);
         assert_eq!(layer.envs.derived_store_paths(), [STORE_PATH]);
