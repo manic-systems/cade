@@ -8,7 +8,9 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
+    fs::{Metadata, OpenOptions},
     io::Read,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
@@ -92,7 +94,7 @@ impl WatchFileState {
                 if *size != current_size {
                     return WatchChange::Content;
                 }
-                if content_hash.is_none() || content_hash_for(path) != *content_hash {
+                if content_hash.is_none() || content_hash_for(path, &meta) != *content_hash {
                     return WatchChange::Content;
                 }
 
@@ -238,14 +240,26 @@ fn watch_file_state(path: &Path) -> WatchFileState {
         Ok(meta) => WatchFileState::Present {
             mtime: mtime_nanos(&meta),
             size: meta.len(),
-            content_hash: content_hash_for(path),
+            content_hash: content_hash_for(path, &meta),
         },
         Err(_) => WatchFileState::Missing,
     }
 }
 
-fn content_hash_for(path: &Path) -> Option<u64> {
-    let mut file = std::fs::File::open(path).ok()?;
+fn content_hash_for(path: &Path, meta: &Metadata) -> Option<u64> {
+    if !meta.is_file() {
+        return None;
+    }
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+
     let mut hash = 0xcbf29ce484222325u64;
     let mut buffer = [0_u8; 8192];
     loop {
