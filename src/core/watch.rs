@@ -14,6 +14,13 @@ use std::{
 
 pub(super) const LAYER_CACHE_VERSION: &str = "layer-cache-v4";
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum WatchChange {
+    Unchanged,
+    Metadata,
+    Content,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct WatchEntry {
     path: PathBuf,
@@ -28,8 +35,8 @@ impl WatchEntry {
         }
     }
 
-    fn changed(&self) -> bool {
-        self.state.changed(&self.path)
+    fn refresh(&mut self) -> WatchChange {
+        self.state.refresh(&self.path)
     }
 
     fn token_part(&self) -> String {
@@ -61,30 +68,36 @@ enum WatchFileState {
 }
 
 impl WatchFileState {
-    fn changed(&self, path: &Path) -> bool {
+    fn refresh(&mut self, path: &Path) -> WatchChange {
         let Ok(meta) = std::fs::metadata(path) else {
-            return *self != WatchFileState::Missing;
+            return if *self == WatchFileState::Missing {
+                WatchChange::Unchanged
+            } else {
+                WatchChange::Content
+            };
         };
         let current_mtime = mtime_nanos(&meta);
         let current_size = meta.len();
 
         match self {
-            WatchFileState::Missing => true,
+            WatchFileState::Missing => WatchChange::Content,
             WatchFileState::Present {
                 mtime,
                 size,
                 content_hash,
             } => {
                 if *mtime == current_mtime && *size == current_size {
-                    return false;
+                    return WatchChange::Unchanged;
                 }
                 if *size != current_size {
-                    return true;
+                    return WatchChange::Content;
                 }
-                match content_hash {
-                    Some(expected) => content_hash_for(path) != Some(*expected),
-                    None => true,
+                if content_hash.is_none() || content_hash_for(path) != *content_hash {
+                    return WatchChange::Content;
                 }
+
+                *mtime = current_mtime;
+                WatchChange::Metadata
             }
         }
     }
@@ -124,8 +137,20 @@ impl WatchState {
             .collect()
     }
 
-    pub(super) fn files_changed(&self) -> bool {
-        self.version != LAYER_CACHE_VERSION || self.files.iter().any(WatchEntry::changed)
+    pub(super) fn refresh(&mut self) -> WatchChange {
+        if self.version != LAYER_CACHE_VERSION {
+            return WatchChange::Content;
+        }
+
+        let mut change = WatchChange::Unchanged;
+        for entry in &mut self.files {
+            match entry.refresh() {
+                WatchChange::Unchanged => {}
+                WatchChange::Metadata => change = WatchChange::Metadata,
+                WatchChange::Content => return WatchChange::Content,
+            }
+        }
+        change
     }
 }
 
@@ -302,7 +327,7 @@ mod tests {
         let path = root.join("flake.nix");
         std::fs::write(&path, "same\n").unwrap();
 
-        let entry = WatchEntry::capture(&path);
+        let mut entry = WatchEntry::capture(&path);
         let token = compute_layer_key(std::slice::from_ref(&path));
         let old_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
         let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
@@ -311,33 +336,33 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!entry.changed());
+        assert_eq!(entry.refresh(), WatchChange::Metadata);
         assert_eq!(compute_layer_key(std::slice::from_ref(&path)), token);
 
         std::fs::write(&path, "else\n").unwrap();
-        assert!(entry.changed());
+        assert_eq!(entry.refresh(), WatchChange::Content);
         assert_ne!(compute_layer_key(std::slice::from_ref(&path)), token);
         std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
     fn old_watch_state_versions_are_stale() {
-        let state = WatchState {
+        let mut state = WatchState {
             version: "layer-cache-v2".to_string(),
             root: PathBuf::from("/project"),
             cade_paths: vec![PathBuf::from("/project")],
             files: Vec::new(),
         };
 
-        assert!(state.files_changed());
+        assert_eq!(state.refresh(), WatchChange::Content);
     }
 
     #[test]
     fn missing_watch_state_version_is_stale() {
         let raw = r#"{"root":"/project","cade_paths":["/project"],"files":[]}"#;
-        let state: WatchState = serde_json::from_str(raw).unwrap();
+        let mut state: WatchState = serde_json::from_str(raw).unwrap();
 
-        assert!(state.files_changed());
+        assert_eq!(state.refresh(), WatchChange::Content);
     }
 
     #[test]

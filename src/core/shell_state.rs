@@ -130,8 +130,8 @@ impl ShellState {
         &self.hooks
     }
 
-    pub(super) fn watch_state(&self) -> Option<&WatchState> {
-        self.watches.as_ref()
+    pub(super) fn take_watch_state(&mut self) -> Option<WatchState> {
+        self.watches.take()
     }
 
     pub(super) fn unload_summary(&self) -> Option<(String, usize)> {
