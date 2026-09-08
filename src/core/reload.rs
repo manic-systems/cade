@@ -2,7 +2,10 @@ use super::{
     Announce, Cade, WatchState, announce_loaded, announce_unloaded, clear_disallowed_root_marker,
     mark_disallowed_root, shell_state::ShellState,
 };
-use crate::shells::ShellOutput;
+use crate::{
+    core::{shell_state::WATCHES_VAR, watch::WatchChange},
+    shells::ShellOutput,
+};
 use anyhow::Result;
 use std::{collections::BTreeSet, path::Path};
 
@@ -20,7 +23,7 @@ impl Cade {
             .iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect();
-        let shell_state = ShellState::from_env();
+        let mut shell_state = ShellState::from_env();
 
         if !shell_state.is_active() {
             if new_root.is_some() {
@@ -34,12 +37,25 @@ impl Cade {
             self.refresh_session_holders(session, client_id, owner_pid);
         }
 
-        let state = shell_state.watch_state();
-        let old_set: BTreeSet<String> = state.map(WatchState::cade_path_set).unwrap_or_default();
-        let old_root = state.map(WatchState::root_string);
-        let files_stale = state.map(WatchState::files_changed).unwrap_or(true);
+        let mut state = shell_state.take_watch_state();
+        let old_set: BTreeSet<String> = state
+            .as_ref()
+            .map(WatchState::cade_path_set)
+            .unwrap_or_default();
+        let old_root = state.as_ref().map(WatchState::root_string);
+        let change = state
+            .as_mut()
+            .map(WatchState::refresh)
+            .unwrap_or(WatchChange::Content);
 
-        if new_set == old_set && !files_stale {
+        if new_set == old_set && change != WatchChange::Content {
+            if change == WatchChange::Metadata
+                && let Some(session) = shell_state.valid_session()
+                && let Some(watches) = state.as_ref()
+            {
+                let watches_ref = self.persist_watch_state(session, watches)?;
+                print!("{}", shell.set_env(WATCHES_VAR, &watches_ref));
+            }
             self.sync_disallowed_prompt(disallowed_tip.as_deref(), shell);
             return Ok(());
         }
