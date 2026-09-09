@@ -4,10 +4,10 @@
   stdenv,
   pkg-config,
   sqlite,
-  clang,
-  wild ? null,
+  buildPackages,
 }:
 let
+  inherit (buildPackages) clang wild;
   manifest = (lib.importTOML ../Cargo.toml).package;
   hasWild =
     stdenv.hostPlatform.isLinux && (stdenv.hostPlatform.isx86_64 || stdenv.hostPlatform.isAarch64);
@@ -41,7 +41,7 @@ rustPlatform.buildRustPackage {
   stripAllList = [ "bin" ];
 
   env = lib.optionalAttrs hasWild {
-    RUSTFLAGS = "-Clinker=${clang}/bin/clang -Clink-arg=--ld-path=wild";
+    RUSTFLAGS = "-Clinker=${clang}/bin/${clang.targetPrefix}clang -Clink-arg=--ld-path=wild";
   };
 
   meta = {
