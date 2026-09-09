@@ -43,15 +43,37 @@ set -eu
 if [ "${1:-}" = profile ]; then
   exit 0
 fi
-if [ "${1:-}" != print-dev-env ]; then
+if [ "${1:-}" != develop ]; then
   exit 64
 fi
-cat <<'EOF'
+shift
+profile=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --command)
+      shift
+      break
+      ;;
+    --profile)
+      profile="${2:-}"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [ -n "$profile" ]; then
+  mkdir -p "${profile%/*}"
+  env_target="${profile}-env"
+  : > "$env_target"
+  ln -sfn "$env_target" "$profile"
+fi
 PATH="/fake-dev/bin:${PATH:-}"
 export PATH
 FROM_FAKE_NIX=ok
 export FROM_FAKE_NIX
-EOF
+exec "$@"
 "#;
 
 struct ShimSandbox {
@@ -281,6 +303,10 @@ fn export_json_loads_cade_shell_through_real_shim() {
     fs::write(project.join(".cade"), "load flake\n").unwrap();
     fs::write(config_dir.join("config.toml"), "direnv = \"shim\"\n").unwrap();
     write_executable(&fake_bin.join("nix"), &FAKE_NIX.replace("@bash@", bash));
+    write_executable(
+        &fake_bin.join("nix-store"),
+        &format!("#!{bash}\nset -eu\nexit 0\n"),
+    );
 
     let host_path = std::env::var_os("PATH").unwrap_or_default();
     let path = std::env::join_paths(
@@ -356,6 +382,10 @@ fn real_shim_enables_export_without_cade_config() {
     fs::create_dir_all(&home).unwrap();
     fs::write(project.join(".cade"), "load flake\n").unwrap();
     write_executable(&fake_bin.join("nix"), &FAKE_NIX.replace("@bash@", bash));
+    write_executable(
+        &fake_bin.join("nix-store"),
+        &format!("#!{bash}\nset -eu\nexit 0\n"),
+    );
 
     let host_path = std::env::var_os("PATH").unwrap_or_default();
     let path = std::env::join_paths(

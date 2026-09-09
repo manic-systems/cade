@@ -1,7 +1,7 @@
 use crate::env::EnvSet;
 use crate::envrc::plan::{PlannedDirective, plan_directives};
 use crate::loaders::load_env;
-use crate::nix::{prepare_flake, prepare_shell};
+use crate::nix::develop::{load_flake, load_shell};
 use crate::types::EnvrcAction;
 use crate::verbosity::{self, Verbosity};
 use anyhow::{Context, Result};
@@ -21,9 +21,12 @@ pub fn load_envrc(path: &Path, profile_dir: Option<PathBuf>) -> Result<(Vec<Envr
                 target,
                 profile_name,
             } => {
-                let profile = profile_dir.as_ref().map(|base| base.join(profile_name));
-                let dev_env = prepare_flake(&target, profile).context("use flake")?;
-                out.merge_loaded(dev_env.activate()?);
+                let profile = profile_dir
+                    .as_ref()
+                    .context("creating nix profile")?
+                    .join(profile_name);
+                let (dev_env, env) = load_flake(&target, &profile).context("use flake")?;
+                out.merge_loaded(env);
                 actions.push(EnvrcAction::NixDevEnv(dev_env));
                 continue;
             }
@@ -31,9 +34,12 @@ pub fn load_envrc(path: &Path, profile_dir: Option<PathBuf>) -> Result<(Vec<Envr
                 shell,
                 profile_name,
             } => {
-                let profile = profile_dir.as_ref().map(|base| base.join(profile_name));
-                let dev_env = prepare_shell(&shell, profile).context("use nix")?;
-                out.merge_loaded(dev_env.activate()?);
+                let profile = profile_dir
+                    .as_ref()
+                    .context("creating nix profile")?
+                    .join(profile_name);
+                let (dev_env, env) = load_shell(&shell, &profile).context("use nix")?;
+                out.merge_loaded(env);
                 actions.push(EnvrcAction::NixDevEnv(dev_env));
                 continue;
             }

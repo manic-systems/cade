@@ -626,23 +626,51 @@ set -eu
 if [ "${1:-}" = profile ]; then
   exit 0
 fi
-if [ "${1:-}" != print-dev-env ]; then
+if [ "${1:-}" != develop ]; then
   printf 'unexpected nix command: %s\n' "$*" >&2
   exit 64
 fi
-printf 'print-dev-env\n' >> "$CADE_FAKE_NIX_CALL_LOG"
-cat <<'EOF'
+shift
+profile=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --command)
+      shift
+      break
+      ;;
+    --profile)
+      profile="${2:-}"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [ -n "$profile" ]; then
+  printf 'develop\n' >> "$CADE_FAKE_NIX_CALL_LOG"
+  mkdir -p "${profile%/*}"
+  env_target="${profile}-env"
+  : > "$env_target"
+  ln -sfn "$env_target" "$profile"
+fi
 PATH="/dev/bin:${PATH:-}"
 export PATH
 FROM_FAKE_NIX=ok
 export FROM_FAKE_NIX
-EOF
+exec "$@"
 "#,
     )
     .unwrap();
     let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_nix, permissions).unwrap();
+    std::fs::write(fake_bin.join("nix-store"), "#!/bin/sh\nset -eu\nexit 0\n").unwrap();
+    let mut store_permissions = std::fs::metadata(fake_bin.join("nix-store"))
+        .unwrap()
+        .permissions();
+    store_permissions.set_mode(0o755);
+    std::fs::set_permissions(fake_bin.join("nix-store"), store_permissions).unwrap();
 
     let call_log = sb.state.join("nix.log");
     let host_path = std::env::var_os("PATH").unwrap_or_default();
@@ -680,10 +708,7 @@ EOF
             stdout(out)
         );
     }
-    assert_eq!(
-        std::fs::read_to_string(&call_log).unwrap(),
-        "print-dev-env\n"
-    );
+    assert_eq!(std::fs::read_to_string(&call_log).unwrap(), "develop\n");
 }
 
 #[cfg(unix)]
@@ -704,27 +729,53 @@ set -eu
 if [ "${1:-}" = profile ]; then
   exit 0
 fi
-if [ "${1:-}" != print-dev-env ]; then
+if [ "${1:-}" != develop ]; then
   printf 'unexpected nix command: %s\n' "$*" >&2
   exit 64
 fi
-printf 'print-dev-env\n' >> "$CADE_FAKE_NIX_CALL_LOG"
-cat <<'EOF'
+shift
+profile=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --command)
+      shift
+      break
+      ;;
+    --profile)
+      profile="${2:-}"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [ -n "$profile" ]; then
+  printf 'develop\n' >> "$CADE_FAKE_NIX_CALL_LOG"
+  mkdir -p "${profile%/*}"
+  env_target="${profile}-env"
+  : > "$env_target"
+  ln -sfn "$env_target" "$profile"
+fi
+printf "hook-ran\n" >> "$CADE_HOOK_LOG"
 PATH="/dev/bin:/path-not-set:${PATH:-}"
 export PATH
-shellHook='printf "hook-ran\n" >> "$CADE_HOOK_LOG"
-printf "visible shellHook output\n"
 FROM_SHELL_HOOK=ok
-export FROM_SHELL_HOOK'
-export shellHook
-eval "${shellHook:-}"
-EOF
+export FROM_SHELL_HOOK
+printf "visible shellHook output\n"
+exec "$@"
 "#,
     )
     .unwrap();
     let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_nix, permissions).unwrap();
+    std::fs::write(fake_bin.join("nix-store"), "#!/bin/sh\nset -eu\nexit 0\n").unwrap();
+    let mut store_permissions = std::fs::metadata(fake_bin.join("nix-store"))
+        .unwrap()
+        .permissions();
+    store_permissions.set_mode(0o755);
+    std::fs::set_permissions(fake_bin.join("nix-store"), store_permissions).unwrap();
 
     let hook_log = sb.state.join("hook.log");
     let call_log = sb.state.join("nix.log");
@@ -770,7 +821,7 @@ EOF
     );
     assert_eq!(
         std::fs::read_to_string(&call_log).unwrap(),
-        "print-dev-env\nprint-dev-env\n"
+        "develop\ndevelop\n"
     );
 }
 
