@@ -1,7 +1,6 @@
 {
   inputs = {
     nixpkgs.url = "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz";
-    systems.url = "github:nix-systems/default-linux";
     fenix.url = "github:nix-community/fenix";
     fenix.inputs.nixpkgs.follows = "nixpkgs";
   };
@@ -10,13 +9,14 @@
     {
       self,
       nixpkgs,
-      systems,
       fenix,
     }:
     let
+      pkgsFor = system: nixpkgs.legacyPackages.${system} or (import nixpkgs { inherit system; });
       forAllSystems =
         function:
-        nixpkgs.lib.genAttrs (import systems) (system: function nixpkgs.legacyPackages.${system} system);
+        nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed (system: function (pkgsFor system) system);
+      rustfmtFor = pkgs: system: fenix.packages.${system}.latest.rustfmt or pkgs.rustfmt;
       hasWild =
         pkgs:
         pkgs.stdenv.hostPlatform.isLinux
@@ -34,7 +34,7 @@
           pkgs.rustc
           pkgs.cargo
           pkgs.rust-analyzer
-          fenix.packages.${system}.latest.rustfmt
+          (rustfmtFor pkgs system)
           pkgs.clippy
           pkgs.just
           pkgs.sqlite
@@ -61,7 +61,7 @@
               {
                 nativeBuildInputs = [
                   pkgs.cargo
-                  fenix.packages.${system}.latest.rustfmt
+                  (rustfmtFor pkgs system)
                   pkgs.taplo
                   pkgs.nixfmt
                 ];
@@ -111,7 +111,7 @@
           fmt = pkgs.mkShellNoCC {
             packages = [
               pkgs.cargo
-              fenix.packages.${system}.latest.rustfmt
+              (rustfmtFor pkgs system)
               pkgs.taplo
               pkgs.nixfmt
             ];
