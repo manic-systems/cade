@@ -6,28 +6,26 @@
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      fenix,
-    }:
+    { self, ... }@inputs:
     let
+      inherit (inputs) nixpkgs fenix;
+      inherit (nixpkgs) lib;
+      forAllSystems = lib.genAttrs (lib.systems.doubles.linux ++ lib.systems.doubles.darwin);
       pkgsFor = system: nixpkgs.legacyPackages.${system} or (import nixpkgs { inherit system; });
-      forAllSystems =
-        function:
-        nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed (system: function (pkgsFor system) system);
+
+      # wild + clang are only used on Linux tier-1 arches
+      hasWild = plat: plat.isLinux && (plat.isx86_64 || plat.isAarch64);
+
       rustfmtFor = pkgs: system: fenix.packages.${system}.latest.rustfmt or pkgs.rustfmt;
-      hasWild =
-        pkgs:
-        pkgs.stdenv.hostPlatform.isLinux
-        && (pkgs.stdenv.hostPlatform.isx86_64 || pkgs.stdenv.hostPlatform.isAarch64);
+
       nativeDeps =
         pkgs:
         [ pkgs.pkg-config ]
-        ++ nixpkgs.lib.optionals (hasWild pkgs) [
+        ++ nixpkgs.lib.optionals (hasWild pkgs.stdenv.hostPlatform) [
           pkgs.wild
           pkgs.clang
         ];
+
       devPackages =
         pkgs: system:
         [
@@ -40,6 +38,7 @@
           pkgs.sqlite
         ]
         ++ nativeDeps pkgs;
+
       testShells = pkgs: [
         pkgs.bashInteractive
         pkgs.zsh
@@ -51,7 +50,11 @@
     in
     {
       checks = forAllSystems (
-        pkgs: system: {
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        {
           default = pkgs.linkFarmFromDrvs "cade-checks" [
             self.checks.${system}.fmt
             self.checks.${system}.clippy
@@ -95,16 +98,18 @@
         }
       );
       devShells = forAllSystems (
-        pkgs: system: {
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        {
           default = pkgs.mkShell {
-            RUSTFLAGS = "-C prefer-dynamic=yes";
             packages = devPackages pkgs system;
           };
 
           # Separate from `default` so `load flake` doesn't shadow the user's own
           # interactive shells on PATH. Run the suite with `nix develop .#test`.
           test = pkgs.mkShell {
-            RUSTFLAGS = "-C prefer-dynamic=yes";
             packages = devPackages pkgs system ++ testShells pkgs;
           };
 
@@ -121,12 +126,12 @@
               find . -name '*.nix' -not -path './target/*' -exec nixfmt {} +
             '';
           };
-
         }
       );
       packages = forAllSystems (
-        pkgs: system:
+        system:
         let
+          pkgs = pkgsFor system;
           cade = pkgs.callPackage ./nix/package.nix { };
           direnvCompat = pkgs.callPackage ./nix/direnv-compat.nix { inherit cade; };
         in
