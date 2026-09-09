@@ -53,9 +53,9 @@ dependencies = [
 
 [[package]]
 name = "cognos"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cde1effdc2ca9df723c82f6b5f394de16cd8ca226f5ca6c6f5313f7f98dcf51c"
+checksum = "a503261a7903c21088a4459c8e50908d6ae4e63e8b43f09e7c69c51183ff7989"
 dependencies = [
  "serde",
  "serde_json",
