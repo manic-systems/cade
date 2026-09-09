@@ -1,7 +1,19 @@
-use cognos::internal::json::{Actions, Activities, ResultType, Verbosity, parse_line};
+use std::{
+    collections::{
+        HashMap,
+        VecDeque,
+    },
+    mem::take,
+};
+
+use cognos::internal::json::{
+    Actions,
+    Activities,
+    ResultType,
+    Verbosity,
+    parse_line,
+};
 use serde_json::Value;
-use std::collections::{HashMap, VecDeque};
-use std::mem::take;
 
 const RECENT_LINES: usize = 5;
 const LINE_BYTES: usize = 4 * 1024;
@@ -14,19 +26,19 @@ const RESET: &str = "\x1b[0m";
 
 #[derive(Default, Clone, Copy)]
 struct Count {
-    done: u64,
+    done:     u64,
     expected: u64,
 }
 
 #[derive(Default)]
 pub struct NixProgress {
-    carry: Vec<u8>,
-    recent: VecDeque<String>,
+    carry:      Vec<u8>,
+    recent:     VecDeque<String>,
     transcript: VecDeque<String>,
-    saw_nix: bool,
+    saw_nix:    bool,
 
-    builds: Count,
-    copies: Count,
+    builds:    Count,
+    copies:    Count,
     builds_id: Option<u64>,
     copies_id: Option<u64>,
     transfers: HashMap<u64, (u64, u64)>,
@@ -43,13 +55,13 @@ impl NixProgress {
                 b'\n' => {
                     let line = take(&mut self.carry);
                     self.line(&line);
-                }
+                },
                 b'\r' => self.carry.clear(),
                 _ => {
                     if self.carry.len() < LINE_BYTES {
                         self.carry.push(byte);
                     }
-                }
+                },
             }
         }
     }
@@ -87,7 +99,7 @@ impl NixProgress {
                     Activities::CopyPaths => self.copies_id = Some(id),
                     Activities::FileTransfer => {
                         self.transfers.entry(id).or_insert((0, 0));
-                    }
+                    },
                     Activities::Unknown
                     | Activities::CopyPath
                     | Activities::Realise
@@ -98,7 +110,7 @@ impl NixProgress {
                     | Activities::QueryPathInfo
                     | Activities::PostBuildHook
                     | Activities::BuildWaiting
-                    | Activities::FetchTree => {}
+                    | Activities::FetchTree => {},
                 }
                 let lively = matches!(
                     activity,
@@ -110,39 +122,41 @@ impl NixProgress {
                 if lively && level <= Verbosity::Talkative && !text.is_empty() {
                     self.push_recent(sanitize(text.as_bytes()));
                 }
-            }
+            },
             Actions::Result {
                 id,
                 result_type,
                 fields,
-            } => match result_type {
-                ResultType::Progress => {
-                    let done = fields.first().and_then(Value::as_u64).unwrap_or(0);
-                    let expected = fields.get(1).and_then(Value::as_u64).unwrap_or(0);
-                    let count = Count { done, expected };
-                    if self.builds_id == Some(id) {
-                        self.builds = count;
-                    } else if self.copies_id == Some(id) {
-                        self.copies = count;
-                    } else if let Some(bytes) = self.transfers.get_mut(&id) {
-                        *bytes = (done, expected);
-                    }
-                }
-                ResultType::BuildLogLine | ResultType::PostBuildLogLine => {
-                    if let Some(text) = fields.first().and_then(Value::as_str) {
-                        let line = sanitize(text.as_bytes());
-                        if !line.is_empty() {
-                            self.push_recent(line.clone());
-                            self.push_transcript(line);
+            } => {
+                match result_type {
+                    ResultType::Progress => {
+                        let done = fields.first().and_then(Value::as_u64).unwrap_or(0);
+                        let expected = fields.get(1).and_then(Value::as_u64).unwrap_or(0);
+                        let count = Count { done, expected };
+                        if self.builds_id == Some(id) {
+                            self.builds = count;
+                        } else if self.copies_id == Some(id) {
+                            self.copies = count;
+                        } else if let Some(bytes) = self.transfers.get_mut(&id) {
+                            *bytes = (done, expected);
                         }
-                    }
+                    },
+                    ResultType::BuildLogLine | ResultType::PostBuildLogLine => {
+                        if let Some(text) = fields.first().and_then(Value::as_str) {
+                            let line = sanitize(text.as_bytes());
+                            if !line.is_empty() {
+                                self.push_recent(line.clone());
+                                self.push_transcript(line);
+                            }
+                        }
+                    },
+                    ResultType::FileLinked
+                    | ResultType::UntrustedPath
+                    | ResultType::CorruptedPath
+                    | ResultType::SetPhase
+                    | ResultType::SetExpected
+                    | ResultType::FetchStatus => {},
                 }
-                ResultType::FileLinked
-                | ResultType::UntrustedPath
-                | ResultType::CorruptedPath
-                | ResultType::SetPhase
-                | ResultType::SetExpected
-                | ResultType::FetchStatus => {}
             },
             Actions::Message { level, msg, .. } => {
                 let line = sanitize(msg.as_bytes());
@@ -153,8 +167,8 @@ impl NixProgress {
                 if level <= Verbosity::Notice {
                     self.push_recent(line);
                 }
-            }
-            Actions::Stop { .. } => {}
+            },
+            Actions::Stop { .. } => {},
         }
     }
 

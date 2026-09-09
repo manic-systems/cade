@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{
+    BTreeMap,
+    BTreeSet,
+};
 
 const NIX_STORE_PREFIX: &str = "/nix/store/";
 const NIX_STORE_HASH_LEN: usize = 32;

@@ -1,6 +1,15 @@
-use crate::shells::{self, ShellOutput};
-use std::collections::{BTreeMap, BTreeSet};
-use std::env::vars;
+use std::{
+    collections::{
+        BTreeMap,
+        BTreeSet,
+    },
+    env::vars,
+};
+
+use crate::shells::{
+    self,
+    ShellOutput,
+};
 
 type EnvDiff = BTreeMap<String, Option<String>>;
 
@@ -10,9 +19,9 @@ pub struct EnvDelta {
 
 #[derive(Clone, Copy)]
 pub struct EnvDeltaInput<'input> {
-    pub env: &'input BTreeMap<String, Vec<String>>,
-    pub absorb: &'input BTreeSet<String>,
-    pub unset: &'input [String],
+    pub env:      &'input BTreeMap<String, Vec<String>>,
+    pub absorb:   &'input BTreeSet<String>,
+    pub unset:    &'input [String],
     pub purified: bool,
     pub live_env: &'input BTreeMap<String, String>,
     pub baseline: &'input BTreeMap<String, String>,
@@ -125,7 +134,12 @@ fn record_change(changes: &mut EnvDiff, key: &str, value: Option<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{EnvDelta, EnvDiff, is_pure_preserved_key, is_shell_managed};
+    use super::{
+        EnvDelta,
+        EnvDiff,
+        is_pure_preserved_key,
+        is_shell_managed,
+    };
 
     #[test]
     fn shell_managed_classification() {

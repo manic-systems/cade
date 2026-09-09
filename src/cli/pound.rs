@@ -1,8 +1,14 @@
-use pound::{Parse, ValueEnum};
 use std::path::PathBuf;
 
-use crate::shells::ShellName;
-use crate::verbosity::Verbosity;
+use pound::{
+    Parse,
+    ValueEnum,
+};
+
+use crate::{
+    shells::ShellName,
+    verbosity::Verbosity,
+};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum CliVerbosity {
@@ -143,7 +149,11 @@ pub struct Cli {
 mod tests {
     use pound::Parse as _;
 
-    use super::{Cli, CliAction, CliShell};
+    use super::{
+        Cli,
+        CliAction,
+        CliShell,
+    };
     use crate::shells::ShellName;
 
     #[test]

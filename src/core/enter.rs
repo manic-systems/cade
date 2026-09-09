@@ -1,16 +1,33 @@
-use crate::core::activation::activation_env_with_snapshot;
-use crate::core::activation::activation_plan;
-use crate::core::participants::find_cade_root;
-use crate::core::sessions::gc_roots::refresh_session_holders;
-use crate::core::sessions::gc_roots::root_nix_store_paths;
-use crate::core::shell_state::ShellState;
-use crate::core::watch::WatchState;
-use crate::core::watch::persist_watch_state;
-use crate::core::{
-    Announce, Cade, clear_disallowed_root_marker, layer_count_suffix, log_hook, log_key_list,
-};
-use crate::{config, progress::start, shells::ShellOutput, types::hook::HookType};
 use anyhow::Result;
+
+use crate::{
+    config,
+    core::{
+        Announce,
+        Cade,
+        activation::{
+            activation_env_with_snapshot,
+            activation_plan,
+        },
+        clear_disallowed_root_marker,
+        layer_count_suffix,
+        log_hook,
+        log_key_list,
+        participants::find_cade_root,
+        sessions::gc_roots::{
+            refresh_session_holders,
+            root_nix_store_paths,
+        },
+        shell_state::ShellState,
+        watch::{
+            WatchState,
+            persist_watch_state,
+        },
+    },
+    progress::start,
+    shells::ShellOutput,
+    types::hook::HookType,
+};
 
 pub fn do_activation(
     cade: &Cade,
@@ -66,12 +83,14 @@ pub fn do_activation(
     print!("{}", shell_state.render_activation(shell, new_session));
 
     match announce {
-        Some(detail) => spinner.success(&format!(
-            "cade: {} {}{}.",
-            detail.verb(),
-            plan.root.display(),
-            layer_count_suffix(layer_paths.len())
-        )),
+        Some(detail) => {
+            spinner.success(&format!(
+                "cade: {} {}{}.",
+                detail.verb(),
+                plan.root.display(),
+                layer_count_suffix(layer_paths.len())
+            ))
+        },
         None => spinner.done(),
     }
     log_key_list("set", &set_keys);

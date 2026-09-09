@@ -1,5 +1,9 @@
-use super::{Lookup, eval::expand_with};
 use std::borrow::Cow;
+
+use super::{
+    Lookup,
+    eval::expand_with,
+};
 
 pub(super) fn expand_shell_args(input: &str, lookup: Lookup<'_>) -> String {
     expand_with(input, lookup, &|value| {
@@ -11,8 +15,9 @@ pub(super) fn expand_shell_args(input: &str, lookup: Lookup<'_>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     fn lookup_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let map: HashMap<String, String> = pairs
@@ -29,10 +34,9 @@ mod tests {
 
     #[test]
     fn call_arg_single_backslash_escapes_uniformly() {
-        assert_eq!(
-            args("echo \\${VAR}", &[("VAR", "v")]),
-            vec!["echo", "${VAR}"]
-        );
+        assert_eq!(args("echo \\${VAR}", &[("VAR", "v")]), vec![
+            "echo", "${VAR}"
+        ]);
         assert_eq!(args("echo ${VAR}", &[("VAR", "v")]), vec!["echo", "v"]);
     }
 
@@ -40,9 +44,8 @@ mod tests {
     fn call_arg_value_is_one_token_even_with_spaces_or_quotes() {
         assert_eq!(args("run ${A}", &[("A", "a b c")]), vec!["run", "a b c"]);
         assert_eq!(args("run ${A}", &[("A", "a'b")]), vec!["run", "a'b"]);
-        assert_eq!(
-            args("run \"x y\" ${A}", &[("A", "z")]),
-            vec!["run", "x y", "z"]
-        );
+        assert_eq!(args("run \"x y\" ${A}", &[("A", "z")]), vec![
+            "run", "x y", "z"
+        ]);
     }
 }

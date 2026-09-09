@@ -1,36 +1,60 @@
-use super::{Lookup, eval::expand_plain, quote::expand_shell_args};
+use std::env::var;
+
+use super::{
+    Lookup,
+    eval::expand_plain,
+    quote::expand_shell_args,
+};
 use crate::{
     env::set::EnvSet,
-    types::keyword::{Keyword, Loadable},
+    types::keyword::{
+        Keyword,
+        Loadable,
+    },
 };
-use std::env::var;
 
 pub fn expand_keyword(kw: &mut Keyword) {
     expand_keyword_with(kw, &|key| var(key).ok());
 }
 
 fn expand_keyword_with(kw: &mut Keyword, lookup: Lookup<'_>) {
-    use Keyword::{Call, Clear, Concat, Disinherit, Hook, Load, Pure, Set, Watch};
+    use Keyword::{
+        Call,
+        Clear,
+        Concat,
+        Disinherit,
+        Hook,
+        Load,
+        Pure,
+        Set,
+        Watch,
+    };
     match *kw {
         Call(ref mut command) | Watch(ref mut command) => {
             *command = expand_shell_args(command, lookup);
-        }
+        },
         Load(ref mut loadable) => expand_loadable(loadable, lookup),
         Set(ref mut env) => expand_envset(env, lookup),
-        Hook(_) | Clear(_) | Concat(_) | Pure | Disinherit => {}
+        Hook(_) | Clear(_) | Concat(_) | Pure | Disinherit => {},
     }
 }
 
 fn expand_loadable(loadable: &mut Loadable, lookup: Lookup<'_>) {
-    use Loadable::{Default, Env, Envrc, Flake, Shell};
+    use Loadable::{
+        Default,
+        Env,
+        Envrc,
+        Flake,
+        Shell,
+    };
     match *loadable {
         Flake(ref mut source)
         | Shell(ref mut source)
         | Env(ref mut source)
         | Envrc(ref mut source) => {
             *source = expand_plain(source, lookup);
-        }
-        Default => {}
+        },
+        Default => {},
     }
 }
 
@@ -40,9 +64,13 @@ fn expand_envset(env: &mut EnvSet, lookup: Lookup<'_>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::types::hook::{HookType, InnerHook};
     use std::collections::HashMap;
+
+    use super::*;
+    use crate::types::hook::{
+        HookType,
+        InnerHook,
+    };
 
     fn lookup_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let map: HashMap<String, String> = pairs
@@ -79,7 +107,7 @@ mod tests {
         }
 
         let mut hook = Keyword::Hook(InnerHook {
-            kind: HookType::LoadPost,
+            kind:    HookType::LoadPost,
             content: "echo ${TOKEN}".into(),
         });
         expand_keyword_with(&mut hook, &lookup);

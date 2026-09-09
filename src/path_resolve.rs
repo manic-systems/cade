@@ -1,6 +1,11 @@
-use std::env::var_os;
-use std::fs::canonicalize;
-use std::path::{Path, PathBuf};
+use std::{
+    env::var_os,
+    fs::canonicalize,
+    path::{
+        Path,
+        PathBuf,
+    },
+};
 
 fn expand_tilde(arg: &str) -> PathBuf {
     expand_tilde_with(arg, home_dir())
@@ -45,17 +50,19 @@ fn normalize_lexical(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::CurDir => {}
-            Component::ParentDir => match out.components().next_back() {
-                Some(Component::Normal(_)) => {
-                    out.pop();
+            Component::CurDir => {},
+            Component::ParentDir => {
+                match out.components().next_back() {
+                    Some(Component::Normal(_)) => {
+                        out.pop();
+                    },
+                    Some(Component::RootDir) => {},
+                    _ => out.push(".."),
                 }
-                Some(Component::RootDir) => {}
-                _ => out.push(".."),
             },
             other @ (Component::Prefix(_) | Component::RootDir | Component::Normal(_)) => {
                 out.push(other.as_os_str());
-            }
+            },
         }
     }
     if out.as_os_str().is_empty() {
@@ -67,12 +74,20 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        env::temp_dir,
+        fs::{
+            create_dir_all,
+            remove_dir_all,
+            remove_file,
+            write,
+        },
+        os::unix::fs::symlink,
+        process::id,
+        thread::current,
+    };
+
     use super::*;
-    use std::env::temp_dir;
-    use std::fs::{create_dir_all, remove_dir_all, remove_file, write};
-    use std::os::unix::fs::symlink;
-    use std::process::id;
-    use std::thread::current;
 
     #[test]
     fn relative_joins_layer_dir() {

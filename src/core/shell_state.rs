@@ -1,11 +1,20 @@
-use crate::core::sessions::identity::is_valid_session;
-use crate::core::watch::WatchState;
-use crate::core::watch::load_watch_ref;
-use crate::env::rollup::RollupResult;
-use crate::shells::ShellOutput;
-use crate::types::hook::InnerHook;
-use std::env::var;
-use std::path::PathBuf;
+use std::{
+    env::var,
+    path::PathBuf,
+};
+
+use crate::{
+    core::{
+        sessions::identity::is_valid_session,
+        watch::{
+            WatchState,
+            load_watch_ref,
+        },
+    },
+    env::rollup::RollupResult,
+    shells::ShellOutput,
+    types::hook::InnerHook,
+};
 
 const KEY_SEPARATOR: &str = "\x1F";
 
@@ -32,17 +41,17 @@ const ACTIVATION_VARS: &[&str] = &[
 
 pub(super) struct ShellState {
     layers_present: bool,
-    session: Option<String>,
-    layers: Vec<PathBuf>,
-    state_dir: Option<PathBuf>,
-    config_path: Option<PathBuf>,
-    set_keys: Vec<String>,
-    set_present: bool,
-    unset_keys: Vec<String>,
-    pure: bool,
-    hooks: Vec<InnerHook>,
-    watches: Option<WatchState>,
-    watches_ref: Option<String>,
+    session:        Option<String>,
+    layers:         Vec<PathBuf>,
+    state_dir:      Option<PathBuf>,
+    config_path:    Option<PathBuf>,
+    set_keys:       Vec<String>,
+    set_present:    bool,
+    unset_keys:     Vec<String>,
+    pure:           bool,
+    hooks:          Vec<InnerHook>,
+    watches:        Option<WatchState>,
+    watches_ref:    Option<String>,
 }
 
 impl ShellState {

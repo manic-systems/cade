@@ -1,16 +1,40 @@
 mod common;
 
-use common::{Sandbox, stderr, stdout};
-use std::env::{join_paths, split_paths, var, var_os};
-use std::fs::{
-    FileTimes, OpenOptions, create_dir_all, metadata, read_dir, read_to_string, set_permissions,
-    write,
+use std::{
+    env::{
+        join_paths,
+        split_paths,
+        var,
+        var_os,
+    },
+    fs::{
+        FileTimes,
+        OpenOptions,
+        create_dir_all,
+        metadata,
+        read_dir,
+        read_to_string,
+        set_permissions,
+        write,
+    },
+    iter::once,
+    path::{
+        Path,
+        PathBuf,
+    },
+    process::{
+        Output,
+        id,
+    },
+    thread::sleep,
+    time::Duration,
 };
-use std::iter::once;
-use std::path::{Path, PathBuf};
-use std::process::{Output, id};
-use std::thread::sleep;
-use std::time::Duration;
+
+use common::{
+    Sandbox,
+    stderr,
+    stdout,
+};
 
 fn cade_state(sb: &Sandbox) -> PathBuf {
     sb.state.join("cade")
@@ -123,21 +147,17 @@ fn restore_reverts_only_cade_keys_and_leaves_pwd_alone() {
     let sb = Sandbox::new();
 
     sb.write_snapshot("s1", "A=old");
-    let out = sb.run(
-        &sb.root,
-        &["exit", "--shell", "bash"],
-        &[
-            ("__CADE_SESSION", "s1"),
-            ("__CADE_SET", "A\u{1f}B"),
-            ("__CADE_UNSET", ""),
-            ("__CADE_PURE", "0"),
-            ("__CADE_HOOKS", "[]"),
-            ("__CADE_LAYERS", "x"),
-            ("A", "new"),
-            ("B", "added"),
-            ("PWD", "/somewhere/else"),
-        ],
-    );
+    let out = sb.run(&sb.root, &["exit", "--shell", "bash"], &[
+        ("__CADE_SESSION", "s1"),
+        ("__CADE_SET", "A\u{1f}B"),
+        ("__CADE_UNSET", ""),
+        ("__CADE_PURE", "0"),
+        ("__CADE_HOOKS", "[]"),
+        ("__CADE_LAYERS", "x"),
+        ("A", "new"),
+        ("B", "added"),
+        ("PWD", "/somewhere/else"),
+    ]);
     assert!(out.status.success(), "exit failed: {out:?}");
     let script = stdout(&out);
     assert!(
@@ -370,20 +390,16 @@ fn disallowing_a_layer_caps_the_run_below_it() {
 fn restore_tolerates_missing_prev_snapshot() {
     let sb = Sandbox::new();
 
-    let out = sb.run(
-        &sb.root,
-        &["exit", "--shell", "bash"],
-        &[
-            ("__CADE_SESSION", "ghost-no-file"),
-            ("__CADE_SET", "A\u{1f}B"),
-            ("__CADE_UNSET", ""),
-            ("__CADE_PURE", "0"),
-            ("__CADE_HOOKS", "[]"),
-            ("__CADE_LAYERS", "x"),
-            ("A", "v"),
-            ("B", "v"),
-        ],
-    );
+    let out = sb.run(&sb.root, &["exit", "--shell", "bash"], &[
+        ("__CADE_SESSION", "ghost-no-file"),
+        ("__CADE_SET", "A\u{1f}B"),
+        ("__CADE_UNSET", ""),
+        ("__CADE_PURE", "0"),
+        ("__CADE_HOOKS", "[]"),
+        ("__CADE_LAYERS", "x"),
+        ("A", "v"),
+        ("B", "v"),
+    ]);
     assert!(
         out.status.success(),
         "restore should not hard-fail: {out:?}"
@@ -515,11 +531,10 @@ fn reload_with_stale_client_id_env_still_activates() {
     sb.write(".cade", "A=1\n");
     sb.allow(&sb.root);
 
-    let out = sb.run(
-        &sb.root,
-        &["reload", "--shell", "bash"],
-        &[("CADE_CLIENT_ID", "deadbeefdeadbeef")],
-    );
+    let out = sb.run(&sb.root, &["reload", "--shell", "bash"], &[(
+        "CADE_CLIENT_ID",
+        "deadbeefdeadbeef",
+    )]);
     assert!(
         out.status.success(),
         "stale CADE_CLIENT_ID must not abort activation: {out:?}"
@@ -606,16 +621,12 @@ fn final_restore_keeps_shared_session_snapshot_through_gc() {
 
     sleep(Duration::from_secs(2));
 
-    let out = sb.run(
-        &sb.root,
-        &["exit", "--shell", "bash"],
-        &[
-            ("__CADE_SESSION", session),
-            ("__CADE_LAYERS", sb.root.to_str().unwrap()),
-            ("__CADE_SET", "PARENT"),
-            ("CADE_SHELL_GC_ROOT_TTL_SECONDS", "1"),
-        ],
-    );
+    let out = sb.run(&sb.root, &["exit", "--shell", "bash"], &[
+        ("__CADE_SESSION", session),
+        ("__CADE_LAYERS", sb.root.to_str().unwrap()),
+        ("__CADE_SET", "PARENT"),
+        ("CADE_SHELL_GC_ROOT_TTL_SECONDS", "1"),
+    ]);
     assert!(out.status.success(), "{out:?}");
     assert!(
         cade_state(&sb)
@@ -889,21 +900,17 @@ fn reload_notices_cade_created_over_implicit_envrc() {
     let watches = exported_value(&first_stdout, "__CADE_WATCHES");
     let session = exported_value(&first_stdout, "__CADE_SESSION");
     let hooks = exported_value(&first_stdout, "__CADE_HOOKS");
-    let reload = sb.run(
-        &sb.root,
-        &["reload", "--shell", "bash"],
-        &[
-            ("__CADE_SESSION", &session),
-            ("__CADE_LAYERS", &root),
-            ("__CADE_SET", "FROM_ENVRC"),
-            ("__CADE_UNSET", ""),
-            ("__CADE_PURE", "0"),
-            ("__CADE_HOOKS", &hooks),
-            ("__CADE_WATCHES", &watches),
-            ("__CADE_STATE_DIR", &state_dir),
-            ("FROM_ENVRC", "1"),
-        ],
-    );
+    let reload = sb.run(&sb.root, &["reload", "--shell", "bash"], &[
+        ("__CADE_SESSION", &session),
+        ("__CADE_LAYERS", &root),
+        ("__CADE_SET", "FROM_ENVRC"),
+        ("__CADE_UNSET", ""),
+        ("__CADE_PURE", "0"),
+        ("__CADE_HOOKS", &hooks),
+        ("__CADE_WATCHES", &watches),
+        ("__CADE_STATE_DIR", &state_dir),
+        ("FROM_ENVRC", "1"),
+    ]);
     assert!(reload.status.success(), "{reload:?}");
     let script = stdout(&reload);
     assert!(
@@ -956,20 +963,16 @@ fn reload_to_disallowed_root_unloads_and_reminds() {
     })
     .to_string();
 
-    let out = sb.run(
-        &blocked,
-        &["reload", "--shell", "bash"],
-        &[
-            ("__CADE_SESSION", "reload-disallowed"),
-            ("__CADE_SET", "A"),
-            ("__CADE_UNSET", ""),
-            ("__CADE_PURE", "0"),
-            ("__CADE_HOOKS", "[]"),
-            ("__CADE_LAYERS", allowed_str.as_str()),
-            ("__CADE_WATCHES", watches.as_str()),
-            ("A", "1"),
-        ],
-    );
+    let out = sb.run(&blocked, &["reload", "--shell", "bash"], &[
+        ("__CADE_SESSION", "reload-disallowed"),
+        ("__CADE_SET", "A"),
+        ("__CADE_UNSET", ""),
+        ("__CADE_PURE", "0"),
+        ("__CADE_HOOKS", "[]"),
+        ("__CADE_LAYERS", allowed_str.as_str()),
+        ("__CADE_WATCHES", watches.as_str()),
+        ("A", "1"),
+    ]);
     assert!(out.status.success(), "{out:?}");
     let err = stderr(&out);
     assert!(
@@ -991,15 +994,11 @@ fn concat_uses_snapshot_ambient_so_reloads_dont_grow() {
     sb.allow(&sb.root);
 
     sb.write_snapshot("s3", "PATH=/orig");
-    let out = enter(
-        &sb,
-        &sb.root,
-        &[
-            ("PATH", "/layer/bin:/orig"),
-            ("__CADE_SESSION", "s3"),
-            ("__CADE_LAYERS", "x"),
-        ],
-    );
+    let out = enter(&sb, &sb.root, &[
+        ("PATH", "/layer/bin:/orig"),
+        ("__CADE_SESSION", "s3"),
+        ("__CADE_LAYERS", "x"),
+    ]);
     assert!(out.status.success(), "{out:?}");
 
     assert!(
@@ -1027,20 +1026,16 @@ fn reload_into_disallowed_child_keeps_the_approved_parent() {
     })
     .to_string();
 
-    let out = sb.run(
-        &sub,
-        &["reload", "--shell", "bash"],
-        &[
-            ("__CADE_SESSION", "s5"),
-            ("__CADE_SET", "A"),
-            ("__CADE_UNSET", ""),
-            ("__CADE_PURE", "0"),
-            ("__CADE_HOOKS", "[]"),
-            ("__CADE_LAYERS", root_str.as_str()),
-            ("__CADE_WATCHES", watches.as_str()),
-            ("A", "1"),
-        ],
-    );
+    let out = sb.run(&sub, &["reload", "--shell", "bash"], &[
+        ("__CADE_SESSION", "s5"),
+        ("__CADE_SET", "A"),
+        ("__CADE_UNSET", ""),
+        ("__CADE_PURE", "0"),
+        ("__CADE_HOOKS", "[]"),
+        ("__CADE_LAYERS", root_str.as_str()),
+        ("__CADE_WATCHES", watches.as_str()),
+        ("A", "1"),
+    ]);
     assert!(out.status.success(), "{out:?}");
     let err = stderr(&out);
     assert!(!err.contains("cade: unloaded"), "{err}");
@@ -1068,21 +1063,17 @@ fn reload_when_parent_revoked_unloads_parent_and_reloads_tip() {
     })
     .to_string();
 
-    let out = sb.run(
-        &sub,
-        &["reload", "--shell", "bash"],
-        &[
-            ("__CADE_SESSION", "s5"),
-            ("__CADE_SET", "A\u{1f}B"),
-            ("__CADE_UNSET", ""),
-            ("__CADE_PURE", "0"),
-            ("__CADE_HOOKS", "[]"),
-            ("__CADE_LAYERS", layers.as_str()),
-            ("__CADE_WATCHES", watches.as_str()),
-            ("A", "1"),
-            ("B", "2"),
-        ],
-    );
+    let out = sb.run(&sub, &["reload", "--shell", "bash"], &[
+        ("__CADE_SESSION", "s5"),
+        ("__CADE_SET", "A\u{1f}B"),
+        ("__CADE_UNSET", ""),
+        ("__CADE_PURE", "0"),
+        ("__CADE_HOOKS", "[]"),
+        ("__CADE_LAYERS", layers.as_str()),
+        ("__CADE_WATCHES", watches.as_str()),
+        ("A", "1"),
+        ("B", "2"),
+    ]);
     assert!(out.status.success(), "{out:?}");
     let err = stderr(&out);
     assert!(err.contains(&format!("cade: unloaded {root_str}")), "{err}");
@@ -1213,15 +1204,11 @@ fn direnv_none_export_json_unwinds_carried_diff() {
         .expect("active export must carry a DIRENV_DIFF")
         .to_owned();
 
-    let out = sb.run(
-        &sb.root,
-        &["export", "json"],
-        &[
-            ("CADE_DIRENV", "none"),
-            ("DIRENV_DIFF", diff.as_str()),
-            ("PROJ_VAR", "hello"),
-        ],
-    );
+    let out = sb.run(&sb.root, &["export", "json"], &[
+        ("CADE_DIRENV", "none"),
+        ("DIRENV_DIFF", diff.as_str()),
+        ("PROJ_VAR", "hello"),
+    ]);
     assert!(out.status.success(), "{out:?}");
     let json: serde_json::Value = serde_json::from_str(stdout(&out).trim()).unwrap();
     assert_ne!(

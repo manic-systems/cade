@@ -2,16 +2,27 @@ pub mod gc_roots;
 pub mod identity;
 pub mod leases;
 
-use crate::config;
-use anyhow::{Result, bail};
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+use anyhow::{
+    Result,
+    bail,
+};
 use identity::validate_client_id;
 pub(super) use identity::{
-    atomic_write, direnv_fallback_session_id, direnv_session_id, is_valid_session, new_session_id,
+    atomic_write,
+    direnv_fallback_session_id,
+    direnv_session_id,
+    is_valid_session,
+    new_session_id,
     stable_hash_hex,
 };
+use serde::{
+    Deserialize,
+    Serialize,
+};
+
+use crate::config;
 
 const DEFAULT_SHELL_GC_ROOT_TTL_SECS: u64 = 30 * 24 * 3600;
 
@@ -25,9 +36,9 @@ pub(super) fn shell_gc_root_ttl() -> Duration {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum SessionHolder {
     Process {
-        pid: u32,
+        pid:        u32,
         start_time: String,
-        last_seen: u64,
+        last_seen:  u64,
     },
     Lease {
         client_id: String,
@@ -62,22 +73,22 @@ impl SessionHolder {
                 } else {
                     bail!("invalid process start time")
                 }
-            }
+            },
             Self::Lease { ref client_id } => {
                 validate_client_id(client_id)?;
                 Ok(format!("lease-{client_id}.json"))
-            }
+            },
         }
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(super) struct LeaseRecord {
-    pub client_id: String,
-    pub kind: String,
-    pub project: Option<String>,
+    pub client_id:  String,
+    pub kind:       String,
+    pub project:    Option<String>,
     pub expires_at: u64,
-    pub last_seen: u64,
+    pub last_seen:  u64,
 }
 
 impl LeaseRecord {

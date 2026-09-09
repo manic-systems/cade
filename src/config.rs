@@ -1,14 +1,29 @@
-use crate::verbosity::Verbosity;
-use anyhow::{Context as _, Result, bail};
-use serde::Deserialize;
 use std::{
-    env::{var, var_os},
-    fs::{canonicalize, read_to_string},
+    env::{
+        var,
+        var_os,
+    },
+    fs::{
+        canonicalize,
+        read_to_string,
+    },
     io::ErrorKind,
-    path::{Path, PathBuf},
+    path::{
+        Path,
+        PathBuf,
+    },
     str::FromStr,
     sync::OnceLock,
 };
+
+use anyhow::{
+    Context as _,
+    Result,
+    bail,
+};
+use serde::Deserialize;
+
+use crate::verbosity::Verbosity;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DirenvMode {
@@ -45,20 +60,20 @@ impl FromStr for DirenvMode {
 
 #[derive(Debug, Clone, Default)]
 pub struct Config {
-    pub path: Option<PathBuf>,
-    pub verbosity: Option<Verbosity>,
-    pub long_running_warning_ms: Option<u64>,
+    pub path:                      Option<PathBuf>,
+    pub verbosity:                 Option<Verbosity>,
+    pub long_running_warning_ms:   Option<u64>,
     pub shell_gc_root_ttl_seconds: Option<u64>,
-    pub direnv: DirenvMode,
+    pub direnv:                    DirenvMode,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
-    verbosity: Option<String>,
-    long_running_warning_ms: Option<u64>,
+    verbosity:                 Option<String>,
+    long_running_warning_ms:   Option<u64>,
     shell_gc_root_ttl_seconds: Option<u64>,
-    direnv: Option<String>,
+    direnv:                    Option<String>,
 }
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
@@ -90,11 +105,13 @@ pub fn shell_gc_root_ttl_seconds() -> Option<u64> {
 pub fn direnv_mode() -> DirenvMode {
     var("CADE_DIRENV").map_or_else(
         |_| current().direnv,
-        |raw| match raw.parse::<DirenvMode>() {
-            Ok(mode) => mode,
-            Err(parse_error) => {
-                eprintln!("cade: ignoring CADE_DIRENV: {parse_error}");
-                current().direnv
+        |raw| {
+            match raw.parse::<DirenvMode>() {
+                Ok(mode) => mode,
+                Err(parse_error) => {
+                    eprintln!("cade: ignoring CADE_DIRENV: {parse_error}");
+                    current().direnv
+                },
             }
         },
     )
@@ -135,13 +152,15 @@ pub fn load(path: Option<&Path>) -> Result<Config> {
         Some(explicit) => {
             let config = read_config(explicit, true)?;
             Ok(config)
-        }
-        None => active_config_path()
-            .or_else(default_config_path)
-            .map_or_else(
-                || Ok(Config::default()),
-                |fallback| read_config(&fallback, false),
-            ),
+        },
+        None => {
+            active_config_path()
+                .or_else(default_config_path)
+                .map_or_else(
+                    || Ok(Config::default()),
+                    |fallback| read_config(&fallback, false),
+                )
+        },
     }
 }
 
@@ -150,11 +169,11 @@ fn read_config(path: &Path, strict: bool) -> Result<Config> {
         Ok(text) => text,
         Err(read_error) if !strict && read_error.kind() == ErrorKind::NotFound => {
             return Ok(Config::default());
-        }
+        },
         Err(read_error) => {
             return Err(read_error)
                 .with_context(|| format!("reading config at {}", path.display()));
-        }
+        },
     };
 
     let parsed: RawConfig =
@@ -169,11 +188,13 @@ impl TryFrom<RawConfig> for Config {
 
     fn try_from(raw: RawConfig) -> Result<Self> {
         let verbosity = match raw.verbosity {
-            Some(verbosity_text) => Some(
-                verbosity_text
-                    .parse::<Verbosity>()
-                    .map_err(|parse_error| anyhow::anyhow!("{parse_error}"))?,
-            ),
+            Some(verbosity_text) => {
+                Some(
+                    verbosity_text
+                        .parse::<Verbosity>()
+                        .map_err(|parse_error| anyhow::anyhow!("{parse_error}"))?,
+                )
+            },
             None => None,
         };
         if matches!(raw.long_running_warning_ms, Some(0)) {
@@ -183,9 +204,11 @@ impl TryFrom<RawConfig> for Config {
             bail!("shell_gc_root_ttl_seconds must be greater than 0");
         }
         let direnv = match raw.direnv {
-            Some(direnv_text) => direnv_text
-                .parse::<DirenvMode>()
-                .map_err(|parse_error| anyhow::anyhow!("{parse_error}"))?,
+            Some(direnv_text) => {
+                direnv_text
+                    .parse::<DirenvMode>()
+                    .map_err(|parse_error| anyhow::anyhow!("{parse_error}"))?
+            },
             None => DirenvMode::default(),
         };
         Ok(Self {
@@ -205,10 +228,10 @@ mod tests {
     #[test]
     fn parses_config() {
         let raw = RawConfig {
-            verbosity: Some("vars".into()),
-            long_running_warning_ms: Some(100),
+            verbosity:                 Some("vars".into()),
+            long_running_warning_ms:   Some(100),
             shell_gc_root_ttl_seconds: Some(200),
-            direnv: Some("full".into()),
+            direnv:                    Some("full".into()),
         };
         let cfg: Config = raw.try_into().unwrap();
         assert_eq!(cfg.verbosity, Some(Verbosity::Vars));

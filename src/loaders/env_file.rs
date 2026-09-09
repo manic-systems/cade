@@ -1,6 +1,14 @@
+use std::{
+    fs::read_to_string,
+    path::Path,
+};
+
+use anyhow::{
+    Context as _,
+    Result,
+};
+
 use crate::env::set::EnvSet;
-use anyhow::{Context as _, Result};
-use std::{fs::read_to_string, path::Path};
 
 pub fn load_env(path: &Path) -> Result<EnvSet> {
     let buf =

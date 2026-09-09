@@ -1,15 +1,31 @@
-use std::env::temp_dir;
-use std::fs::{create_dir_all, remove_dir_all, write};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output, id as process_id};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::{
+    env::temp_dir,
+    fs::{
+        create_dir_all,
+        remove_dir_all,
+        write,
+    },
+    path::{
+        Path,
+        PathBuf,
+    },
+    process::{
+        Command,
+        Output,
+        id as process_id,
+    },
+    sync::atomic::{
+        AtomicU32,
+        Ordering,
+    },
+};
 
 const BIN: &str = env!("CARGO_BIN_EXE_cade");
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 pub struct Sandbox {
-    pub root: PathBuf,
+    pub root:  PathBuf,
     pub state: PathBuf,
 }
 

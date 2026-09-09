@@ -1,22 +1,34 @@
-use crate::core::Announce;
-use crate::core::Cade;
-use crate::core::announce_loaded;
-use crate::core::announce_unloaded;
-use crate::core::clear_disallowed_root_marker;
-use crate::core::enter::do_activation;
-use crate::core::mark_disallowed_root;
-use crate::core::permissions::resolve_active;
-use crate::core::restore::do_restore;
-use crate::core::sessions::gc_roots::refresh_session_holders;
-use crate::core::shell_state::ShellState;
-use crate::core::shell_state::WATCHES_VAR;
-use crate::core::watch::WatchChange;
-use crate::core::watch::WatchState;
-use crate::core::watch::persist_watch_state;
-use crate::shells::ShellOutput;
+use std::{
+    collections::BTreeSet,
+    path::Path,
+};
+
 use anyhow::Result;
-use std::collections::BTreeSet;
-use std::path::Path;
+
+use crate::{
+    core::{
+        Announce,
+        Cade,
+        announce_loaded,
+        announce_unloaded,
+        clear_disallowed_root_marker,
+        enter::do_activation,
+        mark_disallowed_root,
+        permissions::resolve_active,
+        restore::do_restore,
+        sessions::gc_roots::refresh_session_holders,
+        shell_state::{
+            ShellState,
+            WATCHES_VAR,
+        },
+        watch::{
+            WatchChange,
+            WatchState,
+            persist_watch_state,
+        },
+    },
+    shells::ShellOutput,
+};
 
 pub fn do_reload(
     cade: &Cade,
@@ -69,7 +81,7 @@ pub fn do_reload(
     match new_root.as_ref() {
         None => {
             do_restore(cade, shell, true, true, client_id, owner_pid);
-        }
+        },
         Some(new_root_path) => {
             let new_tip = new_root_path.to_string_lossy().to_string();
             let old_tip = old_root.as_deref();
@@ -95,7 +107,7 @@ pub fn do_reload(
                 }
             }
             do_activation(cade, shell, verb, client_id, owner_pid)?;
-        }
+        },
     }
     sync_disallowed_prompt(disallowed_tip.as_deref(), shell);
     Ok(())

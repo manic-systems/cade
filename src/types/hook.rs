@@ -1,4 +1,7 @@
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
 pub enum HookType {
@@ -11,5 +14,5 @@ pub enum HookType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InnerHook {
     pub content: String,
-    pub kind: HookType,
+    pub kind:    HookType,
 }

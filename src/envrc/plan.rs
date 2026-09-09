@@ -1,18 +1,28 @@
-use super::directive::{Directive, parse};
-use crate::nix::target::{FlakeTarget, flake_watch_files};
-use std::path::{Path, PathBuf};
+use std::path::{
+    Path,
+    PathBuf,
+};
+
+use super::directive::{
+    Directive,
+    parse,
+};
+use crate::nix::target::{
+    FlakeTarget,
+    flake_watch_files,
+};
 
 pub(super) enum PlannedDirective {
     UseFlake {
-        target: FlakeTarget,
+        target:       FlakeTarget,
         profile_name: String,
     },
     UseNix {
-        shell: PathBuf,
+        shell:        PathBuf,
         profile_name: String,
     },
     Dotenv {
-        path: PathBuf,
+        path:      PathBuf,
         if_exists: bool,
     },
     Export(String, String),
@@ -23,7 +33,7 @@ pub(super) enum PlannedDirective {
 
 pub(super) struct EnvrcDirective {
     pub action: PlannedDirective,
-    pub watch: Vec<PathBuf>,
+    pub watch:  Vec<PathBuf>,
 }
 
 pub(super) fn plan_directives(dir: &Path, contents: &str) -> Vec<EnvrcDirective> {
@@ -43,19 +53,19 @@ fn plan_directive(dir: &Path, idx: usize, directive: Directive) -> EnvrcDirectiv
                     target,
                     profile_name: format!("{idx}-flake"),
                 },
-                watch: flake_watch_files(dir),
+                watch:  flake_watch_files(dir),
             }
-        }
+        },
         Directive::UseNix(file) => {
             let shell = dir.join(if file.is_empty() { "shell.nix" } else { &file });
             EnvrcDirective {
                 action: PlannedDirective::UseNix {
-                    shell: shell.clone(),
+                    shell:        shell.clone(),
                     profile_name: format!("{idx}-nix"),
                 },
-                watch: vec![shell],
+                watch:  vec![shell],
             }
-        }
+        },
         Directive::Dotenv { file, if_exists } => {
             let path = dir.join(if file.is_empty() { ".env" } else { &file });
             EnvrcDirective {
@@ -63,24 +73,32 @@ fn plan_directive(dir: &Path, idx: usize, directive: Directive) -> EnvrcDirectiv
                     path: path.clone(),
                     if_exists,
                 },
-                watch: vec![path],
+                watch:  vec![path],
             }
-        }
-        Directive::Export(key, value) => EnvrcDirective {
-            action: PlannedDirective::Export(key, value),
-            watch: Vec::new(),
         },
-        Directive::PathAdd(dirs) => EnvrcDirective {
-            action: PlannedDirective::PathAdd(dirs),
-            watch: Vec::new(),
+        Directive::Export(key, value) => {
+            EnvrcDirective {
+                action: PlannedDirective::Export(key, value),
+                watch:  Vec::new(),
+            }
         },
-        Directive::WatchFile(files) => EnvrcDirective {
-            action: PlannedDirective::WatchOnly,
-            watch: files.into_iter().map(|file| dir.join(file)).collect(),
+        Directive::PathAdd(dirs) => {
+            EnvrcDirective {
+                action: PlannedDirective::PathAdd(dirs),
+                watch:  Vec::new(),
+            }
         },
-        Directive::Unhandled(line) => EnvrcDirective {
-            action: PlannedDirective::Unhandled(line),
-            watch: Vec::new(),
+        Directive::WatchFile(files) => {
+            EnvrcDirective {
+                action: PlannedDirective::WatchOnly,
+                watch:  files.into_iter().map(|file| dir.join(file)).collect(),
+            }
+        },
+        Directive::Unhandled(line) => {
+            EnvrcDirective {
+                action: PlannedDirective::Unhandled(line),
+                watch:  Vec::new(),
+            }
         },
     }
 }

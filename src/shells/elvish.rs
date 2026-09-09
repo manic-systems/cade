@@ -1,4 +1,8 @@
-use super::{ShellOutput, is_valid_key, quote::posix_command};
+use super::{
+    ShellOutput,
+    is_valid_key,
+    quote::posix_command,
+};
 
 pub struct Elvish;
 

@@ -1,18 +1,56 @@
-use crate::core::Cade;
-use crate::core::sessions::gc_roots::nix_profile_path;
-use crate::env::set::EnvSet;
-use crate::envrc::envrc_arg;
-use crate::envrc::load::{activate_envrc, load_envrc};
-use crate::envrc::watch::envrc_watch_files;
-use crate::loaders::call::call;
-use crate::loaders::env_file::load_env;
-use crate::nix::develop::{load_flake, load_shell};
-use crate::nix::target::{FlakeTarget, flake_watch_files, resolve_flake_target};
-use crate::types::keyword::{Keyword, Loadable};
-use crate::types::layer::{CachedLayer, CadeAction, CadeLayer};
-use crate::types::load_spec::LoadSpec;
-use anyhow::{Context as _, Result, anyhow};
-use std::path::{Path, PathBuf};
+use std::path::{
+    Path,
+    PathBuf,
+};
+
+use anyhow::{
+    Context as _,
+    Result,
+    anyhow,
+};
+
+use crate::{
+    core::{
+        Cade,
+        sessions::gc_roots::nix_profile_path,
+    },
+    env::set::EnvSet,
+    envrc::{
+        envrc_arg,
+        load::{
+            activate_envrc,
+            load_envrc,
+        },
+        watch::envrc_watch_files,
+    },
+    loaders::{
+        call::call,
+        env_file::load_env,
+    },
+    nix::{
+        develop::{
+            load_flake,
+            load_shell,
+        },
+        target::{
+            FlakeTarget,
+            flake_watch_files,
+            resolve_flake_target,
+        },
+    },
+    types::{
+        keyword::{
+            Keyword,
+            Loadable,
+        },
+        layer::{
+            CachedLayer,
+            CadeAction,
+            CadeLayer,
+        },
+        load_spec::LoadSpec,
+    },
+};
 
 impl CadeLayer {
     pub fn merge_env(&mut self, env: EnvSet) {
@@ -30,7 +68,7 @@ impl CadeLayer {
             CadeAction::Environ(ref env) => self.merge_env(env.clone()),
             CadeAction::EnvFile(ref file) => {
                 self.merge_env(load_env(file).context("loading env file")?);
-            }
+            },
             CadeAction::NixDevEnv(ref dev_env) => self.merge_env(dev_env.activate()?),
             CadeAction::Envrc(ref actions) => self.merge_env(activate_envrc(actions)?),
             CadeAction::Hook(ref hook) => self.hooks.push(hook.clone()),
@@ -59,24 +97,28 @@ pub(super) enum LoadRun {
 }
 
 pub(super) struct ResolvedLoad {
-    pub run: LoadRun,
-    pub spec: LoadSpec,
+    pub run:   LoadRun,
+    pub spec:  LoadSpec,
     pub watch: Vec<PathBuf>,
 }
 
 impl Loadable {
     fn file_arg(&self) -> Option<&str> {
         match *self {
-            Self::Shell(ref shell_file) => Some(if shell_file.is_empty() {
-                "./shell.nix"
-            } else {
-                shell_file
-            }),
-            Self::Env(ref env_file) => Some(if env_file.is_empty() {
-                ".env"
-            } else {
-                env_file
-            }),
+            Self::Shell(ref shell_file) => {
+                Some(if shell_file.is_empty() {
+                    "./shell.nix"
+                } else {
+                    shell_file
+                })
+            },
+            Self::Env(ref env_file) => {
+                Some(if env_file.is_empty() {
+                    ".env"
+                } else {
+                    env_file
+                })
+            },
             Self::Envrc(ref envrc_file) => Some(envrc_arg(envrc_file)),
             Self::Default | Self::Flake(_) => None,
         }
@@ -98,23 +140,23 @@ impl Loadable {
                     watch,
                     run: LoadRun::Flake(target),
                 }
-            }
+            },
             Self::Shell(_) => {
                 let file = resolve_for_watch(layer_dir, self.file_arg().unwrap());
                 ResolvedLoad {
-                    spec: LoadSpec::Shell(file.clone()),
+                    spec:  LoadSpec::Shell(file.clone()),
                     watch: vec![file.clone()],
-                    run: LoadRun::Shell(file),
+                    run:   LoadRun::Shell(file),
                 }
-            }
+            },
             Self::Env(_) => {
                 let file = resolve_for_watch(layer_dir, self.file_arg().unwrap());
                 ResolvedLoad {
-                    spec: LoadSpec::Env(file.clone()),
+                    spec:  LoadSpec::Env(file.clone()),
                     watch: vec![file.clone()],
-                    run: LoadRun::Env(file),
+                    run:   LoadRun::Env(file),
                 }
-            }
+            },
             Self::Envrc(_) => {
                 let path = resolve_for_watch(layer_dir, self.file_arg().unwrap());
                 let watch = envrc_watch_files(&path);
@@ -123,7 +165,7 @@ impl Loadable {
                     watch,
                     run: LoadRun::Envrc(path),
                 }
-            }
+            },
         }
     }
 }
@@ -143,7 +185,7 @@ pub(super) fn load_single_layer(
             Keyword::Pure => CadeAction::Purify,
             Keyword::Call(ref raw) => {
                 CadeAction::Environ(call(path, tokenize_args(raw)?).context("calling process")?)
-            }
+            },
             Keyword::Load(ref loadable) => {
                 let resolved = loadable.resolve(path);
                 let spec_key = resolved.spec.cache_key();
@@ -155,27 +197,27 @@ pub(super) fn load_single_layer(
                             load_flake(&target, &profile.context("creating nix profile")?)
                                 .context("loading flake")?;
                         (CadeAction::NixDevEnv(dev_env), env)
-                    }
+                    },
                     LoadRun::Shell(file) => {
                         let (dev_env, env) =
                             load_shell(&file, &profile.context("creating nix profile")?)
                                 .context("loading shell")?;
                         (CadeAction::NixDevEnv(dev_env), env)
-                    }
+                    },
                     LoadRun::Env(file) => {
                         let env = load_env(&file).context("loading env file")?;
                         (CadeAction::EnvFile(file), env)
-                    }
+                    },
                     LoadRun::Envrc(file) => {
                         let (envrc, env) =
                             load_envrc(&file, profile.as_deref()).context("loading .envrc")?;
                         (CadeAction::Envrc(envrc), env)
-                    }
+                    },
                 };
                 layer.merge_env(env);
                 actions.push(loaded_action);
                 continue;
-            }
+            },
             Keyword::Hook(ref hook) => CadeAction::Hook(hook.clone()),
             Keyword::Clear(ref vars) => CadeAction::Clear(vars.clone()),
             Keyword::Concat(ref vars) => CadeAction::Concat(vars.clone()),
@@ -199,8 +241,13 @@ pub(super) fn tokenize_args(raw: &str) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::env::set::EnvSet;
-    use crate::types::layer::{CadeAction, CadeLayer};
+    use crate::{
+        env::set::EnvSet,
+        types::layer::{
+            CadeAction,
+            CadeLayer,
+        },
+    };
 
     const STORE_PATH: &str = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-layer";
 

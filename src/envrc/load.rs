@@ -1,12 +1,30 @@
-use crate::env::set::EnvSet;
-use crate::envrc::plan::{PlannedDirective, plan_directives};
-use crate::loaders::env_file::load_env;
-use crate::nix::develop::{load_flake, load_shell};
-use crate::types::layer::EnvrcAction;
-use crate::verbosity::{self, Verbosity};
-use anyhow::{Context as _, Result};
-use std::fs::read_to_string;
-use std::path::Path;
+use std::{
+    fs::read_to_string,
+    path::Path,
+};
+
+use anyhow::{
+    Context as _,
+    Result,
+};
+
+use crate::{
+    env::set::EnvSet,
+    envrc::plan::{
+        PlannedDirective,
+        plan_directives,
+    },
+    loaders::env_file::load_env,
+    nix::develop::{
+        load_flake,
+        load_shell,
+    },
+    types::layer::EnvrcAction,
+    verbosity::{
+        self,
+        Verbosity,
+    },
+};
 
 pub fn load_envrc(path: &Path, profile_dir: Option<&Path>) -> Result<(Vec<EnvrcAction>, EnvSet)> {
     let dir = path.parent().unwrap_or(path);
@@ -29,7 +47,7 @@ pub fn load_envrc(path: &Path, profile_dir: Option<&Path>) -> Result<(Vec<EnvrcA
                 out.merge_loaded(env);
                 actions.push(EnvrcAction::NixDevEnv(dev_env));
                 continue;
-            }
+            },
             PlannedDirective::UseNix {
                 shell,
                 profile_name,
@@ -41,31 +59,33 @@ pub fn load_envrc(path: &Path, profile_dir: Option<&Path>) -> Result<(Vec<EnvrcA
                 out.merge_loaded(env);
                 actions.push(EnvrcAction::NixDevEnv(dev_env));
                 continue;
-            }
+            },
             PlannedDirective::Dotenv {
                 path: dotenv_path,
                 if_exists,
-            } => EnvrcAction::Dotenv {
-                path: dotenv_path,
-                if_exists,
+            } => {
+                EnvrcAction::Dotenv {
+                    path: dotenv_path,
+                    if_exists,
+                }
             },
             PlannedDirective::Export(key, value) => {
                 let mut env = EnvSet::new();
                 env.add_literal_export(key, &value);
                 EnvrcAction::Environ(env)
-            }
+            },
             PlannedDirective::PathAdd(dirs) => {
                 let prefix = dirs
                     .iter()
                     .map(|entry| dir.join(entry).to_string_lossy().into_owned())
                     .collect();
                 EnvrcAction::PrependPath(prefix)
-            }
+            },
             PlannedDirective::WatchOnly => continue,
             PlannedDirective::Unhandled(line) => {
                 warnings.push(line);
                 continue;
-            }
+            },
         };
         action.apply(&mut out)?;
         actions.push(action);
@@ -94,7 +114,7 @@ impl EnvrcAction {
                 if !if_exists || path.exists() {
                     out.merge_loaded(load_env(path).context("dotenv")?);
                 }
-            }
+            },
             Self::NixDevEnv(ref dev_env) => out.merge_loaded(dev_env.activate()?),
             Self::PrependPath(ref prefix) => out.prepend_path_entries(prefix.clone()),
         }
@@ -121,10 +141,17 @@ fn warn_unsupported(path: &Path, warnings: &[String]) {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        env::temp_dir,
+        fs::{
+            create_dir_all,
+            remove_dir_all,
+            write,
+        },
+        process::id as process_id,
+    };
+
     use super::*;
-    use std::env::temp_dir;
-    use std::fs::{create_dir_all, remove_dir_all, write};
-    use std::process::id as process_id;
 
     const STORE_PATH: &str = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-envrc";
 

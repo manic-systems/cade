@@ -1,12 +1,29 @@
-use crate::cade_file::load_dir;
-use crate::core::Cade;
-use crate::core::participants::find_cade_root;
-use crate::core::participants::participant_dirs;
-use crate::types::keyword::Keyword;
-use crate::verbosity::{self, Verbosity};
-use anyhow::{Context as _, Result};
+use std::path::{
+    Path,
+    PathBuf,
+};
+
+use anyhow::{
+    Context as _,
+    Result,
+};
 use rusqlite::named_params;
-use std::path::{Path, PathBuf};
+
+use crate::{
+    cade_file::load_dir,
+    core::{
+        Cade,
+        participants::{
+            find_cade_root,
+            participant_dirs,
+        },
+    },
+    types::keyword::Keyword,
+    verbosity::{
+        self,
+        Verbosity,
+    },
+};
 
 pub fn allow_here(cade: &Cade, permission: bool) -> Result<()> {
     let root = find_cade_root(&cade.cwd).unwrap_or_else(|| cade.cwd.clone());

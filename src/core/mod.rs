@@ -12,25 +12,50 @@ mod snapshot;
 pub mod status;
 mod watch;
 
-use crate::core::cache::{
-    ensure_layer_cache_schema, prune_stale_layer_cache, prune_stale_watch_discovery,
+use std::{
+    env::{
+        current_dir,
+        var,
+        var_os,
+    },
+    fs::create_dir_all,
+    path::{
+        Path,
+        PathBuf,
+    },
+    time::Duration,
 };
-use crate::{
-    progress::{eviction_marker, load_marker},
-    shells::ShellOutput,
-    types::hook::{HookType, InnerHook},
-    verbosity::{self, Verbosity},
+
+use anyhow::{
+    Context as _,
+    Result,
 };
-use anyhow::{Context as _, Result};
 use rusqlite::Connection;
-use std::env::{current_dir, var, var_os};
-use std::fs::create_dir_all;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+
+use crate::{
+    core::cache::{
+        ensure_layer_cache_schema,
+        prune_stale_layer_cache,
+        prune_stale_watch_discovery,
+    },
+    progress::{
+        eviction_marker,
+        load_marker,
+    },
+    shells::ShellOutput,
+    types::hook::{
+        HookType,
+        InnerHook,
+    },
+    verbosity::{
+        self,
+        Verbosity,
+    },
+};
 
 pub struct Cade {
-    db: Connection,
-    cwd: PathBuf,
+    db:        Connection,
+    cwd:       PathBuf,
     state_dir: PathBuf,
 }
 

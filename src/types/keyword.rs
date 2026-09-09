@@ -1,5 +1,7 @@
-use crate::env::set::EnvSet;
-use crate::types::hook::InnerHook;
+use crate::{
+    env::set::EnvSet,
+    types::hook::InnerHook,
+};
 
 #[derive(Debug)]
 pub enum Keyword {

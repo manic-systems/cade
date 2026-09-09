@@ -1,22 +1,43 @@
-use anyhow::{Result, bail};
+#[cfg(target_os = "linux")] use std::fs::read_to_string;
+#[cfg(target_os = "macos")]
+use std::mem::{
+    MaybeUninit,
+    size_of,
+};
 use std::{
     env::var,
     fmt::Write as _,
-    fs::{File, remove_file, rename, write},
-    io::{Read as _, Result as IoResult},
+    fs::{
+        File,
+        remove_file,
+        rename,
+        write,
+    },
+    io::{
+        Read as _,
+        Result as IoResult,
+    },
     path::Path,
     process::id as process_id,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{
+        SystemTime,
+        UNIX_EPOCH,
+    },
 };
 
-#[cfg(target_os = "linux")]
-use std::fs::read_to_string;
-
+use anyhow::{
+    Result,
+    bail,
+};
 #[cfg(target_os = "macos")]
-use std::mem::{MaybeUninit, size_of};
-
-#[cfg(target_os = "macos")]
-use libc::{PROC_PIDTBSDINFO, c_int, c_void, pid_t, proc_bsdinfo, proc_pidinfo};
+use libc::{
+    PROC_PIDTBSDINFO,
+    c_int,
+    c_void,
+    pid_t,
+    proc_bsdinfo,
+    proc_pidinfo,
+};
 
 pub fn atomic_write(path: &Path, body: &[u8]) -> IoResult<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -96,10 +117,10 @@ pub fn new_session_id() -> String {
 }
 
 pub fn stable_hash_hex(text: &str) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut hash = 0xCBF2_9CE4_8422_2325_u64;
     for byte in text.as_bytes() {
         hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
+        hash = hash.wrapping_mul(0x0100_0000_01B3);
     }
     format!("{hash:016x}")
 }
@@ -123,7 +144,8 @@ pub(super) fn process_start_time(pid: u32) -> Option<String> {
 #[cfg(target_os = "macos")]
 #[expect(
     clippy::undocumented_unsafe_blocks,
-    reason = "PROC_PIDTBSDINFO buffer size plus success count check ensures proc_bsdinfo initialized before reading"
+    reason = "PROC_PIDTBSDINFO buffer size plus success count check ensures proc_bsdinfo \
+              initialized before reading"
 )]
 pub(super) fn process_start_time(pid: u32) -> Option<String> {
     let posix_pid = pid_t::try_from(pid).ok()?;

@@ -1,13 +1,29 @@
 mod common;
 
-use common::{Sandbox, stderr, stdout};
-use std::env::{join_paths, split_paths, var_os};
-use std::fs::{create_dir_all, metadata, read_to_string, set_permissions, write};
-use std::iter::once;
-use std::{path::Path, process::Output};
+#[cfg(unix)] use std::os::unix::fs::PermissionsExt as _;
+use std::{
+    env::{
+        join_paths,
+        split_paths,
+        var_os,
+    },
+    fs::{
+        create_dir_all,
+        metadata,
+        read_to_string,
+        set_permissions,
+        write,
+    },
+    iter::once,
+    path::Path,
+    process::Output,
+};
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt as _;
+use common::{
+    Sandbox,
+    stderr,
+    stdout,
+};
 
 fn run_export_json(sb: &Sandbox, cwd: &Path, extra_env: &[(&str, &str)]) -> Output {
     let mut env = vec![("CADE_DIRENV", "full")];
@@ -52,11 +68,10 @@ fn json_export_uses_session_snapshot_for_concat_baseline() {
     sb.write_snapshot("active", "PATH=/usr/bin");
     sb.allow(&sb.root);
 
-    let value = export_json(
-        &sb,
-        &sb.root,
-        &[("__CADE_SESSION", "active"), ("PATH", "/layer:/usr/bin")],
-    );
+    let value = export_json(&sb, &sb.root, &[
+        ("__CADE_SESSION", "active"),
+        ("PATH", "/layer:/usr/bin"),
+    ]);
     assert_eq!(value["PATH"], "/layer:/usr/bin");
 }
 
@@ -67,11 +82,10 @@ fn json_export_missing_session_snapshot_uses_live_baseline() {
     sb.write(".env", "PATH=/layer\n");
     sb.allow(&sb.root);
 
-    let value = export_json(
-        &sb,
-        &sb.root,
-        &[("__CADE_SESSION", "missing"), ("PATH", "/usr/bin")],
-    );
+    let value = export_json(&sb, &sb.root, &[
+        ("__CADE_SESSION", "missing"),
+        ("PATH", "/usr/bin"),
+    ]);
     assert_eq!(value["PATH"], "/layer:/usr/bin");
 }
 
@@ -86,11 +100,10 @@ fn json_export_reuses_direnv_baseline_without_growing_path() {
     assert_eq!(first_json["PATH"], "/layer:/usr/bin");
     let direnv_diff = direnv_diff(&first_json);
 
-    let second_json = export_json(
-        &sb,
-        &sb.root,
-        &[("PATH", "/layer:/usr/bin"), ("DIRENV_DIFF", &direnv_diff)],
-    );
+    let second_json = export_json(&sb, &sb.root, &[
+        ("PATH", "/layer:/usr/bin"),
+        ("DIRENV_DIFF", &direnv_diff),
+    ]);
     assert_eq!(second_json["PATH"], "/layer:/usr/bin");
 }
 
@@ -101,11 +114,10 @@ fn json_export_state_only_stores_changed_key_preimages() {
     sb.write(".env", "PATH=/layer\nA=1\n");
     sb.allow(&sb.root);
 
-    let json = export_json(
-        &sb,
-        &sb.root,
-        &[("PATH", "/usr/bin"), ("SECRET", "do-not-store")],
-    );
+    let json = export_json(&sb, &sb.root, &[
+        ("PATH", "/usr/bin"),
+        ("SECRET", "do-not-store"),
+    ]);
     let state: serde_json::Value =
         serde_json::from_str(json["DIRENV_DIFF"].as_str().unwrap()).unwrap();
 
@@ -129,11 +141,10 @@ fn json_export_outside_project_restores_previous_direnv_state() {
     let first_json = export_json(&sb, &sb.root, &[("PATH", "/usr/bin")]);
     let direnv_diff = direnv_diff(&first_json);
 
-    let outside_json = export_json(
-        &sb,
-        &outside,
-        &[("PATH", "/layer:/usr/bin"), ("DIRENV_DIFF", &direnv_diff)],
-    );
+    let outside_json = export_json(&sb, &outside, &[
+        ("PATH", "/layer:/usr/bin"),
+        ("DIRENV_DIFF", &direnv_diff),
+    ]);
     assert_eq!(outside_json["PATH"], "/usr/bin");
     assert!(outside_json["DIRENV_DIFF"].is_null(), "{outside_json}");
     assert!(outside_json["DIRENV_DIR"].is_null(), "{outside_json}");
@@ -154,14 +165,10 @@ fn json_export_reenter_after_unload_preserves_baseline_path() {
     assert_eq!(first_json["PATH"], "/layer:/usr/bin:/bin");
     let direnv_diff = direnv_diff(&first_json);
 
-    let outside_json = export_json(
-        &sb,
-        &outside,
-        &[
-            ("PATH", "/layer:/usr/bin:/bin"),
-            ("DIRENV_DIFF", &direnv_diff),
-        ],
-    );
+    let outside_json = export_json(&sb, &outside, &[
+        ("PATH", "/layer:/usr/bin:/bin"),
+        ("DIRENV_DIFF", &direnv_diff),
+    ]);
     assert_eq!(outside_json["PATH"], "/usr/bin:/bin");
 
     let second_json = export_json(&sb, &sb.root, &[("PATH", "/usr/bin:/bin")]);
@@ -181,11 +188,10 @@ fn json_export_disallowed_project_restores_previous_direnv_state() {
     let disallow = sb.run(&sb.root, &["disallow"], &[]);
     assert!(disallow.status.success(), "{disallow:?}");
 
-    let second_json = export_json(
-        &sb,
-        &sb.root,
-        &[("PATH", "/layer:/usr/bin"), ("DIRENV_DIFF", &direnv_diff)],
-    );
+    let second_json = export_json(&sb, &sb.root, &[
+        ("PATH", "/layer:/usr/bin"),
+        ("DIRENV_DIFF", &direnv_diff),
+    ]);
     assert_eq!(second_json["PATH"], "/usr/bin");
     assert!(second_json["DIRENV_DIFF"].is_null(), "{second_json}");
 }
@@ -215,15 +221,11 @@ fn json_export_pure_state_restores_ambient_on_unload() {
     let outside = sb.state.join("outside-pure");
     create_dir_all(&outside).unwrap();
 
-    let first_json = export_json(
-        &sb,
-        &sb.root,
-        &[
-            ("AMBIENT_TEST", "old"),
-            ("PATH", "/usr/bin"),
-            ("HOME", "/home/tester"),
-        ],
-    );
+    let first_json = export_json(&sb, &sb.root, &[
+        ("AMBIENT_TEST", "old"),
+        ("PATH", "/usr/bin"),
+        ("HOME", "/home/tester"),
+    ]);
     assert_eq!(first_json["A"], "1");
     assert!(first_json["AMBIENT_TEST"].is_null(), "{first_json}");
     assert!(first_json["PATH"].is_null(), "{first_json}");

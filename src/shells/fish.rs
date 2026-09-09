@@ -1,4 +1,8 @@
-use super::{ShellOutput, is_valid_key, quote::fish_command};
+use super::{
+    ShellOutput,
+    is_valid_key,
+    quote::fish_command,
+};
 
 pub struct Fish;
 

@@ -1,6 +1,14 @@
-use std::{env::var, fmt, str::FromStr, sync::OnceLock};
+use std::{
+    env::var,
+    fmt,
+    str::FromStr,
+    sync::OnceLock,
+};
 
-use crate::{config::current as config_current, progress::log_line};
+use crate::{
+    config::current as config_current,
+    progress::log_line,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Verbosity {
