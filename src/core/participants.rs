@@ -55,9 +55,9 @@ fn merge_participants(cade_chain: Vec<PathBuf>, nearest_envrc: Option<PathBuf>) 
     if let Some(envrc) = nearest_envrc
         && !dirs.contains(&envrc)
     {
-        dirs.push(envrc);
+        let index = dirs.partition_point(|dir| dir.starts_with(&envrc));
+        dirs.insert(index, envrc);
     }
-    dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
     dirs
 }
 
