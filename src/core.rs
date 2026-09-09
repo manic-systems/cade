@@ -203,7 +203,7 @@ impl Cade {
             state_dir
         } else {
             let mut p = PathBuf::from("/home");
-            p.push(whoami::username());
+            p.push(whoami::username().context("determine username for cade state path")?);
             p.push(".local");
             p.push("state");
             p
