@@ -37,6 +37,8 @@ rustPlatform.buildRustPackage {
   ];
   buildInputs = [ sqlite ];
 
+  stripAllList = [ "bin" ];
+
   env = lib.optionalAttrs hasWild {
     RUSTFLAGS = "-Clinker=${clang}/bin/clang -Clink-arg=--ld-path=wild";
   };
