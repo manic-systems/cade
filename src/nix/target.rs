@@ -1,6 +1,12 @@
-use crate::path_resolve::resolve_for_watch;
-use crate::types::load_spec::LoadSpec;
-use std::path::{Path, PathBuf};
+use std::path::{
+    Path,
+    PathBuf,
+};
+
+use crate::{
+    path_resolve::resolve_for_watch,
+    types::load_spec::LoadSpec,
+};
 
 const FLAKE_WATCH_EXCLUDED_DIRS: &[&str] = &[
     ".git",
@@ -59,23 +65,27 @@ fn is_flake_input_file(name: &str) -> bool {
 }
 
 pub struct FlakeTarget {
-    pub cwd: PathBuf,
+    pub cwd:         PathBuf,
     pub installable: String,
-    pub spec: LoadSpec,
+    pub spec:        LoadSpec,
 }
 
 impl FlakeTarget {
     pub fn bare_output(dir: &Path, output: Option<&str>) -> Self {
         output.filter(|text| !text.is_empty()).map_or_else(
-            || Self {
-                cwd: dir.to_path_buf(),
-                installable: String::new(),
-                spec: LoadSpec::FlakeDefault,
+            || {
+                Self {
+                    cwd:         dir.to_path_buf(),
+                    installable: String::new(),
+                    spec:        LoadSpec::FlakeDefault,
+                }
             },
-            |output_name| Self {
-                cwd: dir.to_path_buf(),
-                installable: format!(".#{output_name}"),
-                spec: LoadSpec::FlakeOutput(output_name.to_owned()),
+            |output_name| {
+                Self {
+                    cwd:         dir.to_path_buf(),
+                    installable: format!(".#{output_name}"),
+                    spec:        LoadSpec::FlakeOutput(output_name.to_owned()),
+                }
             },
         )
     }
@@ -155,11 +165,19 @@ fn is_excluded_dir(entry: &ignore::DirEntry) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        env::temp_dir,
+        fs::{
+            canonicalize,
+            create_dir_all,
+            remove_dir_all,
+            write,
+        },
+        process::id,
+        thread::current,
+    };
+
     use super::*;
-    use std::env::temp_dir;
-    use std::fs::{canonicalize, create_dir_all, remove_dir_all, write};
-    use std::process::id;
-    use std::thread::current;
 
     #[test]
     fn bare_output_stays_current_dir_installable() {

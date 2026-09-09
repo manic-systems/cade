@@ -1,14 +1,21 @@
+use std::collections::{
+    BTreeMap,
+    BTreeSet,
+};
+
 use crate::{
     env::delta::is_shell_managed,
-    types::{hook::InnerHook, layer::CadeLayer},
+    types::{
+        hook::InnerHook,
+        layer::CadeLayer,
+    },
 };
-use std::collections::{BTreeMap, BTreeSet};
 
 pub struct RollupResult {
-    env: BTreeMap<String, Vec<String>>,
-    absorb: BTreeSet<String>,
-    unset: Vec<String>,
-    hooks: Vec<InnerHook>,
+    env:      BTreeMap<String, Vec<String>>,
+    absorb:   BTreeSet<String>,
+    unset:    Vec<String>,
+    hooks:    Vec<InnerHook>,
     purified: bool,
 }
 
@@ -162,7 +169,10 @@ fn join_space_values(values: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{env::set::EnvSet, types::layer::CadeAction};
+    use crate::{
+        env::set::EnvSet,
+        types::layer::CadeAction,
+    };
 
     fn env_layer(pairs: &[(&str, &str)]) -> CadeLayer {
         let mut layer = CadeLayer::default();
@@ -222,18 +232,15 @@ mod tests {
         ]);
         let rollup = rollup_envs(vec![parent, child]);
 
-        assert_eq!(
-            rollup.values("NIX_LDFLAGS").unwrap(),
-            vec!["-L/child/lib -L/parent/lib -rpath /parent/lib"]
-        );
-        assert_eq!(
-            rollup.values("NIX_CFLAGS_COMPILE").unwrap(),
-            vec!["-isystem /child/include -isystem /parent/include"]
-        );
-        assert_eq!(
-            rollup.values("NIX_HARDENING_ENABLE").unwrap(),
-            vec!["relro fortify stackprotector"]
-        );
+        assert_eq!(rollup.values("NIX_LDFLAGS").unwrap(), vec![
+            "-L/child/lib -L/parent/lib -rpath /parent/lib"
+        ]);
+        assert_eq!(rollup.values("NIX_CFLAGS_COMPILE").unwrap(), vec![
+            "-isystem /child/include -isystem /parent/include"
+        ]);
+        assert_eq!(rollup.values("NIX_HARDENING_ENABLE").unwrap(), vec![
+            "relro fortify stackprotector"
+        ]);
         assert!(!rollup.absorbs("NIX_LDFLAGS"));
     }
 

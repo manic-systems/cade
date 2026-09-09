@@ -6,13 +6,20 @@ mod nushell;
 mod posix;
 mod quote;
 
+use std::{
+    fmt,
+    str::FromStr,
+};
+
 use elvish::Elvish;
 use fish::Fish;
 use json::Json;
 use murex::Murex;
 use nushell::Nushell;
-use posix::{Bash, Zsh};
-use std::{fmt, str::FromStr};
+use posix::{
+    Bash,
+    Zsh,
+};
 
 pub trait ShellOutput {
     fn set_env(&self, key: &str, value: &str) -> String;
@@ -24,7 +31,7 @@ pub trait ShellOutput {
 pub fn is_valid_key(key: &str) -> bool {
     let mut chars = key.chars();
     match chars.next() {
-        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {},
         _ => return false,
     }
     chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')

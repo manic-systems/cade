@@ -1,7 +1,17 @@
-use crate::env::set::EnvSet;
-use crate::types::hook::InnerHook;
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::PathBuf,
+};
+
+use serde::{
+    Deserialize,
+    Serialize,
+};
+
+use crate::{
+    env::set::EnvSet,
+    types::hook::InnerHook,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum CadeAction {
@@ -17,7 +27,7 @@ pub enum CadeAction {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CachedLayer {
-    pub actions: Vec<CadeAction>,
+    pub actions:         Vec<CadeAction>,
     pub nix_store_paths: Vec<String>,
 }
 
@@ -32,15 +42,15 @@ pub enum EnvrcAction {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NixDevEnv {
     pub store_path: PathBuf,
-    pub cwd: PathBuf,
+    pub cwd:        PathBuf,
 }
 
 #[derive(Debug, Default)]
 pub struct CadeLayer {
-    pub envs: EnvSet,
-    pub hooks: Vec<InnerHook>,
-    pub purify: bool,
-    pub clears: BTreeSet<String>,
-    pub concat: BTreeSet<String>,
+    pub envs:            EnvSet,
+    pub hooks:           Vec<InnerHook>,
+    pub purify:          bool,
+    pub clears:          BTreeSet<String>,
+    pub concat:          BTreeSet<String>,
     pub nix_store_paths: Vec<String>,
 }

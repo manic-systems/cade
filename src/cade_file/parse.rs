@@ -1,15 +1,44 @@
-use crate::{
-    env::set::EnvSet,
-    types::{
-        hook::{HookType, InnerHook},
-        keyword::{Keyword, Loadable},
-    },
-};
 use std::{
     borrow::ToOwned,
     error::Error,
-    fmt::{Display, Formatter, Result as FmtResult},
+    fmt::{
+        Display,
+        Formatter,
+        Result as FmtResult,
+    },
     str::FromStr,
+};
+
+use HookType::{
+    LoadPost,
+    LoadPre,
+    UnloadPost,
+    UnloadPre,
+};
+use Keyword::{
+    Call,
+    Clear,
+    Concat,
+    Disinherit,
+    Hook,
+    Load,
+    Pure,
+    Set,
+    Watch,
+};
+
+use crate::{
+    env::set::EnvSet,
+    types::{
+        hook::{
+            HookType,
+            InnerHook,
+        },
+        keyword::{
+            Keyword,
+            Loadable,
+        },
+    },
 };
 
 #[derive(Debug)]
@@ -32,7 +61,7 @@ impl Display for ParseError {
             Self::InvalidKeyword => formatter.write_str("invalid keyword"),
             Self::InvalidAssignment(ref error) => {
                 write!(formatter, "invalid assignment, {error}")
-            }
+            },
             Self::UnknownLoadable => formatter.write_str("unknown loadable"),
             Self::TooManyOptions => formatter.write_str("too many options"),
             Self::TooFewOptions => formatter.write_str("too few options"),
@@ -63,8 +92,6 @@ fn is_assignment_key(candidate: &str) -> bool {
 impl FromStr for Keyword {
     type Err = ParseError;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        use Keyword::{Call, Clear, Concat, Disinherit, Hook, Load, Pure, Set, Watch};
-
         let trimmed = input.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             return Err(ParseError::EmptyLine);
@@ -92,7 +119,7 @@ impl FromStr for Keyword {
                     return Err(ParseError::TooFewOptions);
                 }
                 Call(rest_raw.to_owned())
-            }
+            },
             "load" => {
                 let rest: Vec<&str> = rest_raw.split_whitespace().collect();
                 if rest.len() > 2 {
@@ -106,9 +133,8 @@ impl FromStr for Keyword {
                     Some("envrc") => Load(Loadable::Envrc(rest.get(1).unwrap_or(&"").to_string())),
                     Some(_) => return Err(ParseError::UnknownLoadable),
                 }
-            }
+            },
             "hook" => {
-                use HookType::{LoadPost, LoadPre, UnloadPost, UnloadPre};
                 let (phase, command) = match rest_raw.split_once(char::is_whitespace) {
                     Some((phase_part, tail)) => (phase_part, tail.trim_start()),
                     None => (rest_raw, ""),
@@ -127,7 +153,7 @@ impl FromStr for Keyword {
                     kind,
                     content: content.to_owned(),
                 })
-            }
+            },
             "clear" => {
                 let vars: Vec<String> =
                     rest_raw.split_whitespace().map(ToOwned::to_owned).collect();
@@ -135,13 +161,13 @@ impl FromStr for Keyword {
                     return Err(ParseError::TooFewOptions);
                 }
                 Clear(vars)
-            }
+            },
             "watch" => {
                 if rest_raw.is_empty() {
                     return Err(ParseError::TooFewOptions);
                 }
                 Watch(rest_raw.to_owned())
-            }
+            },
             "concat" => {
                 let vars: Vec<String> =
                     rest_raw.split_whitespace().map(ToOwned::to_owned).collect();
@@ -149,10 +175,10 @@ impl FromStr for Keyword {
                     return Err(ParseError::TooFewOptions);
                 }
                 Concat(vars)
-            }
+            },
             _ => {
                 return Err(ParseError::InvalidKeyword);
-            }
+            },
         };
         Ok(res)
     }

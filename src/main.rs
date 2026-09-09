@@ -15,26 +15,59 @@ mod shells;
 mod types;
 mod verbosity;
 
-use anyhow::{Context as _, Result};
+use std::{
+    env::{
+        current_dir,
+        current_exe,
+        var,
+    },
+    fs::canonicalize,
+    path::Path,
+    process::{
+        Command,
+        exit,
+    },
+};
+
+use anyhow::{
+    Context as _,
+    Result,
+};
 use pound::Parse as _;
 use shlex::split;
-use std::env::{current_dir, current_exe, var};
-use std::fs::canonicalize;
-use std::path::Path;
-use std::process::{Command, exit};
 
-use crate::cli::pound::{Cli, CliAction, CliExportFormat, LeaseAction};
-use crate::config::{load as load_config, set as set_config};
-use crate::core::activation::export_env_delta;
-use crate::core::enter::do_activation;
-use crate::core::permissions::{allow_here, set_permission};
-use crate::core::reload::do_reload;
-use crate::core::restore::do_restore;
-use crate::core::sessions::leases::{lease_close, lease_open, lease_refresh};
-use crate::core::status::do_status;
-use crate::core::{Announce, Cade};
-use crate::shells::ShellName;
-use crate::verbosity::set as set_verbosity;
+use crate::{
+    cli::pound::{
+        Cli,
+        CliAction,
+        CliExportFormat,
+        LeaseAction,
+    },
+    config::{
+        load as load_config,
+        set as set_config,
+    },
+    core::{
+        Announce,
+        Cade,
+        activation::export_env_delta,
+        enter::do_activation,
+        permissions::{
+            allow_here,
+            set_permission,
+        },
+        reload::do_reload,
+        restore::do_restore,
+        sessions::leases::{
+            lease_close,
+            lease_open,
+            lease_refresh,
+        },
+        status::do_status,
+    },
+    shells::ShellName,
+    verbosity::set as set_verbosity,
+};
 
 fn print_hook(shell: ShellName, config_path: Option<&Path>) -> Result<()> {
     let output = shell.get_output();
@@ -81,7 +114,7 @@ fn try_main() -> Result<()> {
                 owner_pid,
             )
             .context("activate cade environment")?;
-        }
+        },
         CliAction::Exit { shell } => {
             let cade = Cade::init()?;
             let output = ShellName::from(shell).get_output();
@@ -93,13 +126,13 @@ fn try_main() -> Result<()> {
                 client_id.as_deref(),
                 owner_pid,
             );
-        }
+        },
         CliAction::Reload { shell } => {
             let cade = Cade::init()?;
             let output = ShellName::from(shell).get_output();
             do_reload(&cade, output.as_ref(), client_id.as_deref(), owner_pid)
                 .context("reload cade environment")?;
-        }
+        },
         CliAction::Export {
             format: CliExportFormat::Json,
         } => {
@@ -107,13 +140,13 @@ fn try_main() -> Result<()> {
             let delta = export_env_delta(&cade, client_id.as_deref(), owner_pid)
                 .context("export cade environment")?;
             print!("{}", delta.to_json());
-        }
+        },
         CliAction::Allow => {
             allow_here(&Cade::init()?, true)?;
-        }
+        },
         CliAction::Disallow => {
             allow_here(&Cade::init()?, false)?;
-        }
+        },
         CliAction::Edit => {
             let cade = Cade::init()?;
             let editor = var("EDITOR").context("find EDITOR variable")?;
@@ -127,7 +160,7 @@ fn try_main() -> Result<()> {
             session.wait().context("wait for editor process")?;
             let cwd = current_dir().context("determine cwd")?;
             set_permission(&cade, &cwd, true)?;
-        }
+        },
         CliAction::Lease { action: lease } => {
             let cade = Cade::init()?;
             match lease {
@@ -144,10 +177,10 @@ fn try_main() -> Result<()> {
                     client_id: lease_client,
                 } => lease_close(&cade, &lease_client)?,
             }
-        }
+        },
         CliAction::Status => {
             do_status(&Cade::init()?).context("report status")?;
-        }
+        },
     }
     Ok(())
 }

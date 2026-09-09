@@ -1,9 +1,28 @@
-use crate::verbosity::{self, Verbosity};
-use std::io::{IsTerminal as _, Write, stderr};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{JoinHandle, park_timeout, spawn};
-use std::time::Duration;
+use std::{
+    io::{
+        IsTerminal as _,
+        Write,
+        stderr,
+    },
+    sync::{
+        Mutex,
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
+    },
+    thread::{
+        JoinHandle,
+        park_timeout,
+        spawn,
+    },
+    time::Duration,
+};
+
+use crate::verbosity::{
+    self,
+    Verbosity,
+};
 
 const FRAMES: [char; 4] = ['/', '-', '\\', '|'];
 const LOADED: char = '\u{2192}';
@@ -24,12 +43,12 @@ static STATE: Mutex<Option<State>> = Mutex::new(None);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 struct State {
-    message: String,
-    frame: usize,
+    message:      String,
+    frame:        usize,
     long_running: bool,
-    recent: Vec<String>,
-    nix_bar: Option<String>,
-    renderer: LiveRenderer,
+    recent:       Vec<String>,
+    nix_bar:      Option<String>,
+    renderer:     LiveRenderer,
 }
 
 impl State {
@@ -188,8 +207,8 @@ fn take_visible_columns(line: &str, columns: usize) -> String {
 )]
 fn terminal_width() -> Option<usize> {
     let mut size = libc::winsize {
-        ws_row: 0,
-        ws_col: 0,
+        ws_row:    0,
+        ws_col:    0,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
@@ -266,7 +285,7 @@ pub fn log_line(line: &str) {
             state.renderer.clear(&mut err);
             let _ = writeln!(err, "{line}");
             let _ = err.flush();
-        }
+        },
         None => eprintln!("{line}"),
     }
 }
@@ -277,26 +296,26 @@ pub fn start(subject: &str) -> Spinner {
         || ACTIVE.swap(true, Ordering::AcqRel)
     {
         return Spinner {
-            active: false,
+            active:   false,
             resolved: false,
-            thread: None,
+            thread:   None,
         };
     }
 
     *STATE.lock().unwrap() = Some(State {
-        message: format!("cade: loading {subject}"),
-        frame: 0,
+        message:      format!("cade: loading {subject}"),
+        frame:        0,
         long_running: false,
-        recent: Vec::new(),
-        nix_bar: None,
-        renderer: LiveRenderer::default(),
+        recent:       Vec::new(),
+        nix_bar:      None,
+        renderer:     LiveRenderer::default(),
     });
 
     let thread = spawn(run_loop);
     Spinner {
-        active: true,
+        active:   true,
         resolved: false,
-        thread: Some(thread),
+        thread:   Some(thread),
     }
 }
 
@@ -311,9 +330,9 @@ fn run_loop() {
 }
 
 pub struct Spinner {
-    active: bool,
+    active:   bool,
     resolved: bool,
-    thread: Option<JoinHandle<()>>,
+    thread:   Option<JoinHandle<()>>,
 }
 
 impl Spinner {

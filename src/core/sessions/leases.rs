@@ -1,31 +1,57 @@
-use crate::core::Cade;
-use crate::core::sessions::LeaseRecord;
-use crate::core::sessions::SessionHolder;
-use crate::core::sessions::gc_roots::{remove_session_holder, shell_gc_roots_dir};
-use crate::core::sessions::identity::{atomic_write, new_client_id, now_secs, validate_client_id};
-use crate::core::sessions::shell_gc_root_ttl;
-use anyhow::{Context as _, Result, bail};
-use serde::Serialize;
 use std::{
-    fs::{create_dir_all, read_dir, read_to_string, remove_file},
-    path::{Path, PathBuf},
+    fs::{
+        create_dir_all,
+        read_dir,
+        read_to_string,
+        remove_file,
+    },
+    path::{
+        Path,
+        PathBuf,
+    },
     time::Duration,
+};
+
+use anyhow::{
+    Context as _,
+    Result,
+    bail,
+};
+use serde::Serialize;
+
+use crate::core::{
+    Cade,
+    sessions::{
+        LeaseRecord,
+        SessionHolder,
+        gc_roots::{
+            remove_session_holder,
+            shell_gc_roots_dir,
+        },
+        identity::{
+            atomic_write,
+            new_client_id,
+            now_secs,
+            validate_client_id,
+        },
+        shell_gc_root_ttl,
+    },
 };
 
 #[derive(Debug, Serialize)]
 struct LeaseResponse {
-    client_id: String,
-    kind: String,
-    project: Option<String>,
+    client_id:  String,
+    kind:       String,
+    project:    Option<String>,
     expires_at: u64,
 }
 
 impl From<&LeaseRecord> for LeaseResponse {
     fn from(lease: &LeaseRecord) -> Self {
         Self {
-            client_id: lease.client_id.clone(),
-            kind: lease.kind.clone(),
-            project: lease.project.clone(),
+            client_id:  lease.client_id.clone(),
+            kind:       lease.kind.clone(),
+            project:    lease.project.clone(),
             expires_at: lease.expires_at,
         }
     }
@@ -69,11 +95,11 @@ fn refresh_lease_record(
     let existing = read_lease_record(cade, client_id)?;
     let ttl = ttl_seconds.map_or_else(shell_gc_root_ttl, Duration::from_secs);
     let lease = LeaseRecord {
-        client_id: existing.client_id,
-        kind: existing.kind,
-        project: existing.project,
+        client_id:  existing.client_id,
+        kind:       existing.kind,
+        project:    existing.project,
         expires_at: now_secs().saturating_add(ttl.as_secs()),
-        last_seen: now_secs(),
+        last_seen:  now_secs(),
     };
     write_lease_record(cade, &lease)?;
     Ok(lease)
@@ -94,11 +120,11 @@ pub fn lease_open(
     }
     let ttl = ttl_seconds.map_or_else(shell_gc_root_ttl, Duration::from_secs);
     let lease = LeaseRecord {
-        client_id: new_client_id(),
-        kind: kind.to_owned(),
-        project: project.map(|project_path| project_path.to_string_lossy().to_string()),
+        client_id:  new_client_id(),
+        kind:       kind.to_owned(),
+        project:    project.map(|project_path| project_path.to_string_lossy().to_string()),
         expires_at: now_secs().saturating_add(ttl.as_secs()),
-        last_seen: now_secs(),
+        last_seen:  now_secs(),
     };
     write_lease_record(cade, &lease)?;
     let response = LeaseResponse::from(&lease);

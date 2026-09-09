@@ -1,85 +1,85 @@
 [package]
-name = "cade"
-version = "0.1.3"
-edition = "2024"
-license = "EUPL-1.2"
+name        = "cade"
+version     = "0.1.3"
+edition     = "2024"
+license     = "EUPL-1.2"
 description = "an intelligent, cascading environment manager"
-repository = "https://github.com/manic-systems/cade"
-keywords = ["environment", "nix", "shell"]
-categories = ["command-line-utilities", "development-tools"]
+repository  = "https://github.com/manic-systems/cade"
+keywords    = [ "environment", "nix", "shell" ]
+categories  = [ "command-line-utilities", "development-tools" ]
 
 [profile.release]
-strip = true
-opt-level = "z"
 codegen-units = 1
-lto = true
-panic = "abort"
+lto           = true
+opt-level     = "z"
+panic         = "abort"
+strip         = true
 
 [dependencies]
-anyhow = { version = "1.0.104", default-features = false }
-cognos = "1.0.1"
-libc = "0.2.189"
-microxdg = "0.2.0"
-pound = "0.1.6"
-serde = { version = "1.0.229", features = ["derive"] }
-shlex = "2.0.1"
+anyhow     = { default-features = false, version = "1.0.104" }
+cognos     = "1.0.1"
+ignore     = "0.4.33"
+libc       = "0.2.189"
+microxdg   = "0.2.0"
+pound      = "0.1.6"
+serde      = { features = [ "derive" ], version = "1.0.229" }
 serde_json = "1.0.151"
-whoami = { version = "2.1.3", default-features = false, features = ["std"] }
-ignore = "0.4.33"
+shlex      = "2.0.1"
+whoami     = { default-features = false, features = [ "std" ], version = "2.1.3" }
 
 [dependencies.rusqlite]
-version = "0.40.2"
 default-features = false
-features = ["fallible_uint"]
+features         = [ "fallible_uint" ]
+version          = "0.40.2"
 
 [dependencies.toml]
-version = "1.1.5"
 default-features = false
-features = ["std", "serde", "parse"]
+features         = [ "std", "serde", "parse" ]
+version          = "1.1.5"
 
 [lints.clippy]
-cargo = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
+cargo    = { level = "warn", priority = -1 }
+nursery  = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 
 blanket_clippy_restriction_lints = "allow"
-restriction = { level = "warn", priority = -1 }
+restriction                      = { level = "warn", priority = -1 }
 
-arbitrary_source_item_ordering = "allow"
-arithmetic_side_effects = "allow"
-as_conversions = "allow"
+arbitrary_source_item_ordering     = "allow"
+arithmetic_side_effects            = "allow"
+as_conversions                     = "allow"
 doc_paragraphs_missing_punctuation = "allow"
-else_if_without_else = "allow"
-error_impl_error = "allow"
-exhaustive_enums = "allow"
-exhaustive_structs = "allow"
-expect_used = "allow"
-implicit_return = "allow"
-indexing_slicing = "allow"
-integer_division = "allow"
-integer_division_remainder_used = "allow"
-let_underscore_must_use = "allow"
-let_underscore_untyped = "allow"
-missing_asserts_for_indexing = "allow"
-missing_docs_in_private_items = "allow"
-missing_errors_doc = "allow"
-missing_inline_in_public_items = "allow"
-missing_trait_methods = "allow"
-mod_module_files = "allow"
-module_name_repetitions = "allow"
-multiple_crate_versions = "allow"
-must_use_candidate = "allow"
-needless_borrowed_reference = "allow"
-print_stderr = "allow"
-print_stdout = "allow"
-pub_with_shorthand = "allow"
-question_mark_used = "allow"
-ref_patterns = "allow"
-semicolon_outside_block = "allow"
-separated_literal_suffix = "allow"
-single_call_fn = "allow"
-single_char_lifetime_names = "allow"
-std_instead_of_alloc = "allow"
-std_instead_of_core = "allow"
-tests_outside_test_module = "allow"
-unwrap_used = "allow"
+else_if_without_else               = "allow"
+error_impl_error                   = "allow"
+exhaustive_enums                   = "allow"
+exhaustive_structs                 = "allow"
+expect_used                        = "allow"
+implicit_return                    = "allow"
+indexing_slicing                   = "allow"
+integer_division                   = "allow"
+integer_division_remainder_used    = "allow"
+let_underscore_must_use            = "allow"
+let_underscore_untyped             = "allow"
+missing_asserts_for_indexing       = "allow"
+missing_docs_in_private_items      = "allow"
+missing_errors_doc                 = "allow"
+missing_inline_in_public_items     = "allow"
+missing_trait_methods              = "allow"
+mod_module_files                   = "allow"
+module_name_repetitions            = "allow"
+multiple_crate_versions            = "allow"
+must_use_candidate                 = "allow"
+needless_borrowed_reference        = "allow"
+print_stderr                       = "allow"
+print_stdout                       = "allow"
+pub_with_shorthand                 = "allow"
+question_mark_used                 = "allow"
+ref_patterns                       = "allow"
+semicolon_outside_block            = "allow"
+separated_literal_suffix           = "allow"
+single_call_fn                     = "allow"
+single_char_lifetime_names         = "allow"
+std_instead_of_alloc               = "allow"
+std_instead_of_core                = "allow"
+tests_outside_test_module          = "allow"
+unwrap_used                        = "allow"

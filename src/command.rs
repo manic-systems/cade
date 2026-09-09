@@ -1,16 +1,49 @@
+use std::{
+    io::{
+        IsTerminal as _,
+        Read,
+        Write as _,
+        stderr as io_stderr,
+    },
+    process::{
+        Command,
+        Output,
+        Stdio,
+    },
+    sync::mpsc::{
+        RecvTimeoutError,
+        Sender,
+        channel,
+    },
+    thread::{
+        JoinHandle,
+        spawn,
+    },
+    time::{
+        Duration,
+        Instant,
+    },
+};
+
+use anyhow::{
+    Context as _,
+    Result,
+    bail,
+};
+
 use crate::{
     config,
     nix::progress::NixProgress,
-    progress::{LiveRenderer, is_active, mark_long_running, set_command_progress},
-    verbosity::{self, Verbosity},
-};
-use anyhow::{Context as _, Result, bail};
-use std::{
-    io::{IsTerminal as _, Read, Write as _, stderr as io_stderr},
-    process::{Command, Output, Stdio},
-    sync::mpsc::{RecvTimeoutError, Sender, channel},
-    thread::{JoinHandle, spawn},
-    time::{Duration, Instant},
+    progress::{
+        LiveRenderer,
+        is_active,
+        mark_long_running,
+        set_command_progress,
+    },
+    verbosity::{
+        self,
+        Verbosity,
+    },
 };
 
 const DEFAULT_LONG_RUNNING_WARNING_AFTER: Duration = Duration::from_secs(5);
@@ -33,11 +66,11 @@ struct StreamEvent {
 }
 
 struct LongRunningProgress<'task> {
-    what: &'task str,
-    enabled: bool,
+    what:        &'task str,
+    enabled:     bool,
     interactive: bool,
-    shown: bool,
-    renderer: LiveRenderer,
+    shown:       bool,
+    renderer:    LiveRenderer,
     last_render: Option<Instant>,
 }
 
@@ -146,7 +179,7 @@ fn spawn_reader<Reader: Read + Send + 'static>(
                     {
                         break;
                     }
-                }
+                },
             }
         }
     })
@@ -168,10 +201,10 @@ fn handle_stream_event(
             let bar = nix.bar_line();
             match progress {
                 Some(tracker) if tracker.wants_live() => tracker.update(&recent, bar.as_deref()),
-                Some(_) => {}
+                Some(_) => {},
                 None => set_command_progress(recent, bar),
             }
-        }
+        },
     }
 }
 
@@ -211,9 +244,10 @@ pub fn run_checked_output(mut cmd: Command, what: &str) -> Result<Output> {
                 Some(tracker) => tracker.show(&nix.recent_lines(), nix.bar_line().as_deref()),
                 None => {
                     mark_long_running(format!(
-                        "cade: {what} is taking a long time; press Ctrl-C to stop and inspect the command."
+                        "cade: {what} is taking a long time; press Ctrl-C to stop and inspect the \
+                         command."
                     ));
-                }
+                },
             }
         }
 
@@ -228,16 +262,16 @@ pub fn run_checked_output(mut cmd: Command, what: &str) -> Result<Output> {
         match rx.recv_timeout(wait_for) {
             Ok(event) => {
                 handle_stream_event(event, &mut stdout, &mut stderr, &mut nix, progress.as_mut());
-            }
+            },
             Err(RecvTimeoutError::Timeout) => {
                 if let Some(tracker) = progress.as_mut().filter(|candidate| candidate.wants_live())
                 {
                     tracker.update(&nix.recent_lines(), nix.bar_line().as_deref());
                 }
-            }
+            },
             Err(RecvTimeoutError::Disconnected) => {
                 break child.wait().context("waiting for command status")?;
-            }
+            },
         }
     };
 

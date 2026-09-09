@@ -1,54 +1,89 @@
+use std::{
+    collections::BTreeMap,
+    env::var,
+    path::{
+        Path,
+        PathBuf,
+    },
+};
+
+use anyhow::{
+    Context as _,
+    Result,
+    anyhow,
+};
+
 use crate::{
     config::direnv_mode,
     core::{
-        Cade, DISALLOWED_REMINDER,
-        cache::{get_cached_layer, store_cached_layer},
+        Cade,
+        DISALLOWED_REMINDER,
+        cache::{
+            get_cached_layer,
+            store_cached_layer,
+        },
         layer::load_single_layer,
         participants::find_cade_root,
         permissions::approved_chain,
         sessions::{
-            direnv_fallback_session_id, direnv_session_id,
-            gc_roots::{gc_state, refresh_session_holders, root_nix_store_paths},
-            is_valid_session, new_session_id,
+            direnv_fallback_session_id,
+            direnv_session_id,
+            gc_roots::{
+                gc_state,
+                refresh_session_holders,
+                root_nix_store_paths,
+            },
+            is_valid_session,
+            new_session_id,
         },
         shell_state::SESSION_VAR,
-        snapshot::{read_snapshot, write_snapshot},
+        snapshot::{
+            read_snapshot,
+            write_snapshot,
+        },
         watch::layer_watch,
     },
     direnv_export,
     env::{
-        delta::{EnvDelta, EnvDeltaInput, live_ambient_env},
-        rollup::{RollupResult, rollup_envs},
+        delta::{
+            EnvDelta,
+            EnvDeltaInput,
+            live_ambient_env,
+        },
+        rollup::{
+            RollupResult,
+            rollup_envs,
+        },
     },
-    types::{keyword::Keyword, layer::CadeLayer},
-    verbosity::{self, Verbosity},
-};
-use anyhow::{Context as _, Result, anyhow};
-use std::{
-    collections::BTreeMap,
-    env::var,
-    path::{Path, PathBuf},
+    types::{
+        keyword::Keyword,
+        layer::CadeLayer,
+    },
+    verbosity::{
+        self,
+        Verbosity,
+    },
 };
 
 pub(super) struct ActivationPlan {
-    pub root: PathBuf,
-    pub cade_files: Vec<(PathBuf, Vec<Keyword>)>,
+    pub root:            PathBuf,
+    pub cade_files:      Vec<(PathBuf, Vec<Keyword>)>,
     pub all_watch_files: Vec<PathBuf>,
     pub nix_store_paths: Vec<String>,
-    pub rollup: RollupResult,
+    pub rollup:          RollupResult,
 }
 
 pub(super) struct ActivationEnv {
-    live: BTreeMap<String, String>,
+    live:     BTreeMap<String, String>,
     baseline: BTreeMap<String, String>,
 }
 
 impl ActivationEnv {
     pub(super) fn delta(&self, rollup: &RollupResult) -> EnvDelta {
         EnvDelta::from_rollup(EnvDeltaInput {
-            env: rollup.env(),
-            absorb: rollup.absorb(),
-            unset: rollup.unset(),
+            env:      rollup.env(),
+            absorb:   rollup.absorb(),
+            unset:    rollup.unset(),
             purified: rollup.purified(),
             live_env: &self.live,
             baseline: &self.baseline,
@@ -210,12 +245,12 @@ pub fn export_env_delta(
     root_nix_store_paths(cade, &session, &plan.nix_store_paths);
     refresh_session_holders(cade, &session, client_id, owner_pid);
     let activation_env = ActivationEnv {
-        live: export.live,
+        live:     export.live,
         baseline: export.baseline,
     };
     let metadata = direnv_export::ExportMetadata {
-        root: plan.root.to_string_lossy().to_string(),
-        file: direnv_export_file(&plan.root).to_string_lossy().to_string(),
+        root:    plan.root.to_string_lossy().to_string(),
+        file:    direnv_export_file(&plan.root).to_string_lossy().to_string(),
         watches: plan
             .all_watch_files
             .iter()
@@ -248,14 +283,19 @@ fn store_paths_all_present(paths: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::store_paths_all_present;
     use std::{
         env::temp_dir,
-        fs::{create_dir_all, remove_dir_all, write},
+        fs::{
+            create_dir_all,
+            remove_dir_all,
+            write,
+        },
         process::id,
         slice::from_ref,
         thread::current,
     };
+
+    use super::store_paths_all_present;
 
     #[test]
     fn store_paths_all_present_is_vacuously_true_when_empty() {

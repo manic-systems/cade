@@ -1,5 +1,12 @@
-use super::{ShellOutput, is_valid_key, quote::posix_command};
-use crate::verbosity::{self, Verbosity};
+use super::{
+    ShellOutput,
+    is_valid_key,
+    quote::posix_command,
+};
+use crate::verbosity::{
+    self,
+    Verbosity,
+};
 
 pub struct Murex;
 
@@ -12,8 +19,8 @@ impl ShellOutput for Murex {
             verbosity::log(
                 Verbosity::Normal,
                 format_args!(
-                    "cade: warning: murex cannot represent a single quote in ${key}; \
-                     stripping it from the value"
+                    "cade: warning: murex cannot represent a single quote in ${key}; stripping it \
+                     from the value"
                 ),
             );
         }

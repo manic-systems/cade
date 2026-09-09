@@ -1,6 +1,12 @@
+use std::{
+    fs::read_to_string,
+    path::{
+        Path,
+        PathBuf,
+    },
+};
+
 use super::plan::plan_directives;
-use std::fs::read_to_string;
-use std::path::{Path, PathBuf};
 
 pub fn envrc_watch_files(path: &Path) -> Vec<PathBuf> {
     let dir = path.parent().unwrap_or(path);

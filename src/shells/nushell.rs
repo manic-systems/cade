@@ -1,6 +1,11 @@
 use super::{
-    ShellOutput, is_valid_key,
-    json::{hook_directive, set_directive, unset_directive},
+    ShellOutput,
+    is_valid_key,
+    json::{
+        hook_directive,
+        set_directive,
+        unset_directive,
+    },
 };
 
 pub struct Nushell;

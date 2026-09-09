@@ -1,21 +1,57 @@
-use crate::core::Cade;
-use crate::core::sessions::SessionHolder;
-use crate::core::sessions::identity::{
-    atomic_write, configured_client_id, is_valid_client_id, is_valid_session, now_secs, parent_pid,
-    process_holder_is_live, process_start_time, stable_hash_hex,
-};
-use crate::core::sessions::leases::{lease_record_is_live, read_lease_record};
-use crate::core::sessions::shell_gc_root_ttl;
-use crate::verbosity::{self, Verbosity};
-use anyhow::{Context as _, Result, bail};
 use std::{
     collections::HashSet,
     fs::{
-        create_dir_all, read_dir, read_link, read_to_string, remove_dir_all, remove_file,
+        create_dir_all,
+        read_dir,
+        read_link,
+        read_to_string,
+        remove_dir_all,
+        remove_file,
         write as write_file,
     },
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
+    path::{
+        Path,
+        PathBuf,
+    },
+    process::{
+        Command,
+        Stdio,
+    },
+};
+
+use anyhow::{
+    Context as _,
+    Result,
+    bail,
+};
+
+use crate::{
+    core::{
+        Cade,
+        sessions::{
+            SessionHolder,
+            identity::{
+                atomic_write,
+                configured_client_id,
+                is_valid_client_id,
+                is_valid_session,
+                now_secs,
+                parent_pid,
+                process_holder_is_live,
+                process_start_time,
+                stable_hash_hex,
+            },
+            leases::{
+                lease_record_is_live,
+                read_lease_record,
+            },
+            shell_gc_root_ttl,
+        },
+    },
+    verbosity::{
+        self,
+        Verbosity,
+    },
 };
 
 fn rooted_store_paths(session_dir: &Path) -> HashSet<String> {
@@ -148,7 +184,7 @@ fn session_has_live_holder(cade: &Cade, session: &str) -> bool {
             Some(candidate) if session_holder_is_live(cade, &candidate) => live = true,
             _ => {
                 let _ = remove_file(path);
-            }
+            },
         }
     }
     live
@@ -158,7 +194,7 @@ fn session_holder_is_live(cade: &Cade, holder: &SessionHolder) -> bool {
     match *holder {
         SessionHolder::Lease { ref client_id } => {
             read_lease_record(cade, client_id).is_ok_and(|lease| lease_record_is_live(&lease))
-        }
+        },
         SessionHolder::Process {
             ref pid,
             ref start_time,
@@ -350,32 +386,51 @@ pub fn root_nix_store_paths(cade: &Cade, session: &str, paths: &[String]) {
         .stdout(Stdio::null())
         .status();
     match add_result {
-        Ok(status) if status.success() => {}
-        Ok(status) => verbosity::log(
-            Verbosity::Normal,
-            format_args!(
-                "cade: nix-store failed to add {} gc root(s) ({status}).",
-                to_root.len()
-            ),
-        ),
-        Err(spawn_err) => verbosity::log(
-            Verbosity::Normal,
-            format_args!("cade: failed to add nix gc roots: {spawn_err}."),
-        ),
+        Ok(status) if status.success() => {},
+        Ok(status) => {
+            verbosity::log(
+                Verbosity::Normal,
+                format_args!(
+                    "cade: nix-store failed to add {} gc root(s) ({status}).",
+                    to_root.len()
+                ),
+            );
+        },
+        Err(spawn_err) => {
+            verbosity::log(
+                Verbosity::Normal,
+                format_args!("cade: failed to add nix gc roots: {spawn_err}."),
+            );
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::core::Cade;
-    use crate::core::sessions::gc_roots::{gc_state, rooted_store_paths};
-    use std::env::temp_dir;
-    use std::fs::{File, create_dir_all, remove_dir_all, write as write_file};
-    #[cfg(unix)]
-    use std::os::unix::fs::symlink;
-    use std::process::id as process_id;
-    use std::thread::current as current_thread;
-    use std::time::{Duration, SystemTime};
+    #[cfg(unix)] use std::os::unix::fs::symlink;
+    use std::{
+        env::temp_dir,
+        fs::{
+            File,
+            create_dir_all,
+            remove_dir_all,
+            write as write_file,
+        },
+        process::id as process_id,
+        thread::current as current_thread,
+        time::{
+            Duration,
+            SystemTime,
+        },
+    };
+
+    use crate::core::{
+        Cade,
+        sessions::gc_roots::{
+            gc_state,
+            rooted_store_paths,
+        },
+    };
 
     #[test]
     fn gc_state_removes_stale_watch_files_for_dead_sessions_only() {
@@ -400,8 +455,8 @@ mod tests {
                 .unwrap();
         }
         let cade = Cade {
-            db: rusqlite::Connection::open_in_memory().unwrap(),
-            cwd: state_dir.clone(),
+            db:        rusqlite::Connection::open_in_memory().unwrap(),
+            cwd:       state_dir.clone(),
             state_dir: state_dir.clone(),
         };
 

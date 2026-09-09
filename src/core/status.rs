@@ -1,9 +1,14 @@
-use crate::core::Cade;
-use crate::core::participants::find_cade_root;
-use crate::core::participants::participant_dirs;
-use crate::core::permissions::get_permission;
-use crate::core::shell_state::ShellState;
 use anyhow::Result;
+
+use crate::core::{
+    Cade,
+    participants::{
+        find_cade_root,
+        participant_dirs,
+    },
+    permissions::get_permission,
+    shell_state::ShellState,
+};
 
 pub fn do_status(cade: &Cade) -> Result<()> {
     let root = find_cade_root(&cade.cwd);
@@ -29,7 +34,7 @@ pub fn do_status(cade: &Cade) -> Result<()> {
                 };
                 println!("  {}  [{mark}]", dir.display());
             }
-        }
+        },
         None => println!("root:    none (not in a cade project)"),
     }
 

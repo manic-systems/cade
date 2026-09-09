@@ -1,17 +1,41 @@
-use crate::command::run_checked_output;
-use crate::env::set::EnvSet;
-use crate::nix::capture;
-use crate::nix::profile::wipe_history;
-use crate::nix::target::FlakeTarget;
-use crate::types::layer::NixDevEnv;
-use anyhow::{Context as _, Result};
-use std::collections::BTreeMap;
-use std::env::{split_paths, var_os, vars};
-use std::fs::{canonicalize, create_dir_all};
-use std::io::{Write as _, stderr};
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+    collections::BTreeMap,
+    env::{
+        split_paths,
+        var_os,
+        vars,
+    },
+    fs::{
+        canonicalize,
+        create_dir_all,
+    },
+    io::{
+        Write as _,
+        stderr,
+    },
+    os::unix::fs::PermissionsExt as _,
+    path::{
+        Path,
+        PathBuf,
+    },
+    process::Command,
+};
+
+use anyhow::{
+    Context as _,
+    Result,
+};
+
+use crate::{
+    command::run_checked_output,
+    env::set::EnvSet,
+    nix::{
+        capture,
+        profile::wipe_history,
+        target::FlakeTarget,
+    },
+    types::layer::NixDevEnv,
+};
 
 pub fn load_flake(target: &FlakeTarget, profile: &Path) -> Result<(NixDevEnv, EnvSet)> {
     let mut proc = Command::new("nix");

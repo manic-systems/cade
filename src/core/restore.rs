@@ -1,15 +1,22 @@
-use crate::core::Cade;
-use crate::core::announce_unloaded;
-use crate::core::log_hook;
-use crate::core::log_key_list;
-use crate::core::sessions::gc_roots::gc_state;
-use crate::core::sessions::gc_roots::remove_current_session_holders;
-use crate::core::shell_state::ShellState;
-use crate::core::snapshot::read_snapshot;
-use crate::env::delta::is_shell_managed;
-use crate::shells::ShellOutput;
-use crate::types::hook::HookType;
 use std::collections::BTreeMap;
+
+use crate::{
+    core::{
+        Cade,
+        announce_unloaded,
+        log_hook,
+        log_key_list,
+        sessions::gc_roots::{
+            gc_state,
+            remove_current_session_holders,
+        },
+        shell_state::ShellState,
+        snapshot::read_snapshot,
+    },
+    env::delta::is_shell_managed,
+    shells::ShellOutput,
+    types::hook::HookType,
+};
 
 pub fn do_restore(
     cade: &Cade,

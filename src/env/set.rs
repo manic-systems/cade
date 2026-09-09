@@ -1,23 +1,36 @@
-use super::{parse, store_paths};
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
-use std::mem::take;
+use std::{
+    collections::{
+        BTreeMap,
+        BTreeSet,
+    },
+    mem::take,
+};
+
+use serde::{
+    Deserialize,
+    Serialize,
+};
+
+use super::{
+    parse,
+    store_paths,
+};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EnvSet {
-    vars: BTreeMap<String, Vec<String>>,
+    vars:            BTreeMap<String, Vec<String>>,
     #[serde(default, rename = "hard")]
-    hard_replace: BTreeSet<String>,
+    hard_replace:    BTreeSet<String>,
     #[serde(default)]
-    clears: BTreeSet<String>,
+    clears:          BTreeSet<String>,
     #[serde(default)]
     nix_store_paths: Vec<String>,
 }
 
 pub(super) struct ParsedEnv {
-    vars: BTreeMap<String, Vec<String>>,
+    vars:         BTreeMap<String, Vec<String>>,
     hard_replace: BTreeSet<String>,
-    clears: BTreeSet<String>,
+    clears:       BTreeSet<String>,
 }
 
 impl ParsedEnv {
@@ -47,8 +60,8 @@ impl ParsedEnv {
 
 pub struct EnvSetMerge {
     pub store_paths: Vec<String>,
-    pub clears: Vec<String>,
-    pub sets: Vec<String>,
+    pub clears:      Vec<String>,
+    pub sets:        Vec<String>,
 }
 
 impl EnvSet {
@@ -59,9 +72,9 @@ impl EnvSet {
     pub fn from_envs(text: &str) -> anyhow::Result<Self> {
         let parts = parse::parse_env_text(text)?;
         let mut env = Self {
-            vars: parts.vars,
-            hard_replace: parts.hard_replace,
-            clears: BTreeSet::new(),
+            vars:            parts.vars,
+            hard_replace:    parts.hard_replace,
+            clears:          BTreeSet::new(),
             nix_store_paths: Vec::new(),
         };
         env.refresh_store_paths();
@@ -126,8 +139,8 @@ impl EnvSet {
         }
         EnvSetMerge {
             store_paths: nix_store_paths,
-            clears: merged_clears,
-            sets: merged_sets,
+            clears:      merged_clears,
+            sets:        merged_sets,
         }
     }
 
@@ -157,9 +170,9 @@ impl EnvSet {
 
     pub(super) fn into_parsed_env(self) -> ParsedEnv {
         ParsedEnv {
-            vars: self.vars,
+            vars:         self.vars,
             hard_replace: self.hard_replace,
-            clears: self.clears,
+            clears:       self.clears,
         }
     }
 
@@ -278,10 +291,9 @@ mod tests {
     #[test]
     fn merge_loaded_preserves_cleared_store_paths() {
         let mut out = EnvSet::new();
-        let other = EnvSet::from_plain_vars(BTreeMap::from([(
-            "TOOL".to_owned(),
-            vec![STORE_PATH.to_owned()],
-        )]));
+        let other = EnvSet::from_plain_vars(BTreeMap::from([("TOOL".to_owned(), vec![
+            STORE_PATH.to_owned(),
+        ])]));
         out.merge_loaded(other);
         assert!(out.nix_store_paths.is_empty());
     }

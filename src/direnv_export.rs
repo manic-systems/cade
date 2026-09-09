@@ -1,7 +1,19 @@
-use crate::env::delta::{EnvDelta, is_shell_managed, live_ambient_env};
+use std::collections::{
+    BTreeMap,
+    BTreeSet,
+};
+
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use serde::{
+    Deserialize,
+    Serialize,
+};
+
+use crate::env::delta::{
+    EnvDelta,
+    is_shell_managed,
+    live_ambient_env,
+};
 
 const DIRENV_DIFF: &str = "DIRENV_DIFF";
 const DIRENV_DIR: &str = "DIRENV_DIR";
@@ -9,19 +21,19 @@ const DIRENV_FILE: &str = "DIRENV_FILE";
 const DIRENV_WATCHES: &str = "DIRENV_WATCHES";
 
 pub struct ExportMetadata {
-    pub root: String,
-    pub file: String,
+    pub root:    String,
+    pub file:    String,
     pub watches: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExportState {
-    version: u8,
+    version:  u8,
     preimage: BTreeMap<String, Option<String>>,
 }
 
 pub struct ExportSession {
-    pub live: BTreeMap<String, String>,
+    pub live:     BTreeMap<String, String>,
     pub baseline: BTreeMap<String, String>,
     pub previous: Option<ExportState>,
 }
@@ -146,10 +158,10 @@ impl ExportState {
             match preimage.as_ref() {
                 Some(value) => {
                     baseline.insert(key.clone(), value.clone());
-                }
+                },
                 None => {
                     baseline.remove(key);
-                }
+                },
             }
         }
         baseline

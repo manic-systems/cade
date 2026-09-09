@@ -1,10 +1,24 @@
-use crate::core::Cade;
-use crate::core::sessions::shell_gc_root_ttl;
-use crate::core::watch::LAYER_CACHE_VERSION;
-use crate::types::layer::CachedLayer;
-use anyhow::{Context as _, Result};
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    path::PathBuf,
+    time::{
+        SystemTime,
+        UNIX_EPOCH,
+    },
+};
+
+use anyhow::{
+    Context as _,
+    Result,
+};
+
+use crate::{
+    core::{
+        Cade,
+        sessions::shell_gc_root_ttl,
+        watch::LAYER_CACHE_VERSION,
+    },
+    types::layer::CachedLayer,
+};
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -84,7 +98,8 @@ pub(super) fn store_watch_discovery(
 ) -> Result<()> {
     let data = serde_json::to_string(files)?;
     cade.db.execute(
-        "INSERT OR REPLACE INTO WatchDiscovery (Dir, Token, Files, LastUsed) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT OR REPLACE INTO WatchDiscovery (Dir, Token, Files, LastUsed) VALUES (?1, ?2, ?3, \
+         ?4)",
         (dir, token, &data, now_secs()),
     )?;
     Ok(())
@@ -105,7 +120,7 @@ pub(super) fn get_cached_layer(cade: &Cade, dir: &str, token: &str) -> Result<Op
                 (dir, token, now_secs()),
             )?;
             Ok(Some(layer))
-        }
+        },
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(error) => Err(error.into()),
     }

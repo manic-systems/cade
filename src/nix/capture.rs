@@ -1,12 +1,27 @@
-use super::filter::{is_kept_nix_env_var, keep_loaded_env_var};
-use crate::{
-    core::shell_state::{SET_VAR, decode_key_list},
-    env::set::EnvSet,
-};
-use anyhow::{Context as _, Result, bail};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{
+        BTreeMap,
+        BTreeSet,
+    },
     process::Command,
+};
+
+use anyhow::{
+    Context as _,
+    Result,
+    bail,
+};
+
+use super::filter::{
+    is_kept_nix_env_var,
+    keep_loaded_env_var,
+};
+use crate::{
+    core::shell_state::{
+        SET_VAR,
+        decode_key_list,
+    },
+    env::set::EnvSet,
 };
 
 const ENV_MARKER: &[u8] = b"\0__CADE_ENV_BEGIN__\0";
@@ -154,10 +169,12 @@ mod tests {
             ("BAR".to_owned(), "old".to_owned()),
         ]);
 
-        assert_eq!(
-            cade_managed_env_keys(&env),
-            ["BAR", "FOO", "__CADE_SESSION", "__CADE_SET"]
-        );
+        assert_eq!(cade_managed_env_keys(&env), [
+            "BAR",
+            "FOO",
+            "__CADE_SESSION",
+            "__CADE_SET"
+        ]);
     }
 
     #[test]

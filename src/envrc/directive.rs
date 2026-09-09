@@ -31,29 +31,37 @@ fn parse_line(raw: &str) -> Option<Directive> {
     let unhandled = || Some(Directive::Unhandled(line.to_owned()));
 
     match cmd.as_str() {
-        "use" => match rest.first().map(String::as_str) {
-            Some("flake") => parse_use_flake(rest, unhandled),
-            Some("nix") => parse_use_nix(rest, unhandled),
-            _ => unhandled(),
+        "use" => {
+            match rest.first().map(String::as_str) {
+                Some("flake") => parse_use_flake(rest, unhandled),
+                Some("nix") => parse_use_nix(rest, unhandled),
+                _ => unhandled(),
+            }
         },
-        "dotenv" => Some(Directive::Dotenv {
-            file: rest.first().cloned().unwrap_or_default(),
-            if_exists: false,
-        }),
-        "dotenv_if_exists" => Some(Directive::Dotenv {
-            file: rest.first().cloned().unwrap_or_default(),
-            if_exists: true,
-        }),
+        "dotenv" => {
+            Some(Directive::Dotenv {
+                file:      rest.first().cloned().unwrap_or_default(),
+                if_exists: false,
+            })
+        },
+        "dotenv_if_exists" => {
+            Some(Directive::Dotenv {
+                file:      rest.first().cloned().unwrap_or_default(),
+                if_exists: true,
+            })
+        },
         "PATH_add" if !rest.is_empty() => Some(Directive::PathAdd(rest.to_vec())),
         "watch_file" if !rest.is_empty() => Some(Directive::WatchFile(rest.to_vec())),
-        "export" => match rest
-            .first()
-            .and_then(|assignment| assignment.split_once('='))
-        {
-            Some((key, val)) if is_literal_value(val) && is_valid_key(key) => {
-                Some(Directive::Export(key.to_owned(), val.to_owned()))
+        "export" => {
+            match rest
+                .first()
+                .and_then(|assignment| assignment.split_once('='))
+            {
+                Some((key, val)) if is_literal_value(val) && is_valid_key(key) => {
+                    Some(Directive::Export(key.to_owned(), val.to_owned()))
+                },
+                _ => unhandled(),
             }
-            _ => unhandled(),
         },
         _ => unhandled(),
     }
@@ -71,9 +79,11 @@ where
     }
     match positional.first().map(|entry| entry.as_str()) {
         None | Some(".") => Some(Directive::UseFlake(None)),
-        Some(spec) => spec.strip_prefix(".#").map_or_else(unhandled, |name| {
-            Some(Directive::UseFlake(Some(name.to_owned())))
-        }),
+        Some(spec) => {
+            spec.strip_prefix(".#").map_or_else(unhandled, |name| {
+                Some(Directive::UseFlake(Some(name.to_owned())))
+            })
+        },
     }
 }
 
@@ -90,9 +100,10 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::nix::target::FlakeTarget;
-    use std::path::Path;
 
     #[test]
     fn recognizes_declarative_directives() {
@@ -109,8 +120,8 @@ mod tests {
         assert_eq!(
             parse_line("dotenv_if_exists .env.local"),
             Some(Directive::Dotenv {
-                file: ".env.local".to_owned(),
-                if_exists: true
+                file:      ".env.local".to_owned(),
+                if_exists: true,
             })
         );
         assert_eq!(

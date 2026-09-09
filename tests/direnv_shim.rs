@@ -1,15 +1,32 @@
 #![cfg(unix)]
 
-use std::env::{join_paths, split_paths, temp_dir, var_os};
-use std::fs;
-use std::io::Write as _;
-use std::iter::once;
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output, id as process_id};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::thread::sleep;
-use std::time::Duration;
+use std::{
+    env::{
+        join_paths,
+        split_paths,
+        temp_dir,
+        var_os,
+    },
+    fs,
+    io::Write as _,
+    iter::once,
+    os::unix::fs::PermissionsExt as _,
+    path::{
+        Path,
+        PathBuf,
+    },
+    process::{
+        Command,
+        Output,
+        id as process_id,
+    },
+    sync::atomic::{
+        AtomicU32,
+        Ordering,
+    },
+    thread::sleep,
+    time::Duration,
+};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -220,7 +237,7 @@ fn output_with_retry(mut command: Command) -> Output {
             Ok(output) => return output,
             Err(err) if err.raw_os_error() == Some(26_i32) => {
                 sleep(Duration::from_millis(10));
-            }
+            },
             result @ Err(_) => return result.expect("run shim"),
         }
     }

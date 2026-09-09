@@ -1,6 +1,14 @@
+use std::collections::{
+    BTreeMap,
+    BTreeSet,
+};
+
+use anyhow::{
+    Result,
+    bail,
+};
+
 use super::set::ParsedEnv;
-use anyhow::{Result, bail};
-use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn parse_env_text(text: &str) -> Result<ParsedEnv> {
     let mut vars: BTreeMap<String, Vec<String>> = BTreeMap::new();

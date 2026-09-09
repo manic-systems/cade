@@ -1,6 +1,16 @@
-use crate::{cade_file::read, config, types::keyword::Keyword};
-use std::fs::exists;
-use std::path::{Path, PathBuf};
+use std::{
+    fs::exists,
+    path::{
+        Path,
+        PathBuf,
+    },
+};
+
+use crate::{
+    cade_file::read,
+    config,
+    types::keyword::Keyword,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum DirKind {
@@ -36,11 +46,11 @@ pub(super) fn participant_dirs(start: &Path) -> Vec<PathBuf> {
                 if caps_the_cascade(&current) {
                     break;
                 }
-            }
+            },
             Some(DirKind::Envrc) => {
                 nearest_envrc.get_or_insert_with(|| current.clone());
-            }
-            None => {}
+            },
+            None => {},
         }
         dir = current.parent().map(Path::to_path_buf);
     }
@@ -65,10 +75,17 @@ pub(super) fn find_cade_root(start: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        env::temp_dir,
+        fs::{
+            create_dir_all,
+            remove_dir_all,
+            write,
+        },
+        process::id,
+    };
+
     use super::*;
-    use std::env::temp_dir;
-    use std::fs::{create_dir_all, remove_dir_all, write};
-    use std::process::id;
 
     #[test]
     fn find_cade_root_walks_up_to_innermost() {
@@ -96,7 +113,10 @@ mod tests {
     }
 
     fn assert_participants(spec: &[(&str, &str)], cwd_rel: &str, expect_tip_first: &[&str]) {
-        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::atomic::{
+            AtomicU32,
+            Ordering,
+        };
         static SALT: AtomicU32 = AtomicU32::new(0);
         let base = temp_dir().join(format!(
             "cade-parts-{}-{}",
@@ -148,20 +168,16 @@ mod tests {
 
     #[test]
     fn participants_cade_cascade_spans_a_gap() {
-        assert_participants(
-            &[("a", ".cade"), ("a/b/c", ".cade")],
-            "a/b/c",
-            &["a/b/c", "a"],
-        );
+        assert_participants(&[("a", ".cade"), ("a/b/c", ".cade")], "a/b/c", &[
+            "a/b/c", "a",
+        ]);
     }
 
     #[test]
     fn participants_upper_envrc_survives_a_cade_cascade_gap() {
-        assert_participants(
-            &[("a", ".envrc"), ("a/b/c", ".cade")],
-            "a/b/c",
-            &["a/b/c", "a"],
-        );
+        assert_participants(&[("a", ".envrc"), ("a/b/c", ".cade")], "a/b/c", &[
+            "a/b/c", "a",
+        ]);
     }
 
     #[test]
@@ -172,15 +188,17 @@ mod tests {
         create_dir_all(&colocated).unwrap();
         write(colocated.join(".cade"), b"").unwrap();
         write(colocated.join(".envrc"), b"").unwrap();
-        assert_eq!(
-            parts(&participant_dirs(&colocated), &base),
-            vec!["a".to_owned()]
-        );
+        assert_eq!(parts(&participant_dirs(&colocated), &base), vec![
+            "a".to_owned()
+        ]);
         let _ = remove_dir_all(&base);
     }
 
     fn build_tree(spec: &[(&str, &str, &str)], tag: &str) -> PathBuf {
-        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::atomic::{
+            AtomicU32,
+            Ordering,
+        };
         static SALT: AtomicU32 = AtomicU32::new(0);
         let base = temp_dir().join(format!(
             "cade-{tag}-{}-{}",
@@ -203,10 +221,9 @@ mod tests {
             "disinherit",
         );
         let cwd = base.join("a/b");
-        assert_eq!(
-            parts(&participant_dirs(&cwd), &base),
-            vec!["a/b".to_owned()]
-        );
+        assert_eq!(parts(&participant_dirs(&cwd), &base), vec![
+            "a/b".to_owned()
+        ]);
         let _ = remove_dir_all(&base);
     }
 
@@ -221,10 +238,10 @@ mod tests {
             "disinherit-envrc",
         );
         let cwd = base.join("a/b/c");
-        assert_eq!(
-            parts(&participant_dirs(&cwd), &base),
-            vec!["a/b/c".to_owned(), "a/b".to_owned()]
-        );
+        assert_eq!(parts(&participant_dirs(&cwd), &base), vec![
+            "a/b/c".to_owned(),
+            "a/b".to_owned()
+        ]);
         let _ = remove_dir_all(&base);
     }
 

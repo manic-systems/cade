@@ -1,10 +1,23 @@
-use crate::core::Cade;
-use crate::core::sessions::{atomic_write, is_valid_session};
-use anyhow::{Context as _, Result};
 use std::{
     collections::BTreeMap,
-    fs::{create_dir_all, read_to_string},
+    fs::{
+        create_dir_all,
+        read_to_string,
+    },
     path::PathBuf,
+};
+
+use anyhow::{
+    Context as _,
+    Result,
+};
+
+use crate::core::{
+    Cade,
+    sessions::{
+        atomic_write,
+        is_valid_session,
+    },
 };
 
 pub(super) fn snapshot_path(cade: &Cade, session: &str) -> PathBuf {
@@ -46,14 +59,26 @@ fn read_legacy_snapshot(raw: &str) -> BTreeMap<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::core::Cade;
-    use crate::core::snapshot::{read_legacy_snapshot, read_snapshot, write_snapshot};
-    use std::collections::BTreeMap;
-    use std::env::temp_dir;
-    use std::fs::{create_dir_all, remove_dir_all};
-    use std::path::PathBuf;
-    use std::process::id;
-    use std::thread::current;
+    use std::{
+        collections::BTreeMap,
+        env::temp_dir,
+        fs::{
+            create_dir_all,
+            remove_dir_all,
+        },
+        path::PathBuf,
+        process::id,
+        thread::current,
+    };
+
+    use crate::core::{
+        Cade,
+        snapshot::{
+            read_legacy_snapshot,
+            read_snapshot,
+            write_snapshot,
+        },
+    };
 
     fn cade_for_state_dir(state_dir: PathBuf) -> Cade {
         Cade {

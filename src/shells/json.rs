@@ -1,6 +1,9 @@
 use std::env::split_paths;
 
-use super::{ShellOutput, is_valid_key};
+use super::{
+    ShellOutput,
+    is_valid_key,
+};
 
 pub struct Json;
 

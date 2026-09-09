@@ -1,9 +1,25 @@
-use crate::expand::walk::expand_keyword;
-use crate::types::keyword::{Keyword, Loadable};
-use anyhow::{Context as _, Result, anyhow};
-use std::fs::{exists, read as fs_read};
-use std::path::Path;
-use std::str::from_utf8;
+use std::{
+    fs::{
+        exists,
+        read as fs_read,
+    },
+    path::Path,
+    str::from_utf8,
+};
+
+use anyhow::{
+    Context as _,
+    Result,
+    anyhow,
+};
+
+use crate::{
+    expand::walk::expand_keyword,
+    types::keyword::{
+        Keyword,
+        Loadable,
+    },
+};
 
 mod parse;
 
@@ -21,14 +37,14 @@ pub fn read(path: &Path) -> Result<Vec<Keyword>> {
         })?;
         match line.parse::<Keyword>() {
             Ok(kw) => accum.push(kw),
-            Err(parse::ParseError::EmptyLine) => {}
+            Err(parse::ParseError::EmptyLine) => {},
             Err(parse_err) => {
                 return Err(anyhow!(
                     "parse cade file at {}: line {}: {parse_err}",
                     path.display(),
                     line_idx + 1
                 ));
-            }
+            },
         }
     }
     Ok(accum)
@@ -48,16 +64,22 @@ pub fn load_dir(dir: &Path) -> Result<Vec<Keyword>> {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        env::temp_dir,
+        fs::{
+            remove_file,
+            write,
+        },
+        process::id,
+    };
+
     use crate::cade_file::read;
-    use std::env::temp_dir;
-    use std::fs::{remove_file, write};
-    use std::process::id;
 
     #[test]
     fn read_errors_on_invalid_utf8_instead_of_truncating() {
         let path = temp_dir().join(format!("cade-badutf8-{}", id()));
         let mut body = b"FOO=bar\n".to_vec();
-        body.extend_from_slice(&[0xff, b'\n']);
+        body.extend_from_slice(&[0xFF, b'\n']);
         body.extend_from_slice(b"pure\n");
         write(&path, &body).unwrap();
 

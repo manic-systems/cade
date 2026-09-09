@@ -1,6 +1,10 @@
 use super::{
-    ShellOutput, is_valid_key,
-    quote::{posix_command, posix_single_quote},
+    ShellOutput,
+    is_valid_key,
+    quote::{
+        posix_command,
+        posix_single_quote,
+    },
 };
 
 pub struct Bash;

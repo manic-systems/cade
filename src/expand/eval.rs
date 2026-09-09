@@ -17,7 +17,7 @@ pub(super) fn expand_with(
             b'\\' if bytes.get(pos + 1) == Some(&b'$') => {
                 out.push('$');
                 pos += 2;
-            }
+            },
             b'$' if bytes.get(pos + 1) == Some(&b'{') => {
                 if let Some((inner, end)) = find_close(input, pos) {
                     out.push_str(&on_value(expand_ref(inner, lookup)));
@@ -26,7 +26,7 @@ pub(super) fn expand_with(
                     out.push_str("${");
                     pos += 2;
                 }
-            }
+            },
             _ => {
                 let ch = input
                     .get(pos..)
@@ -34,7 +34,7 @@ pub(super) fn expand_with(
                     .expect("byte index is always on a char boundary");
                 out.push(ch);
                 pos += ch.len_utf8();
-            }
+            },
         }
     }
     out
@@ -117,8 +117,9 @@ fn expand_ref(inner: &str, lookup: Lookup<'_>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     fn lookup_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let map: HashMap<String, String> = pairs
