@@ -256,33 +256,44 @@ set -eu
 if [ "${1:-}" = profile ]; then
   exit 0
 fi
-if [ "${1:-}" != print-dev-env ]; then
+if [ "${1:-}" != develop ]; then
   printf 'unexpected nix command: %s\n' "$*" >&2
   exit 64
 fi
-profile=
+shift
+profile=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --profile)
+    --command)
       shift
-      profile="${1:-}"
+      break
+      ;;
+    --profile)
+      profile="${2:-}"
+      shift 2
+      ;;
+    *)
+      shift
       ;;
   esac
-  shift
 done
 if [ -z "$profile" ]; then
   printf 'missing --profile\n' >&2
   exit 86
 fi
 printf '%s\n' "$profile" > "$CADE_FAKE_NIX_PROFILE_LOG"
-cat <<'EOF'
+mkdir -p "${profile%/*}"
+env_target="${profile}-env"
+: > "$env_target"
+ln -sfn "$env_target" "$profile"
 PATH="/materialized/bin:${PATH:-}"
 export PATH
 FROM_PROFILE_NIX=ok
 export FROM_PROFILE_NIX
-EOF
+exec "$@"
 "#,
     );
+    write_executable(&fake_bin.join("nix-store"), "#!/bin/sh\nset -eu\nexit 0\n");
 
     let host_path = std::env::var_os("PATH").unwrap_or_default();
     let path = std::env::join_paths(

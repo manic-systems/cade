@@ -1,7 +1,7 @@
 use crate::core::Cade;
 use crate::envrc::load::{activate_envrc, load_envrc};
 use crate::loaders::{call, load_env};
-use crate::nix::{prepare_flake, prepare_shell};
+use crate::nix::develop::{load_flake, load_shell};
 use crate::types::layer::CachedLayer;
 use crate::{
     env::EnvSet,
@@ -139,13 +139,15 @@ pub(super) fn load_single_layer(
                     cade.nix_profile_path(session, layer_count, action_index, path, &spec_key);
                 let (loaded_action, env) = match resolved.run {
                     LoadRun::Flake(target) => {
-                        let dev_env = prepare_flake(&target, profile).context("loading flake")?;
-                        let env = dev_env.activate()?;
+                        let (dev_env, env) =
+                            load_flake(&target, &profile.context("creating nix profile")?)
+                                .context("loading flake")?;
                         (CadeAction::NixDevEnv(dev_env), env)
                     }
                     LoadRun::Shell(file) => {
-                        let dev_env = prepare_shell(&file, profile).context("loading shell")?;
-                        let env = dev_env.activate()?;
+                        let (dev_env, env) =
+                            load_shell(&file, &profile.context("creating nix profile")?)
+                                .context("loading shell")?;
                         (CadeAction::NixDevEnv(dev_env), env)
                     }
                     LoadRun::Env(file) => {

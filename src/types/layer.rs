@@ -31,7 +31,7 @@ pub enum EnvrcAction {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NixDevEnv {
-    pub script: String,
+    pub store_path: PathBuf,
     pub cwd: PathBuf,
 }
 
