@@ -1,7 +1,7 @@
-use crate::env::EnvSet;
-use crate::types::InnerHook;
+use crate::env::set::EnvSet;
+use crate::types::hook::InnerHook;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::BTreeSet, path::PathBuf};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum CadeAction {
@@ -40,7 +40,7 @@ pub struct CadeLayer {
     pub envs: EnvSet,
     pub hooks: Vec<InnerHook>,
     pub purify: bool,
-    pub clears: HashSet<String>,
-    pub concat: HashSet<String>,
+    pub clears: BTreeSet<String>,
+    pub concat: BTreeSet<String>,
     pub nix_store_paths: Vec<String>,
 }

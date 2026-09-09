@@ -1,27 +1,35 @@
 use super::{Lookup, eval::expand_plain, quote::expand_shell_args};
 use crate::{
-    env::EnvSet,
-    types::{Keyword, Loadable},
+    env::set::EnvSet,
+    types::keyword::{Keyword, Loadable},
 };
+use std::env::var;
 
 pub fn expand_keyword(kw: &mut Keyword) {
-    expand_keyword_with(kw, &|k| std::env::var(k).ok());
+    expand_keyword_with(kw, &|key| var(key).ok());
 }
 
 fn expand_keyword_with(kw: &mut Keyword, lookup: Lookup<'_>) {
-    use Keyword::*;
-    match kw {
-        Call(s) | Watch(s) => *s = expand_shell_args(s, lookup),
-        Load(loadable) => expand_loadable(loadable, lookup),
-        Set(env) => expand_envset(env, lookup),
+    use Keyword::{Call, Clear, Concat, Disinherit, Hook, Load, Pure, Set, Watch};
+    match *kw {
+        Call(ref mut command) | Watch(ref mut command) => {
+            *command = expand_shell_args(command, lookup);
+        }
+        Load(ref mut loadable) => expand_loadable(loadable, lookup),
+        Set(ref mut env) => expand_envset(env, lookup),
         Hook(_) | Clear(_) | Concat(_) | Pure | Disinherit => {}
     }
 }
 
 fn expand_loadable(loadable: &mut Loadable, lookup: Lookup<'_>) {
-    use Loadable::*;
-    match loadable {
-        Flake(s) | Shell(s) | Env(s) | Envrc(s) => *s = expand_plain(s, lookup),
+    use Loadable::{Default, Env, Envrc, Flake, Shell};
+    match *loadable {
+        Flake(ref mut source)
+        | Shell(ref mut source)
+        | Env(ref mut source)
+        | Envrc(ref mut source) => {
+            *source = expand_plain(source, lookup);
+        }
         Default => {}
     }
 }
@@ -33,14 +41,15 @@ fn expand_envset(env: &mut EnvSet, lookup: Lookup<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::hook::{HookType, InnerHook};
     use std::collections::HashMap;
 
     fn lookup_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let map: HashMap<String, String> = pairs
             .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .map(|&(key, value)| (key.to_owned(), value.to_owned()))
             .collect();
-        move |k: &str| map.get(k).cloned()
+        move |key: &str| map.get(key).cloned()
     }
 
     fn env_values(env: &EnvSet, key: &str) -> Vec<String> {
@@ -48,7 +57,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|value| value.as_str().unwrap().to_string())
+            .map(|value| value.as_str().unwrap().to_owned())
             .collect()
     }
 
@@ -57,39 +66,41 @@ mod tests {
         let lookup = lookup_from(&[("TOKEN", "secret"), ("DIR", "/srv")]);
         let mut call = Keyword::Call("tool --t=${TOKEN}".into());
         expand_keyword_with(&mut call, &lookup);
-        match call {
-            Keyword::Call(s) => {
-                assert_eq!(shlex::split(&s).unwrap(), vec!["tool", "--t=secret"])
-            }
-            other => panic!("expected Call, got {other:?}"),
+        assert!(matches!(call, Keyword::Call(_)));
+        if let Keyword::Call(command) = call {
+            assert_eq!(shlex::split(&command).unwrap(), vec!["tool", "--t=secret"]);
         }
 
         let mut load = Keyword::Load(Loadable::Env("${DIR}/.env".into()));
         expand_keyword_with(&mut load, &lookup);
-        match load {
-            Keyword::Load(Loadable::Env(p)) => assert_eq!(p, "/srv/.env"),
-            other => panic!("expected Load env, got {other:?}"),
+        assert!(matches!(load, Keyword::Load(Loadable::Env(_))));
+        if let Keyword::Load(Loadable::Env(path)) = load {
+            assert_eq!(path, "/srv/.env");
         }
 
-        let mut hook = Keyword::Hook(crate::types::InnerHook {
-            kind: crate::types::HookType::LoadPost,
+        let mut hook = Keyword::Hook(InnerHook {
+            kind: HookType::LoadPost,
             content: "echo ${TOKEN}".into(),
         });
         expand_keyword_with(&mut hook, &lookup);
-        match hook {
-            Keyword::Hook(h) => assert_eq!(h.content, "echo ${TOKEN}"),
-            other => panic!("expected Hook, got {other:?}"),
+        assert!(matches!(hook, Keyword::Hook(_)));
+        if let Keyword::Hook(inner_hook) = hook {
+            assert_eq!(inner_hook.content, "echo ${TOKEN}");
         }
     }
 
     #[test]
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "Shell parameter expansion is input to the parser"
+    )]
     fn walks_inline_assignment_with_colon_dash_default() {
         let lookup = lookup_from(&[]);
         let mut set = "MODE=${MODE:-dev}".parse::<Keyword>().unwrap();
         expand_keyword_with(&mut set, &lookup);
-        match set {
-            Keyword::Set(env) => assert_eq!(env_values(&env, "MODE"), vec!["dev"]),
-            other => panic!("expected Set, got {other:?}"),
+        assert!(matches!(set, Keyword::Set(_)));
+        if let Keyword::Set(env) = set {
+            assert_eq!(env_values(&env, "MODE"), vec!["dev"]);
         }
     }
 
@@ -98,9 +109,9 @@ mod tests {
         let lookup = lookup_from(&[("EXTRA", "/a:/b")]);
         let mut set = "MYPATH=${EXTRA}:/c".parse::<Keyword>().unwrap();
         expand_keyword_with(&mut set, &lookup);
-        match set {
-            Keyword::Set(env) => assert_eq!(env_values(&env, "MYPATH"), vec!["/a", "/b", "/c"]),
-            other => panic!("expected Set, got {other:?}"),
+        assert!(matches!(set, Keyword::Set(_)));
+        if let Keyword::Set(env) = set {
+            assert_eq!(env_values(&env, "MYPATH"), vec!["/a", "/b", "/c"]);
         }
     }
 
@@ -112,9 +123,9 @@ mod tests {
         let mut set = "TOOL=${TOOL}".parse::<Keyword>().unwrap();
         expand_keyword_with(&mut set, &lookup);
 
-        match set {
-            Keyword::Set(env) => assert_eq!(env.derived_store_paths(), [STORE_PATH]),
-            other => panic!("expected Set, got {other:?}"),
+        assert!(matches!(set, Keyword::Set(_)));
+        if let Keyword::Set(env) = set {
+            assert_eq!(env.derived_store_paths(), [STORE_PATH]);
         }
     }
 }

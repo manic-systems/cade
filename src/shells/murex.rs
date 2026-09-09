@@ -32,10 +32,10 @@ impl ShellOutput for Murex {
     }
 
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
-        r#"event onPrompt cade=before {
+        "event onPrompt cade=before {
     __CADE__ reload --shell murex -> source
 }
-"#
+"
         .replace("__CADE__", &posix_command(cade_exe, cade_args))
     }
 }

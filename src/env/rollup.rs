@@ -1,12 +1,12 @@
 use crate::{
-    env::is_shell_managed,
-    types::{CadeLayer, InnerHook},
+    env::delta::is_shell_managed,
+    types::{hook::InnerHook, layer::CadeLayer},
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub struct RollupResult {
-    env: HashMap<String, Vec<String>>,
-    absorb: HashSet<String>,
+    env: BTreeMap<String, Vec<String>>,
+    absorb: BTreeSet<String>,
     unset: Vec<String>,
     hooks: Vec<InnerHook>,
     purified: bool,
@@ -36,11 +36,11 @@ const PATH_LIKE: &[&str] = &[
 const SPACE_JOINED: &[&str] = &["NIX_CFLAGS_COMPILE", "NIX_HARDENING_ENABLE", "NIX_LDFLAGS"];
 
 impl RollupResult {
-    pub fn env(&self) -> &HashMap<String, Vec<String>> {
+    pub const fn env(&self) -> &BTreeMap<String, Vec<String>> {
         &self.env
     }
 
-    pub fn absorb(&self) -> &HashSet<String> {
+    pub const fn absorb(&self) -> &BTreeSet<String> {
         &self.absorb
     }
 
@@ -52,14 +52,12 @@ impl RollupResult {
         &self.hooks
     }
 
-    pub fn purified(&self) -> bool {
+    pub const fn purified(&self) -> bool {
         self.purified
     }
 
     pub fn set_keys(&self) -> Vec<&str> {
-        let mut keys: Vec<&str> = self.env.keys().map(String::as_str).collect();
-        keys.sort_unstable();
-        keys
+        self.env.keys().map(String::as_str).collect()
     }
 
     #[cfg(test)]
@@ -80,11 +78,11 @@ impl RollupResult {
 
 pub fn rollup_envs(cade_layers: Vec<CadeLayer>) -> RollupResult {
     let mut purified = false;
-    let mut env: HashMap<String, Vec<String>> = HashMap::new();
-    let mut cleared: HashSet<String> = HashSet::new();
-    let mut absorb: HashSet<String> = HashSet::new();
+    let mut env: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut cleared: BTreeSet<String> = BTreeSet::new();
+    let mut absorb: BTreeSet<String> = BTreeSet::new();
     let mut hooks = Vec::new();
-    let mut concat_active: HashSet<String> = PATH_LIKE.iter().map(|s| s.to_string()).collect();
+    let mut concat_active: BTreeSet<String> = PATH_LIKE.iter().map(ToString::to_string).collect();
 
     for layer in cade_layers {
         concat_active.extend(layer.concat);
@@ -105,47 +103,43 @@ pub fn rollup_envs(cade_layers: Vec<CadeLayer>) -> RollupResult {
             }
             env.remove(var);
             absorb.remove(var);
-            cleared.insert(var.to_string());
+            cleared.insert(var.to_owned());
         }
 
-        for (k, v, replaces) in parsed.into_entries() {
-            if is_shell_managed(&k) {
+        for (key, incoming, replaces) in parsed.into_entries() {
+            if is_shell_managed(&key) {
                 continue;
             }
-            cleared.remove(&k);
-            let is_concat = !replaces && concat_active.contains(&k);
+            cleared.remove(&key);
+            let is_concat = !replaces && concat_active.contains(&key);
             if is_concat {
-                absorb.insert(k.clone());
-                let entry = env.entry(k).or_default();
-                let mut combined = v;
+                absorb.insert(key.clone());
+                let entry = env.entry(key).or_default();
+                let mut combined = incoming;
                 combined.append(entry);
                 *entry = combined;
-            } else if !replaces && SPACE_JOINED.contains(&k.as_str()) {
-                absorb.remove(&k);
-                let value = join_space_values(v);
-                if let Some(previous) = env.get(&k).map(|values| join_space_values(values.clone()))
-                {
-                    env.insert(k, vec![join_space_values(vec![value, previous])]);
+            } else if !replaces && SPACE_JOINED.contains(&key.as_str()) {
+                absorb.remove(&key);
+                let value = join_space_values(&incoming);
+                if let Some(previous) = env.get(&key).map(|existing| join_space_values(existing)) {
+                    env.insert(key, vec![join_space_values(&[value, previous])]);
                 } else {
-                    env.insert(k, vec![value]);
+                    env.insert(key, vec![value]);
                 }
             } else {
-                absorb.remove(&k);
-                env.insert(k, v);
+                absorb.remove(&key);
+                env.insert(key, incoming);
             }
         }
 
-        if !purified && layer.purify {
-            purified = true;
-        }
+        purified |= layer.purify;
         hooks.extend(layer.hooks);
     }
 
-    let mut unset: Vec<String> = cleared
+    let unset: Vec<String> = cleared
         .into_iter()
-        .filter(|k| !env.contains_key(k))
+        .filter(|name| !env.contains_key(name))
         .collect();
-    unset.sort_unstable();
 
     RollupResult {
         env,
@@ -156,10 +150,11 @@ pub fn rollup_envs(cade_layers: Vec<CadeLayer>) -> RollupResult {
     }
 }
 
-fn join_space_values(values: Vec<String>) -> String {
+fn join_space_values(values: &[String]) -> String {
     values
-        .into_iter()
+        .iter()
         .filter(|value| !value.is_empty())
+        .map(String::as_str)
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -167,7 +162,7 @@ fn join_space_values(values: Vec<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{env::EnvSet, types::CadeAction};
+    use crate::{env::set::EnvSet, types::layer::CadeAction};
 
     fn env_layer(pairs: &[(&str, &str)]) -> CadeLayer {
         let mut layer = CadeLayer::default();
@@ -179,7 +174,7 @@ mod tests {
 
     fn env_set(pairs: &[(&str, &str)]) -> EnvSet {
         let mut text = String::new();
-        for (key, value) in pairs {
+        for &(key, value) in pairs {
             text.push_str(key);
             text.push('=');
             text.push_str(value);
@@ -192,25 +187,25 @@ mod tests {
     fn path_like_vars_concat_child_first() {
         let parent = env_layer(&[("PATH", "/parent/bin"), ("ONLY_PARENT", "p")]);
         let child = env_layer(&[("PATH", "/child/bin"), ("ONLY_CHILD", "c")]);
-        let r = rollup_envs(vec![parent, child]);
+        let rollup = rollup_envs(vec![parent, child]);
         assert_eq!(
-            r.values("PATH"),
+            rollup.values("PATH"),
             Some(&["/child/bin".into(), "/parent/bin".into()][..])
         );
-        assert!(r.absorbs("PATH"), "PATH should absorb ambient");
-        assert_eq!(r.values("ONLY_PARENT"), Some(&["p".into()][..]));
-        assert_eq!(r.values("ONLY_CHILD"), Some(&["c".into()][..]));
-        assert!(!r.absorbs("ONLY_PARENT"));
-        assert!(!r.purified());
+        assert!(rollup.absorbs("PATH"), "PATH should absorb ambient");
+        assert_eq!(rollup.values("ONLY_PARENT"), Some(&["p".into()][..]));
+        assert_eq!(rollup.values("ONLY_CHILD"), Some(&["c".into()][..]));
+        assert!(!rollup.absorbs("ONLY_PARENT"));
+        assert!(!rollup.purified());
     }
 
     #[test]
     fn scalar_var_replaces_child_wins() {
         let parent = env_layer(&[("EDITOR", "nano")]);
         let child = env_layer(&[("EDITOR", "vim")]);
-        let r = rollup_envs(vec![parent, child]);
-        assert_eq!(r.values("EDITOR"), Some(&["vim".into()][..]));
-        assert!(!r.absorbs("EDITOR"));
+        let rollup = rollup_envs(vec![parent, child]);
+        assert_eq!(rollup.values("EDITOR"), Some(&["vim".into()][..]));
+        assert!(!rollup.absorbs("EDITOR"));
     }
 
     #[test]
@@ -225,31 +220,34 @@ mod tests {
             ("NIX_CFLAGS_COMPILE", "-isystem /child/include"),
             ("NIX_HARDENING_ENABLE", "relro"),
         ]);
-        let r = rollup_envs(vec![parent, child]);
+        let rollup = rollup_envs(vec![parent, child]);
 
         assert_eq!(
-            r.values("NIX_LDFLAGS").unwrap(),
+            rollup.values("NIX_LDFLAGS").unwrap(),
             vec!["-L/child/lib -L/parent/lib -rpath /parent/lib"]
         );
         assert_eq!(
-            r.values("NIX_CFLAGS_COMPILE").unwrap(),
+            rollup.values("NIX_CFLAGS_COMPILE").unwrap(),
             vec!["-isystem /child/include -isystem /parent/include"]
         );
         assert_eq!(
-            r.values("NIX_HARDENING_ENABLE").unwrap(),
+            rollup.values("NIX_HARDENING_ENABLE").unwrap(),
             vec!["relro fortify stackprotector"]
         );
-        assert!(!r.absorbs("NIX_LDFLAGS"));
+        assert!(!rollup.absorbs("NIX_LDFLAGS"));
     }
 
     #[test]
     fn nix_wrapper_scalar_vars_replace_child_wins() {
         let parent = env_layer(&[("NIX_CC", "/parent/cc"), ("NIX_STORE", "/parent/store")]);
         let child = env_layer(&[("NIX_CC", "/child/cc"), ("NIX_STORE", "/child/store")]);
-        let r = rollup_envs(vec![parent, child]);
+        let rollup = rollup_envs(vec![parent, child]);
 
-        assert_eq!(r.values("NIX_CC"), Some(&["/child/cc".into()][..]));
-        assert_eq!(r.values("NIX_STORE"), Some(&["/child/store".into()][..]));
+        assert_eq!(rollup.values("NIX_CC"), Some(&["/child/cc".into()][..]));
+        assert_eq!(
+            rollup.values("NIX_STORE"),
+            Some(&["/child/store".into()][..])
+        );
     }
 
     #[test]
@@ -261,21 +259,24 @@ mod tests {
                 EnvSet::from_envs("PATH:=/only/child\n").unwrap(),
             ))
             .unwrap();
-        let r = rollup_envs(vec![parent, child]);
-        assert_eq!(r.values("PATH"), Some(&["/only/child".into()][..]));
-        assert!(!r.absorbs("PATH"), "hard replace drops ambient");
+        let rollup = rollup_envs(vec![parent, child]);
+        assert_eq!(rollup.values("PATH"), Some(&["/only/child".into()][..]));
+        assert!(!rollup.absorbs("PATH"), "hard replace drops ambient");
     }
 
     #[test]
     fn concat_directive_marks_custom_var() {
         let mut parent = env_layer(&[("MYLIST", "/p")]);
         parent
-            .push_action(&CadeAction::Concat(vec!["MYLIST".to_string()]))
+            .push_action(&CadeAction::Concat(vec!["MYLIST".to_owned()]))
             .unwrap();
         let child = env_layer(&[("MYLIST", "/c")]);
-        let r = rollup_envs(vec![parent, child]);
-        assert_eq!(r.values("MYLIST"), Some(&["/c".into(), "/p".into()][..]));
-        assert!(r.absorbs("MYLIST"));
+        let rollup = rollup_envs(vec![parent, child]);
+        assert_eq!(
+            rollup.values("MYLIST"),
+            Some(&["/c".into(), "/p".into()][..])
+        );
+        assert!(rollup.absorbs("MYLIST"));
     }
 
     #[test]
@@ -285,23 +286,24 @@ mod tests {
         child
             .push_action(&CadeAction::Clear(vec!["DROP_ME".into()]))
             .unwrap();
-        let r = rollup_envs(vec![parent, child]);
-        assert!(!r.contains_key("DROP_ME"));
-        assert!(r.contains_key("KEEP"));
-        assert_eq!(r.unset(), ["DROP_ME"]);
+        let rollup = rollup_envs(vec![parent, child]);
+        assert!(!rollup.contains_key("DROP_ME"));
+        assert!(rollup.contains_key("KEEP"));
+        assert_eq!(rollup.unset(), ["DROP_ME"]);
     }
 
     #[test]
     fn clear_then_reset_in_later_layer_cancels_unset() {
-        let l1 = env_layer(&[("X", "1")]);
-        let mut l2 = CadeLayer::default();
-        l2.push_action(&CadeAction::Clear(vec!["X".into()]))
+        let first = env_layer(&[("X", "1")]);
+        let mut second = CadeLayer::default();
+        second
+            .push_action(&CadeAction::Clear(vec!["X".into()]))
             .unwrap();
-        let l3 = env_layer(&[("X", "2")]);
-        let r = rollup_envs(vec![l1, l2, l3]);
-        assert_eq!(r.values("X"), Some(&["2".into()][..]));
+        let third = env_layer(&[("X", "2")]);
+        let rollup = rollup_envs(vec![first, second, third]);
+        assert_eq!(rollup.values("X"), Some(&["2".into()][..]));
         assert!(
-            r.unset().is_empty(),
+            rollup.unset().is_empty(),
             "X was re-set, so it must not be unset"
         );
     }
@@ -314,9 +316,9 @@ mod tests {
         child
             .push_action(&CadeAction::Environ(env_set(&[("FROM_CHILD", "c")])))
             .unwrap();
-        let r = rollup_envs(vec![parent, child]);
-        assert!(r.purified());
-        assert_eq!(r.values("FROM_PARENT"), Some(&["kept".into()][..]));
-        assert_eq!(r.values("FROM_CHILD"), Some(&["c".into()][..]));
+        let rollup = rollup_envs(vec![parent, child]);
+        assert!(rollup.purified());
+        assert_eq!(rollup.values("FROM_PARENT"), Some(&["kept".into()][..]));
+        assert_eq!(rollup.values("FROM_CHILD"), Some(&["c".into()][..]));
     }
 }

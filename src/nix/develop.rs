@@ -1,13 +1,15 @@
 use crate::command::run_checked_output;
-use crate::env::EnvSet;
-use crate::nix::FlakeTarget;
+use crate::env::set::EnvSet;
 use crate::nix::capture;
 use crate::nix::profile::wipe_history;
-use crate::types::NixDevEnv;
-use anyhow::{Context, Result};
-use std::collections::HashMap;
-use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use crate::nix::target::FlakeTarget;
+use crate::types::layer::NixDevEnv;
+use anyhow::{Context as _, Result};
+use std::collections::BTreeMap;
+use std::env::{split_paths, var_os, vars};
+use std::fs::{canonicalize, create_dir_all};
+use std::io::{Write as _, stderr};
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -29,12 +31,12 @@ pub fn load_shell(file: &Path, profile: &Path) -> Result<(NixDevEnv, EnvSet)> {
 
 fn load_nix_dev_env(mut proc: Command, path: &Path, profile: &Path) -> Result<(NixDevEnv, EnvSet)> {
     if let Some(parent) = profile.parent() {
-        std::fs::create_dir_all(parent)
+        create_dir_all(parent)
             .with_context(|| format!("creating nix profile dir at {}", parent.display()))?;
     }
     proc.arg("--profile").arg(profile);
     let mut env = capture_dev_env(proc, path)?;
-    let store_path = std::fs::canonicalize(profile)
+    let store_path = canonicalize(profile)
         .with_context(|| format!("resolving nix environment at {}", profile.display()))?;
     env.retain_store_path(store_path.to_string_lossy().into_owned());
     wipe_history(profile);
@@ -58,7 +60,7 @@ impl NixDevEnv {
 }
 
 fn capture_dev_env(mut proc: Command, cwd: &Path) -> Result<EnvSet> {
-    let mut previous_env: HashMap<_, _> = std::env::vars().collect();
+    let mut previous_env: BTreeMap<_, _> = vars().collect();
     proc.args(["--log-format", "internal-json", "--command"])
         .arg(find_on_path("sh"))
         .args(["-c", capture::env_capture_script(), "cade-env"])
@@ -69,13 +71,13 @@ fn capture_dev_env(mut proc: Command, cwd: &Path) -> Result<EnvSet> {
     let output = run_checked_output(proc, &format!("nix develop at {}", cwd.display()))?;
     let (hook_stdout, raw_env) =
         capture::captured_env_output(&output.stdout, &format!("at {}", cwd.display()))?;
-    let mut stderr = std::io::stderr().lock();
-    stderr
+    let mut error_stream = stderr().lock();
+    error_stream
         .write_all(hook_stdout)
         .context("write nix shellHook output")?;
     for line in output.stderr.split_inclusive(|byte| *byte == b'\n') {
         if !line.starts_with(b"@nix ") {
-            stderr
+            error_stream
                 .write_all(line)
                 .context("write nix shellHook error output")?;
         }
@@ -84,9 +86,9 @@ fn capture_dev_env(mut proc: Command, cwd: &Path) -> Result<EnvSet> {
 }
 
 fn find_on_path(name: &str) -> PathBuf {
-    std::env::var_os("PATH")
+    var_os("PATH")
         .and_then(|path| {
-            std::env::split_paths(&path)
+            split_paths(&path)
                 .map(|dir| dir.join(name))
                 .find(|candidate| {
                     candidate.metadata().is_ok_and(|metadata| {

@@ -1,8 +1,12 @@
 use crate::verbosity::Verbosity;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 use std::{
+    env::{var, var_os},
+    fs::{canonicalize, read_to_string},
+    io::ErrorKind,
     path::{Path, PathBuf},
+    str::FromStr,
     sync::OnceLock,
 };
 
@@ -16,24 +20,24 @@ pub enum DirenvMode {
 }
 
 impl DirenvMode {
-    pub fn loads_envrc(self) -> bool {
-        matches!(self, DirenvMode::Envrc | DirenvMode::Full)
+    pub const fn loads_envrc(self) -> bool {
+        matches!(self, Self::Envrc | Self::Full)
     }
 
-    pub fn runs_shim(self) -> bool {
-        matches!(self, DirenvMode::Shim | DirenvMode::Full)
+    pub const fn runs_shim(self) -> bool {
+        matches!(self, Self::Shim | Self::Full)
     }
 }
 
-impl std::str::FromStr for DirenvMode {
+impl FromStr for DirenvMode {
     type Err = String;
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
         match raw.trim().to_lowercase().as_str() {
-            "none" => Ok(DirenvMode::None),
-            "shim" => Ok(DirenvMode::Shim),
-            "envrc" => Ok(DirenvMode::Envrc),
-            "full" => Ok(DirenvMode::Full),
+            "none" => Ok(Self::None),
+            "shim" => Ok(Self::Shim),
+            "envrc" => Ok(Self::Envrc),
+            "full" => Ok(Self::Full),
             _ => Err(format!("unknown direnv mode: {raw}")),
         }
     }
@@ -68,39 +72,39 @@ pub fn current() -> &'static Config {
 }
 
 pub fn long_running_warning_ms() -> Option<u64> {
-    std::env::var("CADE_LONG_RUNNING_WARNING_MS")
+    var("CADE_LONG_RUNNING_WARNING_MS")
         .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|v| *v > 0)
+        .and_then(|text| text.parse::<u64>().ok())
+        .filter(|value| *value > 0)
         .or_else(|| current().long_running_warning_ms)
 }
 
 pub fn shell_gc_root_ttl_seconds() -> Option<u64> {
-    std::env::var("CADE_SHELL_GC_ROOT_TTL_SECONDS")
+    var("CADE_SHELL_GC_ROOT_TTL_SECONDS")
         .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|v| *v > 0)
+        .and_then(|text| text.parse::<u64>().ok())
+        .filter(|value| *value > 0)
         .or_else(|| current().shell_gc_root_ttl_seconds)
 }
 
 pub fn direnv_mode() -> DirenvMode {
-    match std::env::var("CADE_DIRENV") {
-        Ok(raw) => match raw.parse::<DirenvMode>() {
+    var("CADE_DIRENV").map_or_else(
+        |_| current().direnv,
+        |raw| match raw.parse::<DirenvMode>() {
             Ok(mode) => mode,
-            Err(e) => {
-                eprintln!("cade: ignoring CADE_DIRENV: {e}");
+            Err(parse_error) => {
+                eprintln!("cade: ignoring CADE_DIRENV: {parse_error}");
                 current().direnv
             }
         },
-        Err(_) => current().direnv,
-    }
+    )
 }
 
 fn home_config_path() -> Option<PathBuf> {
-    let mut path = PathBuf::from(std::env::var_os("HOME")?);
-    path.push(".config");
-    path.push("cade");
-    path.push("config.toml");
+    let path = PathBuf::from(var_os("HOME")?)
+        .join(".config")
+        .join("cade")
+        .join("config.toml");
     Some(path)
 }
 
@@ -116,46 +120,47 @@ pub fn default_config_path() -> Option<PathBuf> {
 }
 
 fn active_config_path() -> Option<PathBuf> {
-    let active =
-        std::env::var_os("__CADE_LAYERS").is_some() || std::env::var_os("__CADE_SESSION").is_some();
+    let active = var_os("__CADE_LAYERS").is_some() || var_os("__CADE_SESSION").is_some();
     if !active {
         return None;
     }
 
-    std::env::var_os("__CADE_CONFIG_PATH")
-        .filter(|v| !v.is_empty())
+    var_os("__CADE_CONFIG_PATH")
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
 }
 
 pub fn load(path: Option<&Path>) -> Result<Config> {
     match path {
-        Some(path) => {
-            let config = read_config(path, true)?;
+        Some(explicit) => {
+            let config = read_config(explicit, true)?;
             Ok(config)
         }
-        None => {
-            if let Some(path) = active_config_path().or_else(default_config_path) {
-                read_config(&path, false)
-            } else {
-                Ok(Config::default())
-            }
-        }
+        None => active_config_path()
+            .or_else(default_config_path)
+            .map_or_else(
+                || Ok(Config::default()),
+                |fallback| read_config(&fallback, false),
+            ),
     }
 }
 
 fn read_config(path: &Path, strict: bool) -> Result<Config> {
-    let raw = match std::fs::read_to_string(path) {
-        Ok(raw) => raw,
-        Err(e) if !strict && e.kind() == std::io::ErrorKind::NotFound => {
+    let text = match read_to_string(path) {
+        Ok(text) => text,
+        Err(read_error) if !strict && read_error.kind() == ErrorKind::NotFound => {
             return Ok(Config::default());
         }
-        Err(e) => return Err(e).with_context(|| format!("reading config at {}", path.display())),
+        Err(read_error) => {
+            return Err(read_error)
+                .with_context(|| format!("reading config at {}", path.display()));
+        }
     };
 
-    let raw: RawConfig =
-        toml::from_str(&raw).with_context(|| format!("parsing config at {}", path.display()))?;
-    let mut config: Config = raw.try_into()?;
-    config.path = Some(std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
+    let parsed: RawConfig =
+        toml::from_str(&text).with_context(|| format!("parsing config at {}", path.display()))?;
+    let mut config: Config = parsed.try_into()?;
+    config.path = Some(canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
     Ok(config)
 }
 
@@ -164,7 +169,11 @@ impl TryFrom<RawConfig> for Config {
 
     fn try_from(raw: RawConfig) -> Result<Self> {
         let verbosity = match raw.verbosity {
-            Some(v) => Some(v.parse::<Verbosity>().map_err(|e| anyhow::anyhow!("{e}"))?),
+            Some(verbosity_text) => Some(
+                verbosity_text
+                    .parse::<Verbosity>()
+                    .map_err(|parse_error| anyhow::anyhow!("{parse_error}"))?,
+            ),
             None => None,
         };
         if matches!(raw.long_running_warning_ms, Some(0)) {
@@ -174,9 +183,9 @@ impl TryFrom<RawConfig> for Config {
             bail!("shell_gc_root_ttl_seconds must be greater than 0");
         }
         let direnv = match raw.direnv {
-            Some(v) => v
+            Some(direnv_text) => direnv_text
                 .parse::<DirenvMode>()
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
+                .map_err(|parse_error| anyhow::anyhow!("{parse_error}"))?,
             None => DirenvMode::default(),
         };
         Ok(Self {
@@ -214,7 +223,7 @@ mod tests {
             verbosity: Some("loud".into()),
             ..Default::default()
         };
-        assert!(Config::try_from(raw).is_err());
+        Config::try_from(raw).unwrap_err();
     }
 
     #[test]
@@ -223,7 +232,7 @@ mod tests {
             long_running_warning_ms: Some(0),
             ..Default::default()
         };
-        assert!(Config::try_from(raw).is_err());
+        Config::try_from(raw).unwrap_err();
     }
 
     #[test]
@@ -232,7 +241,7 @@ mod tests {
             shell_gc_root_ttl_seconds: Some(0),
             ..Default::default()
         };
-        assert!(Config::try_from(raw).is_err());
+        Config::try_from(raw).unwrap_err();
     }
 
     #[test]
@@ -256,7 +265,7 @@ mod tests {
             direnv: Some("sometimes".into()),
             ..Default::default()
         };
-        assert!(Config::try_from(raw).is_err());
+        Config::try_from(raw).unwrap_err();
     }
 
     #[test]

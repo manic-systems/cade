@@ -12,13 +12,13 @@ pub enum LoadSpec {
 
 impl LoadSpec {
     pub fn cache_key(&self) -> String {
-        match self {
-            LoadSpec::FlakeDefault => "flake".to_string(),
-            LoadSpec::FlakeOutput(output) => format!("flake:{output}"),
-            LoadSpec::FlakeInstallable(installable) => format!("flake:{installable}"),
-            LoadSpec::Shell(path) => format!("shell:{}", path.display()),
-            LoadSpec::Env(path) => format!("env:{}", path.display()),
-            LoadSpec::Envrc(path) => format!("envrc:{}", path.display()),
+        match *self {
+            Self::FlakeDefault => "flake".to_owned(),
+            Self::FlakeOutput(ref output) => format!("flake:{output}"),
+            Self::FlakeInstallable(ref installable) => format!("flake:{installable}"),
+            Self::Shell(ref path) => format!("shell:{}", path.display()),
+            Self::Env(ref path) => format!("env:{}", path.display()),
+            Self::Envrc(ref path) => format!("envrc:{}", path.display()),
         }
     }
 }

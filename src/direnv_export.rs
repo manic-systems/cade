@@ -1,7 +1,7 @@
-use crate::env::{EnvDelta, is_shell_managed, live_ambient_env};
+use crate::env::delta::{EnvDelta, is_shell_managed, live_ambient_env};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 const DIRENV_DIFF: &str = "DIRENV_DIFF";
 const DIRENV_DIR: &str = "DIRENV_DIR";
@@ -17,16 +17,16 @@ pub struct ExportMetadata {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExportState {
     version: u8,
-    preimage: HashMap<String, Option<String>>,
+    preimage: BTreeMap<String, Option<String>>,
 }
 
 pub struct ExportSession {
-    pub live: HashMap<String, String>,
-    pub baseline: HashMap<String, String>,
+    pub live: BTreeMap<String, String>,
+    pub baseline: BTreeMap<String, String>,
     pub previous: Option<ExportState>,
 }
 
-pub fn capture_session(snapshot: Option<HashMap<String, String>>) -> ExportSession {
+pub fn capture_session(snapshot: Option<BTreeMap<String, String>>) -> ExportSession {
     let live = live_ambient_env();
     let previous = export_state(&live);
 
@@ -44,12 +44,12 @@ pub fn capture_session(snapshot: Option<HashMap<String, String>>) -> ExportSessi
 }
 
 pub fn inactive_delta(previous: Option<ExportState>) -> EnvDelta {
-    let Some(previous) = previous else {
+    let Some(previous_state) = previous else {
         return EnvDelta::empty();
     };
 
     let mut delta = EnvDelta::empty();
-    restore_applied(&mut delta, &previous);
+    restore_applied(&mut delta, &previous_state);
     delta.record(DIRENV_DIFF, None);
     delta.record(DIRENV_DIR, None);
     delta.record(DIRENV_FILE, None);
@@ -59,14 +59,14 @@ pub fn inactive_delta(previous: Option<ExportState>) -> EnvDelta {
 
 pub fn active_delta(
     mut delta: EnvDelta,
-    baseline: HashMap<String, String>,
-    previous: Option<ExportState>,
+    baseline: &BTreeMap<String, String>,
+    previous: Option<&ExportState>,
     metadata: ExportMetadata,
 ) -> Result<EnvDelta> {
     let applied = tracked_delta_keys(&delta);
 
-    if let Some(previous) = previous.as_ref() {
-        for (key, preimage) in previous.tracked_preimages() {
+    if let Some(previous_state) = previous {
+        for (key, preimage) in previous_state.tracked_preimages() {
             if delta.contains(key) {
                 continue;
             }
@@ -78,7 +78,6 @@ pub fn active_delta(
         .iter()
         .map(|key| {
             let value = previous
-                .as_ref()
                 .and_then(|state| state.preimage.get(key).cloned())
                 .unwrap_or_else(|| baseline.get(key).cloned());
             (key.clone(), value)
@@ -98,13 +97,13 @@ pub fn active_delta(
     Ok(delta)
 }
 
-fn export_state(live: &HashMap<String, String>) -> Option<ExportState> {
-    let state = live.get(DIRENV_DIFF)?;
-    let state: ExportState = serde_json::from_str(state).ok()?;
+fn export_state(live: &BTreeMap<String, String>) -> Option<ExportState> {
+    let raw = live.get(DIRENV_DIFF)?;
+    let state: ExportState = serde_json::from_str(raw).ok()?;
     (state.version == 2).then_some(state)
 }
 
-fn live_baseline(live: &HashMap<String, String>) -> HashMap<String, String> {
+fn live_baseline(live: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut baseline = live.clone();
     baseline.remove(DIRENV_DIFF);
     baseline.remove(DIRENV_DIR);
@@ -136,15 +135,15 @@ impl ExportState {
     fn tracked_preimages(&self) -> impl Iterator<Item = (&str, Option<&String>)> {
         self.preimage
             .iter()
-            .filter(|(key, _)| is_tracked_key(key))
+            .filter(|&(key, _)| is_tracked_key(key))
             .map(|(key, value)| (key.as_str(), value.as_ref()))
     }
 
-    fn baseline_from_live(&self, live: &HashMap<String, String>) -> HashMap<String, String> {
+    fn baseline_from_live(&self, live: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         let mut baseline = live_baseline(live);
 
         for (key, preimage) in &self.preimage {
-            match preimage {
+            match preimage.as_ref() {
                 Some(value) => {
                     baseline.insert(key.clone(), value.clone());
                 }

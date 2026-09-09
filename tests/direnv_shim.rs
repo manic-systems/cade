@@ -1,11 +1,14 @@
 #![cfg(unix)]
 
+use std::env::{join_paths, split_paths, temp_dir, var_os};
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::io::Write as _;
+use std::iter::once;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, id as process_id};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::thread::sleep;
 use std::time::Duration;
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -84,33 +87,33 @@ struct ShimSandbox {
 impl ShimSandbox {
     fn new() -> Self {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("cade-shim-{}-{id}", std::process::id()));
+        let root = temp_dir().join(format!("cade-shim-{}-{id}", process_id()));
         fs::create_dir_all(&root).unwrap();
 
-        let bash = bash_path();
-        let bash = bash.to_str().expect("bash path must be valid UTF-8");
+        let bash_file = bash_path();
+        let bash_str = bash_file.to_str().expect("bash path must be valid UTF-8");
 
         let fake_cade = root.join("cade");
-        write_executable(&fake_cade, &FAKE_CADE.replace("@bash@", bash));
+        write_executable(&fake_cade, &FAKE_CADE.replace("@bash@", bash_str));
 
-        Self::with_root_and_cade(root, &fake_cade, bash)
+        Self::with_root_and_cade(root, &fake_cade, bash_str)
     }
 
     fn new_with_cade(cade: &Path) -> Self {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("cade-shim-{}-{id}", std::process::id()));
+        let root = temp_dir().join(format!("cade-shim-{}-{id}", process_id()));
         fs::create_dir_all(&root).unwrap();
 
-        let bash = bash_path();
-        let bash = bash.to_str().expect("bash path must be valid UTF-8");
+        let bash_file = bash_path();
+        let bash_str = bash_file.to_str().expect("bash path must be valid UTF-8");
 
-        Self::with_root_and_cade(root, cade, bash)
+        Self::with_root_and_cade(root, cade, bash_str)
     }
 
     fn with_root_and_cade(root: PathBuf, cade: &Path, bash: &str) -> Self {
         let shim = root.join("direnv");
-        let cade = cade.to_str().unwrap();
-        write_executable(&shim, &direnv_shim_script(bash, cade, "shim"));
+        let cade_str = cade.to_str().unwrap();
+        write_executable(&shim, &direnv_shim_script(bash, cade_str, "shim"));
 
         Self { root, shim }
     }
@@ -180,18 +183,18 @@ exit 0
 
 impl Drop for ShimSandbox {
     fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
+        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
 fn bash_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("BASH").map(PathBuf::from)
+    if let Some(path) = var_os("BASH").map(PathBuf::from)
         && path.is_file()
     {
         return path;
     }
 
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+    split_paths(&var_os("PATH").unwrap_or_default())
         .map(|dir| dir.join("bash"))
         .find(|path| path.is_file())
         .expect("find bash in PATH")
@@ -212,13 +215,13 @@ fn write_executable(path: &Path, contents: &str) {
 }
 
 fn output_with_retry(mut command: Command) -> Output {
-    for _ in 0..20 {
+    for _ in 0_i32..20_i32 {
         match command.output() {
             Ok(output) => return output,
-            Err(err) if err.raw_os_error() == Some(26) => {
-                std::thread::sleep(Duration::from_millis(10));
+            Err(err) if err.raw_os_error() == Some(26_i32) => {
+                sleep(Duration::from_millis(10));
             }
-            Err(err) => panic!("run shim: {err}"),
+            result @ Err(_) => return result.expect("run shim"),
         }
     }
     command.output().expect("run shim")
@@ -248,9 +251,9 @@ fn export_json_delegates_to_cade() {
     assert!(out.status.success(), "json export failed: {out:?}");
     assert_eq!(stdout(&out), "{\"A\":\"1\"}\n");
 
-    let out = sb.run_with_mode(&["export", "json"], "fail");
-    assert_eq!(out.status.code(), Some(42));
-    assert!(stderr(&out).contains("loader failed"));
+    let failed_out = sb.run_with_mode(&["export", "json"], "fail");
+    assert_eq!(failed_out.status.code(), Some(42_i32));
+    assert!(stderr(&failed_out).contains("loader failed"));
 }
 
 #[test]
@@ -279,7 +282,7 @@ fn export_json_does_not_interpret_cade_errors() {
 
     let out = sb.run_with_mode(&["export", "json"], "missing");
 
-    assert_eq!(out.status.code(), Some(7));
+    assert_eq!(out.status.code(), Some(7_i32));
     assert!(stdout(&out).is_empty(), "{}", stdout(&out));
     assert!(stderr(&out).contains("no .cade or .envrc found"));
 }
@@ -288,8 +291,8 @@ fn export_json_does_not_interpret_cade_errors() {
 fn export_json_loads_cade_shell_through_real_shim() {
     let cade = PathBuf::from(env!("CARGO_BIN_EXE_cade"));
     let sb = ShimSandbox::new_with_cade(&cade);
-    let bash = bash_path();
-    let bash = bash.to_str().expect("bash path must be valid UTF-8");
+    let bash_file = bash_path();
+    let bash_str = bash_file.to_str().expect("bash path must be valid UTF-8");
 
     let project = sb.root.join("project");
     let fake_bin = sb.root.join("fake-bin");
@@ -302,17 +305,15 @@ fn export_json_loads_cade_shell_through_real_shim() {
     fs::create_dir_all(&home).unwrap();
     fs::write(project.join(".cade"), "load flake\n").unwrap();
     fs::write(config_dir.join("config.toml"), "direnv = \"shim\"\n").unwrap();
-    write_executable(&fake_bin.join("nix"), &FAKE_NIX.replace("@bash@", bash));
+    write_executable(&fake_bin.join("nix"), &FAKE_NIX.replace("@bash@", bash_str));
     write_executable(
         &fake_bin.join("nix-store"),
-        &format!("#!{bash}\nset -eu\nexit 0\n"),
+        &format!("#!{bash_str}\nset -eu\nexit 0\n"),
     );
 
-    let host_path = std::env::var_os("PATH").unwrap_or_default();
-    let path = std::env::join_paths(
-        std::iter::once(fake_bin.clone()).chain(std::env::split_paths(&host_path)),
-    )
-    .expect("test PATH should be valid");
+    let host_path = var_os("PATH").unwrap_or_default();
+    let path = join_paths(once(fake_bin).chain(split_paths(&host_path)))
+        .expect("test PATH should be valid");
 
     let allow = Command::new(&cade)
         .arg("allow")
@@ -360,7 +361,7 @@ fn export_json_loads_cade_shell_through_real_shim() {
     assert!(
         shim_json["PATH"]
             .as_str()
-            .is_some_and(|path| path.starts_with("/fake-dev/bin:")),
+            .is_some_and(|path_value| path_value.starts_with("/fake-dev/bin:")),
         "{shim_json}"
     );
 }
@@ -369,8 +370,8 @@ fn export_json_loads_cade_shell_through_real_shim() {
 fn real_shim_enables_export_without_cade_config() {
     let cade = PathBuf::from(env!("CARGO_BIN_EXE_cade"));
     let sb = ShimSandbox::new_with_cade(&cade);
-    let bash = bash_path();
-    let bash = bash.to_str().expect("bash path must be valid UTF-8");
+    let bash_file = bash_path();
+    let bash_str = bash_file.to_str().expect("bash path must be valid UTF-8");
 
     let project = sb.root.join("project-no-config");
     let fake_bin = sb.root.join("fake-bin-no-config");
@@ -381,17 +382,15 @@ fn real_shim_enables_export_without_cade_config() {
     fs::create_dir_all(&state_dir).unwrap();
     fs::create_dir_all(&home).unwrap();
     fs::write(project.join(".cade"), "load flake\n").unwrap();
-    write_executable(&fake_bin.join("nix"), &FAKE_NIX.replace("@bash@", bash));
+    write_executable(&fake_bin.join("nix"), &FAKE_NIX.replace("@bash@", bash_str));
     write_executable(
         &fake_bin.join("nix-store"),
-        &format!("#!{bash}\nset -eu\nexit 0\n"),
+        &format!("#!{bash_str}\nset -eu\nexit 0\n"),
     );
 
-    let host_path = std::env::var_os("PATH").unwrap_or_default();
-    let path = std::env::join_paths(
-        std::iter::once(fake_bin.clone()).chain(std::env::split_paths(&host_path)),
-    )
-    .expect("test PATH should be valid");
+    let host_path = var_os("PATH").unwrap_or_default();
+    let path = join_paths(once(fake_bin).chain(split_paths(&host_path)))
+        .expect("test PATH should be valid");
 
     let allow = Command::new(&cade)
         .arg("allow")
@@ -432,7 +431,7 @@ fn real_shim_enables_export_without_cade_config() {
     assert!(
         shim_json["PATH"]
             .as_str()
-            .is_some_and(|path| path.starts_with("/fake-dev/bin:")),
+            .is_some_and(|path_value| path_value.starts_with("/fake-dev/bin:")),
         "{shim_json}"
     );
 }

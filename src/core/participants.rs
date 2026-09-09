@@ -1,4 +1,5 @@
-use crate::{config, types::Keyword};
+use crate::{cade_file::read, config, types::keyword::Keyword};
+use std::fs::exists;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -8,11 +9,9 @@ pub(super) enum DirKind {
 }
 
 fn dir_kind(dir: &Path) -> Option<DirKind> {
-    if std::fs::exists(dir.join(".cade")).unwrap_or(false) {
+    if exists(dir.join(".cade")).unwrap_or(false) {
         Some(DirKind::Cade)
-    } else if config::direnv_mode().loads_envrc()
-        && std::fs::exists(dir.join(".envrc")).unwrap_or(false)
-    {
+    } else if config::direnv_mode().loads_envrc() && exists(dir.join(".envrc")).unwrap_or(false) {
         Some(DirKind::Envrc)
     } else {
         None
@@ -20,10 +19,9 @@ fn dir_kind(dir: &Path) -> Option<DirKind> {
 }
 
 fn caps_the_cascade(dir: &Path) -> bool {
-    match crate::cade_file::read(&dir.join(".cade")) {
-        Ok(kws) => kws.iter().any(|kw| matches!(kw, Keyword::Disinherit)),
-        Err(_) => true,
-    }
+    read(&dir.join(".cade")).map_or(true, |kws| {
+        kws.iter().any(|kw| matches!(kw, Keyword::Disinherit))
+    })
 }
 
 pub(super) fn participant_dirs(start: &Path) -> Vec<PathBuf> {
@@ -31,20 +29,20 @@ pub(super) fn participant_dirs(start: &Path) -> Vec<PathBuf> {
     let mut nearest_envrc: Option<PathBuf> = None;
 
     let mut dir = Some(start.to_path_buf());
-    while let Some(d) = dir {
-        match dir_kind(&d) {
+    while let Some(current) = dir {
+        match dir_kind(&current) {
             Some(DirKind::Cade) => {
-                cade_chain.push(d.clone());
-                if caps_the_cascade(&d) {
+                cade_chain.push(current.clone());
+                if caps_the_cascade(&current) {
                     break;
                 }
             }
             Some(DirKind::Envrc) => {
-                nearest_envrc.get_or_insert_with(|| d.clone());
+                nearest_envrc.get_or_insert_with(|| current.clone());
             }
             None => {}
         }
-        dir = d.parent().map(Path::to_path_buf);
+        dir = current.parent().map(Path::to_path_buf);
     }
 
     merge_participants(cade_chain, nearest_envrc)
@@ -68,26 +66,29 @@ pub(super) fn find_cade_root(start: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env::temp_dir;
+    use std::fs::{create_dir_all, remove_dir_all, write};
+    use std::process::id;
 
     #[test]
     fn find_cade_root_walks_up_to_innermost() {
-        let base = std::env::temp_dir().join(format!("cade-root-{}", std::process::id()));
+        let base = temp_dir().join(format!("cade-root-{}", id()));
         let nested = base.join("a/b/c");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(base.join("a").join(".cade"), b"").unwrap();
+        create_dir_all(&nested).unwrap();
+        write(base.join("a").join(".cade"), b"").unwrap();
 
         assert_eq!(find_cade_root(&nested), Some(base.join("a")));
-        std::fs::write(base.join("a/b").join(".cade"), b"").unwrap();
+        write(base.join("a/b").join(".cade"), b"").unwrap();
         assert_eq!(find_cade_root(&nested), Some(base.join("a/b")));
 
-        std::fs::remove_dir_all(&base).ok();
+        let _ = remove_dir_all(&base);
     }
 
     fn parts(dirs: &[PathBuf], base: &Path) -> Vec<String> {
         dirs.iter()
-            .map(|d| {
-                d.strip_prefix(base)
-                    .unwrap_or(d)
+            .map(|dir| {
+                dir.strip_prefix(base)
+                    .unwrap_or(dir)
                     .to_string_lossy()
                     .to_string()
             })
@@ -97,23 +98,23 @@ mod tests {
     fn assert_participants(spec: &[(&str, &str)], cwd_rel: &str, expect_tip_first: &[&str]) {
         use std::sync::atomic::{AtomicU32, Ordering};
         static SALT: AtomicU32 = AtomicU32::new(0);
-        let base = std::env::temp_dir().join(format!(
+        let base = temp_dir().join(format!(
             "cade-parts-{}-{}",
-            std::process::id(),
+            id(),
             SALT.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::remove_dir_all(&base).ok();
-        for (rel, file) in spec {
+        let _ = remove_dir_all(&base);
+        for &(rel, file) in spec {
             let dir = base.join(rel);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join(file), b"").unwrap();
+            create_dir_all(&dir).unwrap();
+            write(dir.join(file), b"").unwrap();
         }
         let cwd = base.join(cwd_rel);
-        std::fs::create_dir_all(&cwd).unwrap();
+        create_dir_all(&cwd).unwrap();
         let got = parts(&participant_dirs(&cwd), &base);
-        let want: Vec<String> = expect_tip_first.iter().map(|s| s.to_string()).collect();
+        let want: Vec<String> = expect_tip_first.iter().map(ToString::to_string).collect();
         assert_eq!(got, want, "spec {spec:?} cwd {cwd_rel}");
-        std::fs::remove_dir_all(&base).ok();
+        let _ = remove_dir_all(&base);
     }
 
     #[test]
@@ -165,29 +166,32 @@ mod tests {
 
     #[test]
     fn participants_colocated_envrc_is_ignored() {
-        let base = std::env::temp_dir().join(format!("cade-parts-both-{}", std::process::id()));
-        std::fs::remove_dir_all(&base).ok();
-        let a = base.join("a");
-        std::fs::create_dir_all(&a).unwrap();
-        std::fs::write(a.join(".cade"), b"").unwrap();
-        std::fs::write(a.join(".envrc"), b"").unwrap();
-        assert_eq!(parts(&participant_dirs(&a), &base), vec!["a".to_string()]);
-        std::fs::remove_dir_all(&base).ok();
+        let base = temp_dir().join(format!("cade-parts-both-{}", id()));
+        let _ = remove_dir_all(&base);
+        let colocated = base.join("a");
+        create_dir_all(&colocated).unwrap();
+        write(colocated.join(".cade"), b"").unwrap();
+        write(colocated.join(".envrc"), b"").unwrap();
+        assert_eq!(
+            parts(&participant_dirs(&colocated), &base),
+            vec!["a".to_owned()]
+        );
+        let _ = remove_dir_all(&base);
     }
 
     fn build_tree(spec: &[(&str, &str, &str)], tag: &str) -> PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
         static SALT: AtomicU32 = AtomicU32::new(0);
-        let base = std::env::temp_dir().join(format!(
+        let base = temp_dir().join(format!(
             "cade-{tag}-{}-{}",
-            std::process::id(),
+            id(),
             SALT.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::remove_dir_all(&base).ok();
-        for (rel, file, contents) in spec {
+        let _ = remove_dir_all(&base);
+        for &(rel, file, contents) in spec {
             let dir = base.join(rel);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join(file), contents.as_bytes()).unwrap();
+            create_dir_all(&dir).unwrap();
+            write(dir.join(file), contents.as_bytes()).unwrap();
         }
         base
     }
@@ -201,9 +205,9 @@ mod tests {
         let cwd = base.join("a/b");
         assert_eq!(
             parts(&participant_dirs(&cwd), &base),
-            vec!["a/b".to_string()]
+            vec!["a/b".to_owned()]
         );
-        std::fs::remove_dir_all(&base).ok();
+        let _ = remove_dir_all(&base);
     }
 
     #[test]
@@ -219,9 +223,9 @@ mod tests {
         let cwd = base.join("a/b/c");
         assert_eq!(
             parts(&participant_dirs(&cwd), &base),
-            vec!["a/b/c".to_string(), "a/b".to_string()]
+            vec!["a/b/c".to_owned(), "a/b".to_owned()]
         );
-        std::fs::remove_dir_all(&base).ok();
+        let _ = remove_dir_all(&base);
     }
 
     #[test]
@@ -236,10 +240,10 @@ mod tests {
         let cwd = base.join("a/b");
         assert_eq!(
             parts(&participant_dirs(&cwd), &base),
-            vec!["a/b".to_string()],
+            vec!["a/b".to_owned()],
             "malformed .cade must cap the cascade, not skip up to the parent"
         );
-        std::fs::remove_dir_all(&base).ok();
+        let _ = remove_dir_all(&base);
     }
 
     #[test]
@@ -255,9 +259,9 @@ mod tests {
         let cwd = base.join("a/b/tip");
         assert_eq!(
             parts(&participant_dirs(&cwd), &base),
-            vec!["a/b/tip".to_string(), "a/b".to_string()],
+            vec!["a/b/tip".to_owned(), "a/b".to_owned()],
             "the malformed dir caps the chain; the valid grandparent must not join"
         );
-        std::fs::remove_dir_all(&base).ok();
+        let _ = remove_dir_all(&base);
     }
 }

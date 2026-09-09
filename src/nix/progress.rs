@@ -1,11 +1,13 @@
 use cognos::internal::json::{Actions, Activities, ResultType, Verbosity, parse_line};
+use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
+use std::mem::take;
 
 const RECENT_LINES: usize = 5;
 const LINE_BYTES: usize = 4 * 1024;
 const DISPLAY_CHARS: usize = 200;
 const TRANSCRIPT_CAP: usize = 200;
-const BAR_CELLS: usize = 24;
+const BAR_CELLS: u128 = 24;
 
 const BAR: &str = "\x1b[34m";
 const RESET: &str = "\x1b[0m";
@@ -39,7 +41,7 @@ impl NixProgress {
         for &byte in chunk {
             match byte {
                 b'\n' => {
-                    let line = std::mem::take(&mut self.carry);
+                    let line = take(&mut self.carry);
                     self.line(&line);
                 }
                 b'\r' => self.carry.clear(),
@@ -53,7 +55,7 @@ impl NixProgress {
     }
 
     pub fn finish(&mut self) {
-        let line = std::mem::take(&mut self.carry);
+        let line = take(&mut self.carry);
         self.line(&line);
     }
 
@@ -86,7 +88,17 @@ impl NixProgress {
                     Activities::FileTransfer => {
                         self.transfers.entry(id).or_insert((0, 0));
                     }
-                    _ => {}
+                    Activities::Unknown
+                    | Activities::CopyPath
+                    | Activities::Realise
+                    | Activities::Build
+                    | Activities::OptimiseStore
+                    | Activities::VerifyPath
+                    | Activities::Substitute
+                    | Activities::QueryPathInfo
+                    | Activities::PostBuildHook
+                    | Activities::BuildWaiting
+                    | Activities::FetchTree => {}
                 }
                 let lively = matches!(
                     activity,
@@ -105,8 +117,8 @@ impl NixProgress {
                 fields,
             } => match result_type {
                 ResultType::Progress => {
-                    let done = fields.first().and_then(|v| v.as_u64()).unwrap_or(0);
-                    let expected = fields.get(1).and_then(|v| v.as_u64()).unwrap_or(0);
+                    let done = fields.first().and_then(Value::as_u64).unwrap_or(0);
+                    let expected = fields.get(1).and_then(Value::as_u64).unwrap_or(0);
                     let count = Count { done, expected };
                     if self.builds_id == Some(id) {
                         self.builds = count;
@@ -117,7 +129,7 @@ impl NixProgress {
                     }
                 }
                 ResultType::BuildLogLine | ResultType::PostBuildLogLine => {
-                    if let Some(text) = fields.first().and_then(|v| v.as_str()) {
+                    if let Some(text) = fields.first().and_then(Value::as_str) {
                         let line = sanitize(text.as_bytes());
                         if !line.is_empty() {
                             self.push_recent(line.clone());
@@ -125,7 +137,12 @@ impl NixProgress {
                         }
                     }
                 }
-                _ => {}
+                ResultType::FileLinked
+                | ResultType::UntrustedPath
+                | ResultType::CorruptedPath
+                | ResultType::SetPhase
+                | ResultType::SetExpected
+                | ResultType::FetchStatus => {}
             },
             Actions::Message { level, msg, .. } => {
                 let line = sanitize(msg.as_bytes());
@@ -159,7 +176,7 @@ impl NixProgress {
         self.recent.iter().cloned().collect()
     }
 
-    pub fn saw_nix(&self) -> bool {
+    pub const fn saw_nix(&self) -> bool {
         self.saw_nix
     }
 
@@ -169,12 +186,6 @@ impl NixProgress {
             .cloned()
             .collect::<Vec<_>>()
             .join("\n")
-    }
-
-    fn fraction(&self) -> Option<f32> {
-        let done = self.builds.done + self.copies.done;
-        let expected = self.builds.expected + self.copies.expected;
-        (expected > 0).then(|| (done as f32 / expected as f32).clamp(0.0, 1.0))
     }
 
     fn status_text(&self) -> String {
@@ -191,54 +202,72 @@ impl NixProgress {
                 self.copies.done, self.copies.expected
             ));
         }
-        let (done, expected) = self
-            .transfers
-            .values()
-            .fold((0u64, 0u64), |(d, e), (td, te)| (d + td, e + te));
+        let (done, expected) = self.transfers.values().fold(
+            (0_u128, 0_u128),
+            |(done_total, expected_total), &(done_bytes, expected_bytes)| {
+                (
+                    done_total + u128::from(done_bytes),
+                    expected_total + u128::from(expected_bytes),
+                )
+            },
+        );
         if expected > 0 {
-            parts.push(format!("{:.1}/{:.0} MB", mb(done), mb(expected)));
+            let tenths = rounded_div(done, 100_000);
+            let expected_mb = rounded_div(expected, 1_000_000);
+            parts.push(format!("{}.{}/{expected_mb} MB", tenths / 10, tenths % 10));
         }
-        parts.join(" · ")
+        parts.join(" \u{b7} ")
     }
 
     pub fn bar_line(&self) -> Option<String> {
-        let fraction = self.fraction()?;
-        Some(render_bar(fraction, &self.status_text()))
+        let expected = u128::from(self.builds.expected) + u128::from(self.copies.expected);
+        if expected == 0 {
+            return None;
+        }
+        let done = u128::from(self.builds.done) + u128::from(self.copies.done);
+        Some(render_bar(
+            done.min(expected),
+            expected,
+            &self.status_text(),
+        ))
     }
 }
 
-fn mb(bytes: u64) -> f64 {
-    bytes as f64 / 1_000_000.0
+const fn rounded_div(value: u128, divisor: u128) -> u128 {
+    let quotient = value / divisor;
+    let remainder = value % divisor;
+    quotient
+        + ((remainder > divisor / 2 || (remainder * 2 == divisor && quotient % 2 == 1)) as u128)
 }
 
-fn render_bar(progress: f32, status: &str) -> String {
-    let progress = progress.clamp(0.0, 1.0);
-    let filled = progress * BAR_CELLS as f32;
-    let full = filled.floor() as usize;
-    let half = (filled - full as f32) >= 0.5 && full < BAR_CELLS;
+fn render_bar(done: u128, expected: u128, status: &str) -> String {
+    let half_cells = done * BAR_CELLS * 2 / expected;
+    let full = half_cells / 2;
+    let half = half_cells % 2 == 1;
 
     let mut bar = String::from("[");
     bar.push_str(BAR);
     for _ in 0..full {
-        bar.push('━');
+        bar.push('\u{2501}');
     }
     let mut used = full;
     if half {
-        bar.push('╸');
+        bar.push('\u{2578}');
         used += 1;
     }
     for _ in used..BAR_CELLS {
-        bar.push('─');
+        bar.push('\u{2500}');
     }
     bar.push_str(RESET);
     bar.push(']');
 
-    let status = if status.is_empty() {
+    let suffix = if status.is_empty() {
         String::new()
     } else {
         format!(" {status}")
     };
-    format!("{bar} {:>3.0}%{status}", progress * 100.0)
+    let percent = rounded_div(done * 100, expected);
+    format!("{bar} {percent:>3}%{suffix}")
 }
 
 fn sanitize(raw: &[u8]) -> String {
@@ -249,8 +278,8 @@ fn sanitize(raw: &[u8]) -> String {
         if ch == '\x1b' {
             if chars.peek() == Some(&'[') {
                 chars.next();
-                for c in chars.by_ref() {
-                    if ('@'..='~').contains(&c) {
+                for control in chars.by_ref() {
+                    if ('@'..='~').contains(&control) {
                         break;
                     }
                 }
@@ -269,5 +298,5 @@ fn sanitize(raw: &[u8]) -> String {
             break;
         }
     }
-    out.trim().to_string()
+    out.trim().to_owned()
 }

@@ -1,4 +1,6 @@
-use std::{fmt, str::FromStr, sync::OnceLock};
+use std::{env::var, fmt, str::FromStr, sync::OnceLock};
+
+use crate::{config::current as config_current, progress::log_line};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Verbosity {
@@ -13,10 +15,10 @@ impl FromStr for Verbosity {
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
         match raw.trim().to_lowercase().as_str() {
-            "0" | "quiet" | "silent" | "none" => Ok(Verbosity::Quiet),
-            "1" | "normal" | "lifecycle" | "default" => Ok(Verbosity::Normal),
-            "2" | "vars" | "variables" => Ok(Verbosity::Vars),
-            "3" | "trace" | "debug" | "all" => Ok(Verbosity::Trace),
+            "0" | "quiet" | "silent" | "none" => Ok(Self::Quiet),
+            "1" | "normal" | "lifecycle" | "default" => Ok(Self::Normal),
+            "2" | "vars" | "variables" => Ok(Self::Vars),
+            "3" | "trace" | "debug" | "all" => Ok(Self::Trace),
             _ => Err(format!("unknown verbosity: {raw}")),
         }
     }
@@ -33,11 +35,10 @@ pub fn current() -> Verbosity {
         .get()
         .copied()
         .or_else(|| {
-            std::env::var("CADE_VERBOSITY")
-                .ok()
-                .and_then(|v| v.parse().ok())
+            let env_value = var("CADE_VERBOSITY").ok()?;
+            env_value.parse().ok()
         })
-        .or_else(|| crate::config::current().verbosity)
+        .or_else(|| config_current().verbosity)
         .unwrap_or(Verbosity::Normal)
 }
 
@@ -47,6 +48,6 @@ pub fn enabled(level: Verbosity) -> bool {
 
 pub fn log(level: Verbosity, args: fmt::Arguments<'_>) {
     if enabled(level) {
-        crate::progress::log_line(&args.to_string());
+        log_line(&args.to_string());
     }
 }

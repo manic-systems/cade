@@ -1,23 +1,34 @@
 mod common;
 
 use common::{Sandbox, stderr, stdout};
+use std::env::{join_paths, split_paths, var, var_os};
+use std::fs::{
+    FileTimes, OpenOptions, create_dir_all, metadata, read_dir, read_to_string, set_permissions,
+    write,
+};
+use std::iter::once;
 use std::path::{Path, PathBuf};
-
-impl Sandbox {
-    fn write_config(&self, contents: &str) -> PathBuf {
-        let path = self.state.join(".config").join("cade").join("config.toml");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, contents).unwrap();
-        path
-    }
-
-    fn enter(&self, cwd: &Path, extra_env: &[(&str, &str)]) -> std::process::Output {
-        self.run(cwd, &["enter", "--shell", "bash"], extra_env)
-    }
-}
+use std::process::{Output, id};
+use std::thread::sleep;
+use std::time::Duration;
 
 fn cade_state(sb: &Sandbox) -> PathBuf {
     sb.state.join("cade")
+}
+
+fn write_config(sandbox: &Sandbox, contents: &str) -> PathBuf {
+    let path = sandbox
+        .state
+        .join(".config")
+        .join("cade")
+        .join("config.toml");
+    create_dir_all(path.parent().unwrap()).unwrap();
+    write(&path, contents).unwrap();
+    path
+}
+
+fn enter(sandbox: &Sandbox, cwd: &Path, extra_env: &[(&str, &str)]) -> Output {
+    sandbox.run(cwd, &["enter", "--shell", "bash"], extra_env)
 }
 
 #[test]
@@ -31,16 +42,16 @@ fn nested_layers_compose_child_first() {
 
     sb.allow(&sb.root);
     sb.allow(&sub);
-    let out = sb.enter(&sub, &[]);
-    assert!(out.status.success(), "enter failed: {:?}", out);
-    let s = stdout(&out);
+    let out = enter(&sb, &sub, &[]);
+    assert!(out.status.success(), "enter failed: {out:?}");
+    let script = stdout(&out);
 
-    assert!(s.contains("export A='1';"), "missing A: {s}");
-    assert!(s.contains("export B='2';"), "missing B: {s}");
+    assert!(script.contains("export A='1';"), "missing A: {script}");
+    assert!(script.contains("export B='2';"), "missing B: {script}");
 
     assert!(
-        s.contains("export PATH='/child/bin:/parent/bin'"),
-        "PATH not child-first: {s}"
+        script.contains("export PATH='/child/bin:/parent/bin'"),
+        "PATH not child-first: {script}"
     );
 }
 
@@ -50,7 +61,7 @@ fn activation_requires_permission() {
     sb.write(".cade", "load env\n");
     sb.write(".env", "A=1\n");
 
-    let out = sb.enter(&sb.root, &[]);
+    let out = enter(&sb, &sb.root, &[]);
     assert!(!out.status.success(), "should fail without permission");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -67,8 +78,8 @@ fn activates_from_descendant_without_own_cade() {
     let deep = sb.dir("a/b/c");
 
     sb.allow(&deep);
-    let out = sb.enter(&deep, &[]);
-    assert!(out.status.success(), "enter failed: {:?}", out);
+    let out = enter(&sb, &deep, &[]);
+    assert!(out.status.success(), "enter failed: {out:?}");
     assert!(stdout(&out).contains("export A='1';"));
 }
 
@@ -83,19 +94,28 @@ fn pure_discards_ambient_but_keeps_inherited_layers() {
 
     sb.allow(&sb.root);
     sb.allow(&sub);
-    let out = sb.enter(&sub, &[("AMBIENT_TEST", "zzz")]);
-    assert!(out.status.success(), "enter failed: {:?}", out);
-    let s = stdout(&out);
-
-    assert!(s.contains("unset AMBIENT_TEST;"), "ambient not purged: {s}");
+    let out = enter(&sb, &sub, &[("AMBIENT_TEST", "zzz")]);
+    assert!(out.status.success(), "enter failed: {out:?}");
+    let script = stdout(&out);
 
     assert!(
-        s.contains("export INHERITED='1';"),
-        "inherited dropped: {s}"
+        script.contains("unset AMBIENT_TEST;"),
+        "ambient not purged: {script}"
     );
-    assert!(s.contains("export CHILD='2';"), "child missing: {s}");
 
-    assert!(!s.contains("unset PWD;"), "must not purge PWD: {s}");
+    assert!(
+        script.contains("export INHERITED='1';"),
+        "inherited dropped: {script}"
+    );
+    assert!(
+        script.contains("export CHILD='2';"),
+        "child missing: {script}"
+    );
+
+    assert!(
+        !script.contains("unset PWD;"),
+        "must not purge PWD: {script}"
+    );
 }
 
 #[test]
@@ -118,14 +138,17 @@ fn restore_reverts_only_cade_keys_and_leaves_pwd_alone() {
             ("PWD", "/somewhere/else"),
         ],
     );
-    assert!(out.status.success(), "exit failed: {:?}", out);
-    let s = stdout(&out);
-    assert!(s.contains("export A='old';"), "A not restored: {s}");
-    assert!(s.contains("unset B;"), "B not unset: {s}");
+    assert!(out.status.success(), "exit failed: {out:?}");
+    let script = stdout(&out);
+    assert!(
+        script.contains("export A='old';"),
+        "A not restored: {script}"
+    );
+    assert!(script.contains("unset B;"), "B not unset: {script}");
 
-    assert!(!s.contains("PWD"), "restore touched PWD: {s}");
+    assert!(!script.contains("PWD"), "restore touched PWD: {script}");
 
-    assert!(s.contains("unset __CADE_SESSION;"));
+    assert!(script.contains("unset __CADE_SESSION;"));
 }
 
 #[test]
@@ -135,23 +158,26 @@ fn first_activation_emits_session_id_not_an_env_blob() {
     sb.write(".env", "A=1\n");
     sb.allow(&sb.root);
 
-    let out = sb.enter(&sb.root, &[("SOMESECRET", "shh")]);
-    assert!(out.status.success(), "{:?}", out);
-    let s = stdout(&out);
-
-    assert!(s.contains("export __CADE_SESSION="), "no session id: {s}");
-    assert!(
-        s.contains("export __CADE_STATE_DIR="),
-        "no state dir marker: {s}"
-    );
-    assert!(
-        !s.contains("__CADE_PREV"),
-        "should not emit the env blob: {s}"
-    );
+    let out = enter(&sb, &sb.root, &[("SOMESECRET", "shh")]);
+    assert!(out.status.success(), "{out:?}");
+    let script = stdout(&out);
 
     assert!(
-        !s.contains("SOMESECRET"),
-        "ambient must not be duplicated into the env: {s}"
+        script.contains("export __CADE_SESSION="),
+        "no session id: {script}"
+    );
+    assert!(
+        script.contains("export __CADE_STATE_DIR="),
+        "no state dir marker: {script}"
+    );
+    assert!(
+        !script.contains("__CADE_PREV"),
+        "should not emit the env blob: {script}"
+    );
+
+    assert!(
+        !script.contains("SOMESECRET"),
+        "ambient must not be duplicated into the env: {script}"
     );
 }
 
@@ -172,7 +198,7 @@ fn nested_shells_share_session_without_corrupting_restore() {
     ];
 
     let child = sb.run(&sb.root, &["exit", "--shell", "bash"], &active_env);
-    assert!(child.status.success(), "{:?}", child);
+    assert!(child.status.success(), "{child:?}");
     assert!(
         stdout(&child).contains("export PATH='/orig';"),
         "child restore: {}",
@@ -180,7 +206,7 @@ fn nested_shells_share_session_without_corrupting_restore() {
     );
 
     let parent = sb.run(&sb.root, &["exit", "--shell", "bash"], &active_env);
-    assert!(parent.status.success(), "{:?}", parent);
+    assert!(parent.status.success(), "{parent:?}");
     assert!(
         stdout(&parent).contains("export PATH='/orig';"),
         "parent restore must still work after child teardown: {}",
@@ -199,18 +225,16 @@ fn untrusted_ancestor_layer_is_not_auto_activated() {
 
     sb.write(".cade", "hook load echo PWNED\n");
 
-    let at_parent = sb.enter(&sb.root, &[]);
+    let at_parent = enter(&sb, &sb.root, &[]);
     assert!(
         !at_parent.status.success(),
-        "untrusted ancestor must block: {:?}",
-        at_parent
+        "untrusted ancestor must block: {at_parent:?}"
     );
 
-    let at_tip = sb.enter(&proj, &[]);
+    let at_tip = enter(&sb, &proj, &[]);
     assert!(
         at_tip.status.success(),
-        "tip should still activate: {:?}",
-        at_tip
+        "tip should still activate: {at_tip:?}"
     );
     assert!(
         !stdout(&at_tip).contains("PWNED"),
@@ -230,20 +254,26 @@ fn layer_cannot_set_cade_internal_or_shell_managed_vars() {
     );
     sb.allow(&sb.root);
 
-    let out = sb.enter(&sb.root, &[]);
-    assert!(out.status.success(), "{:?}", out);
-    let s = stdout(&out);
-    assert!(s.contains("export GOOD='ok';"), "{s}");
+    let out = enter(&sb, &sb.root, &[]);
+    assert!(out.status.success(), "{out:?}");
+    let script = stdout(&out);
+    assert!(script.contains("export GOOD='ok';"), "{script}");
 
-    assert!(!s.contains("evil"), "session/traversal value leaked: {s}");
-    assert!(!s.contains("export PWD="), "PWD must not be layer-set: {s}");
     assert!(
-        !s.contains("export SHLVL="),
-        "SHLVL must not be layer-set: {s}"
+        !script.contains("evil"),
+        "session/traversal value leaked: {script}"
     );
     assert!(
-        !s.contains("export __CADE_LAYERS='x';"),
-        "__CADE_LAYERS must be cade's own, not the layer's: {s}"
+        !script.contains("export PWD="),
+        "PWD must not be layer-set: {script}"
+    );
+    assert!(
+        !script.contains("export SHLVL="),
+        "SHLVL must not be layer-set: {script}"
+    );
+    assert!(
+        !script.contains("export __CADE_LAYERS='x';"),
+        "__CADE_LAYERS must be cade's own, not the layer's: {script}"
     );
 }
 
@@ -258,20 +288,23 @@ fn run_caps_at_unapproved_ancestor() {
 
     sb.allow(&sub);
 
-    let at_parent = sb.enter(&sb.root, &[]);
+    let at_parent = enter(&sb, &sb.root, &[]);
     assert!(!at_parent.status.success(), "unapproved parent must block");
 
-    let tip_only = sb.enter(&sub, &[]);
-    assert!(tip_only.status.success(), "{:?}", tip_only);
-    let s = stdout(&tip_only);
-    assert!(s.contains("export B='2';"), "child layer missing: {s}");
+    let tip_only = enter(&sb, &sub, &[]);
+    assert!(tip_only.status.success(), "{tip_only:?}");
+    let script = stdout(&tip_only);
     assert!(
-        !s.contains("export A="),
-        "parent layer must not compose yet: {s}"
+        script.contains("export B='2';"),
+        "child layer missing: {script}"
+    );
+    assert!(
+        !script.contains("export A="),
+        "parent layer must not compose yet: {script}"
     );
 
     sb.allow(&sb.root);
-    let both = sb.enter(&sub, &[]);
+    let both = enter(&sb, &sub, &[]);
     assert!(stdout(&both).contains("export A='1';"), "{}", stdout(&both));
     assert!(stdout(&both).contains("export B='2';"), "{}", stdout(&both));
 }
@@ -291,15 +324,18 @@ fn allow_gap_fills_up_to_the_approved_base() {
     sb.allow(&sb.root);
     sb.allow(&tip);
 
-    let out = sb.enter(&tip, &[]);
-    assert!(out.status.success(), "{:?}", out);
-    let s = stdout(&out);
+    let out = enter(&sb, &tip, &[]);
+    assert!(out.status.success(), "{out:?}");
+    let script = stdout(&out);
     assert!(
-        s.contains("export BASE='1';"),
-        "base missing (gap-fill failed): {s}"
+        script.contains("export BASE='1';"),
+        "base missing (gap-fill failed): {script}"
     );
-    assert!(s.contains("export MID='1';"), "gap layer missing: {s}");
-    assert!(s.contains("export TIP='1';"), "{s}");
+    assert!(
+        script.contains("export MID='1';"),
+        "gap layer missing: {script}"
+    );
+    assert!(script.contains("export TIP='1';"), "{script}");
 }
 
 #[test]
@@ -314,19 +350,19 @@ fn disallowing_a_layer_caps_the_run_below_it() {
     sb.allow(&sb.root);
     sb.allow(&sub);
 
-    let d = sb.run(&sb.root, &["disallow"], &[]);
-    assert!(d.status.success());
+    let disallow = sb.run(&sb.root, &["disallow"], &[]);
+    assert!(disallow.status.success());
 
-    let parent = sb.enter(&sb.root, &[]);
+    let parent = enter(&sb, &sb.root, &[]);
     assert!(!parent.status.success(), "disallowed dir must be blocked");
 
-    let tip = sb.enter(&sub, &[]);
-    assert!(tip.status.success(), "tip should still activate: {:?}", tip);
-    let s = stdout(&tip);
-    assert!(s.contains("export B='2';"), "{s}");
+    let tip = enter(&sb, &sub, &[]);
+    assert!(tip.status.success(), "tip should still activate: {tip:?}");
+    let script = stdout(&tip);
+    assert!(script.contains("export B='2';"), "{script}");
     assert!(
-        !s.contains("export A="),
-        "disallowed parent must be excluded: {s}"
+        !script.contains("export A="),
+        "disallowed parent must be excluded: {script}"
     );
 }
 
@@ -350,13 +386,15 @@ fn restore_tolerates_missing_prev_snapshot() {
     );
     assert!(
         out.status.success(),
-        "restore should not hard-fail: {:?}",
-        out
+        "restore should not hard-fail: {out:?}"
     );
-    let s = stdout(&out);
+    let script = stdout(&out);
 
-    assert!(s.contains("unset A;") && s.contains("unset B;"), "{s}");
-    assert!(s.contains("unset __CADE_LAYERS;"), "{s}");
+    assert!(
+        script.contains("unset A;") && script.contains("unset B;"),
+        "{script}"
+    );
+    assert!(script.contains("unset __CADE_LAYERS;"), "{script}");
 }
 
 #[test]
@@ -377,7 +415,7 @@ fn lease_open_refresh_and_close_manage_client_record() {
         ],
         &[],
     );
-    assert!(open.status.success(), "{:?}", open);
+    assert!(open.status.success(), "{open:?}");
     let response: serde_json::Value = serde_json::from_str(&stdout(&open)).unwrap();
     let client_id = response["client_id"].as_str().unwrap();
     assert_eq!(response["kind"], "ide");
@@ -388,7 +426,7 @@ fn lease_open_refresh_and_close_manage_client_record() {
         .join(format!("{client_id}.json"));
     assert!(lease_path.exists(), "lease file missing");
     let before_refresh: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&lease_path).unwrap()).unwrap();
+        serde_json::from_str(&read_to_string(&lease_path).unwrap()).unwrap();
 
     let refresh = sb.run(
         &sb.root,
@@ -402,13 +440,13 @@ fn lease_open_refresh_and_close_manage_client_record() {
         ],
         &[],
     );
-    assert!(refresh.status.success(), "{:?}", refresh);
+    assert!(refresh.status.success(), "{refresh:?}");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&stdout(&refresh)).unwrap()["client_id"],
         client_id
     );
     let after_refresh: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&lease_path).unwrap()).unwrap();
+        serde_json::from_str(&read_to_string(&lease_path).unwrap()).unwrap();
     assert!(
         after_refresh["expires_at"].as_u64().unwrap()
             > before_refresh["expires_at"].as_u64().unwrap(),
@@ -416,7 +454,7 @@ fn lease_open_refresh_and_close_manage_client_record() {
     );
 
     let close = sb.run(&sb.root, &["lease", "close", "--client-id", client_id], &[]);
-    assert!(close.status.success(), "{:?}", close);
+    assert!(close.status.success(), "{close:?}");
     assert!(!lease_path.exists(), "lease file not removed");
 }
 
@@ -427,24 +465,24 @@ fn activation_with_client_id_writes_session_lease_holder() {
     sb.allow(&sb.root);
 
     let open = sb.run(&sb.root, &["lease", "open", "--ttl-seconds", "60"], &[]);
-    assert!(open.status.success(), "{:?}", open);
+    assert!(open.status.success(), "{open:?}");
     let response: serde_json::Value = serde_json::from_str(&stdout(&open)).unwrap();
     let client_id = response["client_id"].as_str().unwrap();
     let lease_path = cade_state(&sb)
         .join("leases")
         .join(format!("{client_id}.json"));
     let before_enter: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&lease_path).unwrap()).unwrap();
+        serde_json::from_str(&read_to_string(&lease_path).unwrap()).unwrap();
 
     let out = sb.run(
         &sb.root,
         &["--client-id", client_id, "enter", "--shell", "bash"],
         &[],
     );
-    assert!(out.status.success(), "{:?}", out);
+    assert!(out.status.success(), "{out:?}");
 
     let shell_roots = cade_state(&sb).join("gcroots").join("shells");
-    let holders: Vec<PathBuf> = std::fs::read_dir(shell_roots)
+    let holders: Vec<PathBuf> = read_dir(shell_roots)
         .unwrap()
         .filter_map(|entry| {
             let path = entry
@@ -457,14 +495,14 @@ fn activation_with_client_id_writes_session_lease_holder() {
         .collect();
     assert_eq!(holders.len(), 1, "expected one session lease holder");
     let session_holder: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&holders[0]).unwrap()).unwrap();
+        serde_json::from_str(&read_to_string(&holders[0]).unwrap()).unwrap();
     assert_eq!(
         session_holder,
         serde_json::json!({ "type": "lease", "client_id": client_id }),
         "session lease holder should only reference the canonical lease"
     );
     let after_enter: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&lease_path).unwrap()).unwrap();
+        serde_json::from_str(&read_to_string(&lease_path).unwrap()).unwrap();
     assert_eq!(
         after_enter, before_enter,
         "enter --client-id should attach to the lease without extending it"
@@ -484,8 +522,7 @@ fn reload_with_stale_client_id_env_still_activates() {
     );
     assert!(
         out.status.success(),
-        "stale CADE_CLIENT_ID must not abort activation: {:?}",
-        out
+        "stale CADE_CLIENT_ID must not abort activation: {out:?}"
     );
     assert!(
         stdout(&out).contains("export A='1'"),
@@ -500,16 +537,16 @@ fn activation_with_owner_pid_writes_process_holder() {
     sb.write(".cade", "A=1\n");
     sb.allow(&sb.root);
 
-    let owner = std::process::id().to_string();
+    let owner = id().to_string();
     let out = sb.run(
         &sb.root,
         &["--owner-pid", owner.as_str(), "enter", "--shell", "bash"],
         &[],
     );
-    assert!(out.status.success(), "{:?}", out);
+    assert!(out.status.success(), "{out:?}");
 
     let shell_roots = cade_state(&sb).join("gcroots").join("shells");
-    let process_holders = std::fs::read_dir(shell_roots)
+    let process_holders = read_dir(shell_roots)
         .unwrap()
         .flat_map(|entry| {
             entry
@@ -532,16 +569,16 @@ fn direnv_export_with_owner_pid_writes_session_holder() {
     sb.write(".cade", "A=1\n");
     sb.allow(&sb.root);
 
-    let owner = std::process::id().to_string();
+    let owner = id().to_string();
     let out = sb.run(
         &sb.root,
         &["--owner-pid", owner.as_str(), "export", "json"],
         &[("CADE_DIRENV", "full")],
     );
-    assert!(out.status.success(), "{:?}", out);
+    assert!(out.status.success(), "{out:?}");
 
     let shell_roots = cade_state(&sb).join("gcroots").join("shells");
-    let process_holders = std::fs::read_dir(shell_roots)
+    let process_holders = read_dir(shell_roots)
         .unwrap()
         .flat_map(|entry| {
             entry
@@ -567,7 +604,7 @@ fn final_restore_keeps_shared_session_snapshot_through_gc() {
     let session = "shared";
     sb.write_snapshot(session, "PARENT=original");
 
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    sleep(Duration::from_secs(2));
 
     let out = sb.run(
         &sb.root,
@@ -579,7 +616,7 @@ fn final_restore_keeps_shared_session_snapshot_through_gc() {
             ("CADE_SHELL_GC_ROOT_TTL_SECONDS", "1"),
         ],
     );
-    assert!(out.status.success(), "{:?}", out);
+    assert!(out.status.success(), "{out:?}");
     assert!(
         cade_state(&sb)
             .join("snapshots")
@@ -596,11 +633,11 @@ fn cache_invalidates_when_env_file_changes() {
     sb.write(".env", "VAL=one\n");
     sb.allow(&sb.root);
 
-    let first = sb.enter(&sb.root, &[]);
+    let first = enter(&sb, &sb.root, &[]);
     assert!(stdout(&first).contains("export VAL='one';"));
 
     sb.write(".env", "VAL=changed\n");
-    let second = sb.enter(&sb.root, &[]);
+    let second = enter(&sb, &sb.root, &[]);
     assert!(
         stdout(&second).contains("export VAL='changed';"),
         "cache served a stale value: {}",
@@ -610,8 +647,12 @@ fn cache_invalidates_when_env_file_changes() {
 
 #[cfg(unix)]
 #[test]
+#[expect(
+    clippy::literal_string_with_formatting_args,
+    reason = "The fixture is a shell script with parameter expansions"
+)]
 fn timestamp_only_change_reuses_nix_evaluation() {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::PermissionsExt as _;
 
     let sb = Sandbox::new();
     sb.write(".cade", "load flake\n");
@@ -619,7 +660,7 @@ fn timestamp_only_change_reuses_nix_evaluation() {
 
     let fake_bin = sb.dir("fake-bin");
     let fake_nix = fake_bin.join("nix");
-    std::fs::write(
+    write(
         &fake_nix,
         r#"#!/bin/sh
 set -eu
@@ -662,43 +703,34 @@ exec "$@"
 "#,
     )
     .unwrap();
-    let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
+    let mut permissions = metadata(&fake_nix).unwrap().permissions();
     permissions.set_mode(0o755);
-    std::fs::set_permissions(&fake_nix, permissions).unwrap();
-    std::fs::write(fake_bin.join("nix-store"), "#!/bin/sh\nset -eu\nexit 0\n").unwrap();
-    let mut store_permissions = std::fs::metadata(fake_bin.join("nix-store"))
-        .unwrap()
-        .permissions();
+    set_permissions(&fake_nix, permissions).unwrap();
+    write(fake_bin.join("nix-store"), "#!/bin/sh\nset -eu\nexit 0\n").unwrap();
+    let mut store_permissions = metadata(fake_bin.join("nix-store")).unwrap().permissions();
     store_permissions.set_mode(0o755);
-    std::fs::set_permissions(fake_bin.join("nix-store"), store_permissions).unwrap();
+    set_permissions(fake_bin.join("nix-store"), store_permissions).unwrap();
 
-    let call_log = sb.state.join("nix.log");
-    let host_path = std::env::var_os("PATH").unwrap_or_default();
-    let path = std::env::join_paths(
-        std::iter::once(fake_bin.clone()).chain(std::env::split_paths(&host_path)),
-    )
-    .unwrap()
-    .to_string_lossy()
-    .to_string();
-    let call_log = call_log.to_string_lossy().to_string();
+    let call_log_path = sb.state.join("nix.log");
+    let host_path = var_os("PATH").unwrap_or_default();
+    let path = join_paths(once(fake_bin).chain(split_paths(&host_path)))
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let call_log_string = call_log_path.to_string_lossy().to_string();
     let env = [
         ("PATH", path.as_str()),
-        ("CADE_FAKE_NIX_CALL_LOG", call_log.as_str()),
+        ("CADE_FAKE_NIX_CALL_LOG", call_log_string.as_str()),
     ];
 
-    let first = sb.enter(&sb.root, &env);
+    let first = enter(&sb, &sb.root, &env);
     let cade_path = sb.root.join(".cade");
-    let old_mtime = std::fs::metadata(&cade_path).unwrap().modified().unwrap();
-    let cade_file = std::fs::OpenOptions::new()
-        .write(true)
-        .open(&cade_path)
-        .unwrap();
+    let old_mtime = metadata(&cade_path).unwrap().modified().unwrap();
+    let cade_file = OpenOptions::new().write(true).open(&cade_path).unwrap();
     cade_file
-        .set_times(
-            std::fs::FileTimes::new().set_modified(old_mtime + std::time::Duration::from_secs(1)),
-        )
+        .set_times(FileTimes::new().set_modified(old_mtime + Duration::from_secs(1)))
         .unwrap();
-    let second = sb.enter(&sb.root, &env);
+    let second = enter(&sb, &sb.root, &env);
 
     for out in [&first, &second] {
         assert!(out.status.success(), "{out:?}");
@@ -708,13 +740,17 @@ exec "$@"
             stdout(out)
         );
     }
-    assert_eq!(std::fs::read_to_string(&call_log).unwrap(), "develop\n");
+    assert_eq!(read_to_string(&call_log_string).unwrap(), "develop\n");
 }
 
 #[cfg(unix)]
 #[test]
+#[expect(
+    clippy::literal_string_with_formatting_args,
+    reason = "The fixture is a shell script with parameter expansions"
+)]
 fn nix_shell_hook_runs_on_every_native_and_envrc_entry_without_reevaluating() {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::PermissionsExt as _;
 
     let sb = Sandbox::new();
     sb.write(".cade", "load flake\n");
@@ -722,7 +758,7 @@ fn nix_shell_hook_runs_on_every_native_and_envrc_entry_without_reevaluating() {
 
     let fake_bin = sb.dir("fake-bin");
     let fake_nix = fake_bin.join("nix");
-    std::fs::write(
+    write(
         &fake_nix,
         r#"#!/bin/sh
 set -eu
@@ -767,40 +803,36 @@ exec "$@"
 "#,
     )
     .unwrap();
-    let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
+    let mut permissions = metadata(&fake_nix).unwrap().permissions();
     permissions.set_mode(0o755);
-    std::fs::set_permissions(&fake_nix, permissions).unwrap();
-    std::fs::write(fake_bin.join("nix-store"), "#!/bin/sh\nset -eu\nexit 0\n").unwrap();
-    let mut store_permissions = std::fs::metadata(fake_bin.join("nix-store"))
-        .unwrap()
-        .permissions();
+    set_permissions(&fake_nix, permissions).unwrap();
+    write(fake_bin.join("nix-store"), "#!/bin/sh\nset -eu\nexit 0\n").unwrap();
+    let mut store_permissions = metadata(fake_bin.join("nix-store")).unwrap().permissions();
     store_permissions.set_mode(0o755);
-    std::fs::set_permissions(fake_bin.join("nix-store"), store_permissions).unwrap();
+    set_permissions(fake_bin.join("nix-store"), store_permissions).unwrap();
 
-    let hook_log = sb.state.join("hook.log");
-    let call_log = sb.state.join("nix.log");
-    let host_path = std::env::var_os("PATH").unwrap_or_default();
-    let path = std::env::join_paths(
-        std::iter::once(fake_bin.clone()).chain(std::env::split_paths(&host_path)),
-    )
-    .unwrap()
-    .to_string_lossy()
-    .to_string();
-    let hook_log = hook_log.to_string_lossy().to_string();
-    let call_log = call_log.to_string_lossy().to_string();
+    let hook_log_path = sb.state.join("hook.log");
+    let call_log_path = sb.state.join("nix.log");
+    let host_path = var_os("PATH").unwrap_or_default();
+    let path = join_paths(once(fake_bin).chain(split_paths(&host_path)))
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let hook_log_string = hook_log_path.to_string_lossy().to_string();
+    let call_log_string = call_log_path.to_string_lossy().to_string();
     let env = [
         ("PATH", path.as_str()),
-        ("CADE_HOOK_LOG", hook_log.as_str()),
-        ("CADE_FAKE_NIX_CALL_LOG", call_log.as_str()),
+        ("CADE_HOOK_LOG", hook_log_string.as_str()),
+        ("CADE_FAKE_NIX_CALL_LOG", call_log_string.as_str()),
     ];
 
-    let first = sb.enter(&sb.root, &env);
-    let second = sb.enter(&sb.root, &env);
+    let first = enter(&sb, &sb.root, &env);
+    let second = enter(&sb, &sb.root, &env);
 
     sb.write(".cade", "load envrc\n");
     sb.write(".envrc", "use flake\n");
-    let third = sb.enter(&sb.root, &env);
-    let fourth = sb.enter(&sb.root, &env);
+    let third = enter(&sb, &sb.root, &env);
+    let fourth = enter(&sb, &sb.root, &env);
 
     for out in [&first, &second, &third, &fourth] {
         assert!(out.status.success(), "{out:?}");
@@ -816,26 +848,25 @@ exec "$@"
         );
     }
     assert_eq!(
-        std::fs::read_to_string(&hook_log).unwrap(),
+        read_to_string(&hook_log_string).unwrap(),
         "hook-ran\nhook-ran\nhook-ran\nhook-ran\n"
     );
     assert_eq!(
-        std::fs::read_to_string(&call_log).unwrap(),
+        read_to_string(&call_log_string).unwrap(),
         "develop\ndevelop\n"
     );
 }
 
 fn exported_value(script: &str, key: &str) -> String {
     let prefix = format!("export {key}='");
-    let start = script
-        .find(&prefix)
-        .unwrap_or_else(|| panic!("missing {key} export in {script}"))
-        + prefix.len();
-    let rest = &script[start..];
-    let end = rest
-        .find("';")
-        .unwrap_or_else(|| panic!("unterminated {key} export in {script}"));
-    rest[..end].to_string()
+    assert!(script.contains(&prefix), "missing {key} export in {script}");
+    let start = script.find(&prefix).unwrap() + prefix.len();
+    let rest = script.get(start..).expect("export value out of bounds");
+    assert!(rest.contains("';"), "unterminated {key} export in {script}");
+    let end = rest.find("';").unwrap();
+    rest.get(..end)
+        .expect("export value out of bounds")
+        .to_owned()
 }
 
 #[test]
@@ -844,7 +875,7 @@ fn reload_notices_cade_created_over_implicit_envrc() {
     sb.write(".envrc", "export FROM_ENVRC=1\n");
     sb.allow(&sb.root);
 
-    let first = sb.enter(&sb.root, &[]);
+    let first = enter(&sb, &sb.root, &[]);
     assert!(first.status.success(), "{first:?}");
     let first_stdout = stdout(&first);
     assert!(
@@ -874,14 +905,14 @@ fn reload_notices_cade_created_over_implicit_envrc() {
         ],
     );
     assert!(reload.status.success(), "{reload:?}");
-    let s = stdout(&reload);
+    let script = stdout(&reload);
     assert!(
-        s.contains("unset FROM_ENVRC;"),
-        "reload must restore the envrc variable before reactivation: {s}"
+        script.contains("unset FROM_ENVRC;"),
+        "reload must restore the envrc variable before reactivation: {script}"
     );
     assert!(
-        s.contains("export FROM_CADE='2';"),
-        "reload did not pick up the newly-created .cade: {s}"
+        script.contains("export FROM_CADE='2';"),
+        "reload did not pick up the newly-created .cade: {script}"
     );
 }
 
@@ -891,7 +922,7 @@ fn reload_in_inactive_shell_reminds_for_disallowed_root() {
     sb.write(".cade", "A=1\n");
 
     let out = sb.run(&sb.root, &["reload", "--shell", "bash"], &[]);
-    assert!(out.status.success(), "{:?}", out);
+    assert!(out.status.success(), "{out:?}");
     assert!(
         stderr(&out).contains("cade: disallowed - use \"cade allow\" to load this shell."),
         "{}",
@@ -939,7 +970,7 @@ fn reload_to_disallowed_root_unloads_and_reminds() {
             ("A", "1"),
         ],
     );
-    assert!(out.status.success(), "{:?}", out);
+    assert!(out.status.success(), "{out:?}");
     let err = stderr(&out);
     assert!(
         err.contains(&format!("cade: unloaded {allowed_str}.")),
@@ -960,7 +991,8 @@ fn concat_uses_snapshot_ambient_so_reloads_dont_grow() {
     sb.allow(&sb.root);
 
     sb.write_snapshot("s3", "PATH=/orig");
-    let out = sb.enter(
+    let out = enter(
+        &sb,
         &sb.root,
         &[
             ("PATH", "/layer/bin:/orig"),
@@ -968,7 +1000,7 @@ fn concat_uses_snapshot_ambient_so_reloads_dont_grow() {
             ("__CADE_LAYERS", "x"),
         ],
     );
-    assert!(out.status.success(), "{:?}", out);
+    assert!(out.status.success(), "{out:?}");
 
     assert!(
         stdout(&out).contains("export PATH='/layer/bin:/orig';"),
@@ -1009,7 +1041,7 @@ fn reload_into_disallowed_child_keeps_the_approved_parent() {
             ("A", "1"),
         ],
     );
-    assert!(out.status.success(), "{:?}", out);
+    assert!(out.status.success(), "{out:?}");
     let err = stderr(&out);
     assert!(!err.contains("cade: unloaded"), "{err}");
     assert!(err.contains("disallowed"), "{err}");
@@ -1051,7 +1083,7 @@ fn reload_when_parent_revoked_unloads_parent_and_reloads_tip() {
             ("B", "2"),
         ],
     );
-    assert!(out.status.success(), "{:?}", out);
+    assert!(out.status.success(), "{out:?}");
     let err = stderr(&out);
     assert!(err.contains(&format!("cade: unloaded {root_str}")), "{err}");
     assert!(err.contains(&format!("cade: reloaded {sub_str}")), "{err}");
@@ -1073,11 +1105,11 @@ fn watch_directive_invalidates_a_call_layer() {
     sb.write("token.txt", "one");
     sb.allow(&sb.root);
 
-    let path = std::env::var("PATH").unwrap_or_default();
+    let path = var("PATH").unwrap_or_default();
     let env = [("PATH", path.as_str())];
 
-    let first = sb.enter(&sb.root, &env);
-    assert!(first.status.success(), "{:?}", first);
+    let first = enter(&sb, &sb.root, &env);
+    assert!(first.status.success(), "{first:?}");
     assert!(
         stdout(&first).contains("export VAL='one';"),
         "{}",
@@ -1085,7 +1117,7 @@ fn watch_directive_invalidates_a_call_layer() {
     );
 
     sb.write("token.txt", "twotwo");
-    let second = sb.enter(&sb.root, &env);
+    let second = enter(&sb, &sb.root, &env);
     assert!(
         stdout(&second).contains("export VAL='twotwo';"),
         "watch did not invalidate the cached call layer: {}",
@@ -1101,7 +1133,7 @@ fn envrc_is_autodetected_when_no_cade() {
     sb.write(".env", "FROM_ENVRC=1\n");
 
     sb.allow(&sb.root);
-    let out = sb.enter(&sb.root, &[]);
+    let out = enter(&sb, &sb.root, &[]);
     assert!(out.status.success(), "envrc activation failed: {out:?}");
     assert!(
         stdout(&out).contains("export FROM_ENVRC='1';"),
@@ -1113,31 +1145,31 @@ fn envrc_is_autodetected_when_no_cade() {
 #[test]
 fn direnv_none_ignores_bare_envrc() {
     let sb = Sandbox::new();
-    sb.write_config("direnv = \"none\"\n");
+    write_config(&sb, "direnv = \"none\"\n");
 
     sb.write(".envrc", "dotenv\n");
     sb.write(".env", "FROM_ENVRC=1\n");
 
-    let out = sb.enter(&sb.root, &[]);
-    let s = stdout(&out);
+    let out = enter(&sb, &sb.root, &[]);
+    let script = stdout(&out);
     assert!(
-        !s.contains("FROM_ENVRC"),
-        "bare .envrc must not activate when direnv = none: {s}"
+        !script.contains("FROM_ENVRC"),
+        "bare .envrc must not activate when direnv = none: {script}"
     );
     assert!(
-        !s.contains("export __CADE_LAYERS="),
-        "no layers should compose for a bare .envrc when direnv = none: {s}"
+        !script.contains("export __CADE_LAYERS="),
+        "no layers should compose for a bare .envrc when direnv = none: {script}"
     );
 }
 
 #[test]
 fn direnv_shim_skips_implicit_envrc_but_export_json_works() {
     let sb = Sandbox::new();
-    sb.write_config("direnv = \"shim\"\n");
+    write_config(&sb, "direnv = \"shim\"\n");
     sb.write(".envrc", "dotenv\n");
     sb.write(".env", "FROM_ENVRC=1\n");
 
-    let entered = sb.enter(&sb.root, &[]);
+    let entered = enter(&sb, &sb.root, &[]);
     assert!(
         !stdout(&entered).contains("FROM_ENVRC"),
         "shim mode must not implicitly load .envrc: {}",
@@ -1153,7 +1185,7 @@ fn direnv_shim_skips_implicit_envrc_but_export_json_works() {
 #[test]
 fn direnv_none_export_json_is_empty_noop() {
     let sb = Sandbox::new();
-    sb.write_config("direnv = \"none\"\n");
+    write_config(&sb, "direnv = \"none\"\n");
     sb.write(".cade", "A=1\n");
     sb.allow(&sb.root);
 
@@ -1179,7 +1211,7 @@ fn direnv_none_export_json_unwinds_carried_diff() {
     let diff = active_json["DIRENV_DIFF"]
         .as_str()
         .expect("active export must carry a DIRENV_DIFF")
-        .to_string();
+        .to_owned();
 
     let out = sb.run(
         &sb.root,
@@ -1214,7 +1246,7 @@ fn directed_load_missing_path_errors_clearly() {
     sb.write(".cade", "load env ./conf/missing.env\n");
     sb.allow(&sb.root);
 
-    let out = sb.enter(&sb.root, &[]);
+    let out = enter(&sb, &sb.root, &[]);
     assert!(!out.status.success(), "missing directed env should fail");
     let err = stderr(&out);
 

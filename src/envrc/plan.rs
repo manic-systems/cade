@@ -1,5 +1,5 @@
 use super::directive::{Directive, parse};
-use crate::nix::FlakeTarget;
+use crate::nix::target::{FlakeTarget, flake_watch_files};
 use std::path::{Path, PathBuf};
 
 pub(super) enum PlannedDirective {
@@ -43,7 +43,7 @@ fn plan_directive(dir: &Path, idx: usize, directive: Directive) -> EnvrcDirectiv
                     target,
                     profile_name: format!("{idx}-flake"),
                 },
-                watch: crate::nix::flake_watch_files(dir),
+                watch: flake_watch_files(dir),
             }
         }
         Directive::UseNix(file) => {

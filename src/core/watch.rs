@@ -1,17 +1,17 @@
-use super::{
-    Cade,
-    layer::tokenize_args,
-    sessions::{atomic_write, is_valid_session, stable_hash_hex},
-};
-use crate::types::Keyword;
-use anyhow::{Context, Result, bail};
+use crate::core::Cade;
+use crate::core::cache::{get_watch_discovery, store_watch_discovery};
+use crate::core::layer::tokenize_args;
+use crate::core::sessions::{atomic_write, is_valid_session, stable_hash_hex};
+use crate::types::keyword::Keyword;
+use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
-    fs::{Metadata, OpenOptions},
-    io::Read,
-    os::unix::fs::OpenOptionsExt,
+    fs::{Metadata, OpenOptions, create_dir_all, metadata, read_to_string},
+    io::Read as _,
+    os::unix::fs::OpenOptionsExt as _,
     path::{Path, PathBuf},
+    time::UNIX_EPOCH,
 };
 
 pub(super) const LAYER_CACHE_VERSION: &str = "layer-cache-v6";
@@ -42,17 +42,15 @@ impl WatchEntry {
     }
 
     fn token_part(&self) -> String {
-        match &self.state {
+        match self.state {
             WatchFileState::Present {
                 mtime,
                 size,
                 content_hash,
-            } => match content_hash {
-                Some(content_hash) => {
-                    format!("{}:present:{size}:{content_hash:016x}", self.path.display())
-                }
-                None => format!("{}:present-unreadable:{mtime}:{size}", self.path.display()),
-            },
+            } => content_hash.map_or_else(
+                || format!("{}:present-unreadable:{mtime}:{size}", self.path.display()),
+                |hash| format!("{}:present:{size}:{hash:016x}", self.path.display()),
+            ),
             WatchFileState::Missing => format!("{}:missing", self.path.display()),
         }
     }
@@ -71,8 +69,8 @@ enum WatchFileState {
 
 impl WatchFileState {
     fn refresh(&mut self, path: &Path) -> WatchChange {
-        let Ok(meta) = std::fs::metadata(path) else {
-            return if *self == WatchFileState::Missing {
+        let Ok(meta) = metadata(path) else {
+            return if *self == Self::Missing {
                 WatchChange::Unchanged
             } else {
                 WatchChange::Content
@@ -81,12 +79,12 @@ impl WatchFileState {
         let current_mtime = mtime_nanos(&meta);
         let current_size = meta.len();
 
-        match self {
-            WatchFileState::Missing => WatchChange::Content,
-            WatchFileState::Present {
-                mtime,
-                size,
-                content_hash,
+        match *self {
+            Self::Missing => WatchChange::Content,
+            Self::Present {
+                ref mut mtime,
+                ref mut size,
+                ref mut content_hash,
             } => {
                 if *mtime == current_mtime && *size == current_size {
                     return WatchChange::Unchanged;
@@ -121,7 +119,7 @@ impl WatchState {
         watched_files: &[PathBuf],
     ) -> Self {
         Self {
-            version: LAYER_CACHE_VERSION.to_string(),
+            version: LAYER_CACHE_VERSION.to_owned(),
             root: root.to_path_buf(),
             cade_paths,
             files: watch_entries(watched_files),
@@ -156,25 +154,23 @@ impl WatchState {
     }
 }
 
-impl Cade {
-    // Named by hash rather than session so a subshell's reload doesn't
-    // replace the file its parent still diffs against.
-    pub(super) fn persist_watch_state(
-        &self,
-        session: &str,
-        watches: &WatchState,
-    ) -> Result<String> {
-        if !is_valid_session(session) {
-            bail!("invalid cade session id")
-        }
-        let body = serde_json::to_vec(watches).context("serialize watch state")?;
-        let dir = self.state_dir.join("watches");
-        std::fs::create_dir_all(&dir).context("create watches dir")?;
-        let hash = stable_hash_hex(&String::from_utf8_lossy(&body));
-        let path = dir.join(format!("{session}-{hash}.json"));
-        atomic_write(&path, &body).context("write watch state")?;
-        Ok(path.to_string_lossy().to_string())
+// Named by hash rather than session so a subshell's reload doesn't
+// replace the file its parent still diffs against.
+pub(super) fn persist_watch_state(
+    cade: &Cade,
+    session: &str,
+    watches: &WatchState,
+) -> Result<String> {
+    if !is_valid_session(session) {
+        bail!("invalid cade session id")
     }
+    let body = serde_json::to_vec(watches).context("serialize watch state")?;
+    let dir = cade.state_dir.join("watches");
+    create_dir_all(&dir).context("create watches dir")?;
+    let hash = stable_hash_hex(&String::from_utf8_lossy(&body));
+    let path = dir.join(format!("{session}-{hash}.json"));
+    atomic_write(&path, &body).context("write watch state")?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 // Inline json is the pre-file format still living in older shells.
@@ -182,46 +178,52 @@ pub fn load_watch_ref(raw: &str) -> Option<WatchState> {
     if raw.starts_with('{') {
         return serde_json::from_str(raw).ok();
     }
-    let body = std::fs::read_to_string(raw).ok()?;
+    let body = read_to_string(raw).ok()?;
     serde_json::from_str(&body).ok()
 }
 
-impl Cade {
-    // The walk is skipped while every file found last time keeps its mtime and
-    // size, so a new file goes unseen until an already-watched one changes.
-    pub(super) fn layer_watch(
-        &self,
-        dir: &Path,
-        keywords: &[Keyword],
-    ) -> Result<(Vec<PathBuf>, String)> {
-        let key = dir.to_string_lossy();
-        if let Some((files, token)) = self.get_watch_discovery(&key)
-            && compute_layer_key(&files) == token
-        {
-            return Ok((files, token));
-        }
-
-        let files = watched_files_for_keywords(dir, keywords)?;
-        let token = compute_layer_key(&files);
-        self.store_watch_discovery(&key, &files, &token)?;
-        Ok((files, token))
+// The walk is skipped while every file found last time keeps its mtime and
+// size, so a new file goes unseen until an already-watched one changes.
+pub(super) fn layer_watch(
+    cade: &Cade,
+    dir: &Path,
+    keywords: &[Keyword],
+) -> Result<(Vec<PathBuf>, String)> {
+    let key = dir.to_string_lossy();
+    if let Some((files, token)) = get_watch_discovery(cade, &key)
+        && compute_layer_key(&files) == token
+    {
+        return Ok((files, token));
     }
+
+    let files = watched_files_for_keywords(dir, keywords)?;
+    let token = compute_layer_key(&files);
+    store_watch_discovery(cade, &key, &files, &token)?;
+    Ok((files, token))
 }
 
 fn watched_files_for_keywords(dir: &Path, keywords: &[Keyword]) -> Result<Vec<PathBuf>> {
     let mut files = vec![dir.join(".cade")];
     for kw in keywords {
-        match kw {
-            Keyword::Load(loadable) => files.extend(loadable.resolve(dir).watch),
-            Keyword::Watch(raw) => files.extend(tokenize_args(raw)?.iter().map(|w| dir.join(w))),
-            _ => {}
+        match *kw {
+            Keyword::Load(ref loadable) => files.extend(loadable.resolve(dir).watch),
+            Keyword::Watch(ref raw) => {
+                files.extend(tokenize_args(raw)?.iter().map(|arg| dir.join(arg)));
+            }
+            Keyword::Pure
+            | Keyword::Disinherit
+            | Keyword::Call(_)
+            | Keyword::Hook(_)
+            | Keyword::Clear(_)
+            | Keyword::Concat(_)
+            | Keyword::Set(_) => {}
         }
     }
     Ok(files)
 }
 
 pub(super) fn compute_layer_key(watched_files: &[PathBuf]) -> String {
-    let mut parts = vec![LAYER_CACHE_VERSION.to_string()];
+    let mut parts = vec![LAYER_CACHE_VERSION.to_owned()];
     for entry in watch_entries(watched_files) {
         parts.push(entry.token_part());
     }
@@ -236,14 +238,11 @@ fn watch_entries(watched_files: &[PathBuf]) -> Vec<WatchEntry> {
 }
 
 fn watch_file_state(path: &Path) -> WatchFileState {
-    match std::fs::metadata(path) {
-        Ok(meta) => WatchFileState::Present {
-            mtime: mtime_nanos(&meta),
-            size: meta.len(),
-            content_hash: content_hash_for(path, &meta),
-        },
-        Err(_) => WatchFileState::Missing,
-    }
+    metadata(path).map_or(WatchFileState::Missing, |meta| WatchFileState::Present {
+        mtime: mtime_nanos(&meta),
+        size: meta.len(),
+        content_hash: content_hash_for(path, &meta),
+    })
 }
 
 fn content_hash_for(path: &Path, meta: &Metadata) -> Option<u64> {
@@ -260,7 +259,7 @@ fn content_hash_for(path: &Path, meta: &Metadata) -> Option<u64> {
         return None;
     }
 
-    let mut hash = 0xcbf29ce484222325u64;
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     let mut buffer = [0_u8; 8192];
     loop {
         let read = file.read(&mut buffer).ok()?;
@@ -269,33 +268,47 @@ fn content_hash_for(path: &Path, meta: &Metadata) -> Option<u64> {
         }
         for byte in &buffer[..read] {
             hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x100000001b3);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
         }
     }
 }
 
-fn mtime_nanos(meta: &std::fs::Metadata) -> u64 {
+fn mtime_nanos(meta: &Metadata) -> u64 {
     meta.modified()
         .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos().min(u64::MAX as u128) as u64)
-        .unwrap_or(0)
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_nanos().min(u128::from(u64::MAX))).unwrap_or(u64::MAX)
+        })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::core::Cade;
+    use crate::core::watch::{
+        LAYER_CACHE_VERSION, WatchChange, WatchEntry, WatchFileState, WatchState,
+        compute_layer_key, layer_watch, load_watch_ref, persist_watch_state,
+    };
+    use crate::types::keyword::{Keyword, Loadable};
+    use std::collections::BTreeSet;
+    use std::env::temp_dir;
+    use std::fs::{FileTimes, OpenOptions, create_dir_all, metadata, remove_dir_all, write};
+    use std::path::{Path, PathBuf};
+    use std::process::id;
+    use std::slice::from_ref;
+    use std::thread::current;
+    use std::time::Duration;
 
     #[test]
     fn watch_discovery_refreshes_only_when_a_watched_file_changes() {
-        let root = std::env::temp_dir().join(format!(
+        let root = temp_dir().join(format!(
             "cade-watch-discovery-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            id(),
+            current().name().unwrap_or("test")
         ));
-        std::fs::create_dir_all(root.join("nix")).unwrap();
-        std::fs::write(root.join(".envrc"), "use flake\n").unwrap();
-        std::fs::write(root.join("flake.nix"), "{}\n").unwrap();
+        create_dir_all(root.join("nix")).unwrap();
+        write(root.join(".envrc"), "use flake\n").unwrap();
+        write(root.join("flake.nix"), "{}\n").unwrap();
 
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(
@@ -312,57 +325,55 @@ mod tests {
             cwd: root.clone(),
             state_dir: root.clone(),
         };
-        let keywords = [Keyword::Load(crate::types::Loadable::Envrc(String::new()))];
+        let keywords = [Keyword::Load(Loadable::Envrc(String::new()))];
         let extra = root.join("nix").join("extra.nix");
 
-        let (first, _) = cade.layer_watch(&root, &keywords).unwrap();
+        let (first, _) = layer_watch(&cade, &root, &keywords).unwrap();
         assert!(first.contains(&root.join("flake.nix")));
         assert!(!first.contains(&extra));
 
-        std::fs::write(&extra, "{}\n").unwrap();
-        let (reused, _) = cade.layer_watch(&root, &keywords).unwrap();
+        write(&extra, "{}\n").unwrap();
+        let (reused, _) = layer_watch(&cade, &root, &keywords).unwrap();
         assert!(!reused.contains(&extra));
 
-        std::fs::write(root.join("flake.nix"), "{ inputs = {}; }\n").unwrap();
-        let (rediscovered, _) = cade.layer_watch(&root, &keywords).unwrap();
+        write(root.join("flake.nix"), "{ inputs = {}; }\n").unwrap();
+        let (rediscovered, _) = layer_watch(&cade, &root, &keywords).unwrap();
         assert!(rediscovered.contains(&extra));
 
-        std::fs::remove_dir_all(&root).ok();
+        let _ = remove_dir_all(&root);
     }
 
     #[test]
     fn timestamp_only_changes_do_not_invalidate_content_identity() {
-        let root = std::env::temp_dir().join(format!(
+        let root = temp_dir().join(format!(
             "cade-watch-content-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            id(),
+            current().name().unwrap_or("test")
         ));
-        std::fs::create_dir_all(&root).unwrap();
+        create_dir_all(&root).unwrap();
         let path = root.join("flake.nix");
-        std::fs::write(&path, "same\n").unwrap();
+        write(&path, "same\n").unwrap();
 
         let mut entry = WatchEntry::capture(&path);
-        let token = compute_layer_key(std::slice::from_ref(&path));
-        let old_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
-        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-        file.set_times(
-            std::fs::FileTimes::new().set_modified(old_mtime + std::time::Duration::from_secs(1)),
-        )
-        .unwrap();
+        let token = compute_layer_key(from_ref(&path));
+        let old_mtime = metadata(&path).unwrap().modified().unwrap();
+        let file = OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(FileTimes::new().set_modified(old_mtime + Duration::from_secs(1)))
+            .unwrap();
 
         assert_eq!(entry.refresh(), WatchChange::Metadata);
-        assert_eq!(compute_layer_key(std::slice::from_ref(&path)), token);
+        assert_eq!(compute_layer_key(from_ref(&path)), token);
 
-        std::fs::write(&path, "else\n").unwrap();
+        write(&path, "else\n").unwrap();
         assert_eq!(entry.refresh(), WatchChange::Content);
-        assert_ne!(compute_layer_key(std::slice::from_ref(&path)), token);
-        std::fs::remove_dir_all(root).ok();
+        assert_ne!(compute_layer_key(from_ref(&path)), token);
+        let _ = remove_dir_all(root);
     }
 
     #[test]
     fn old_watch_state_versions_are_stale() {
         let mut state = WatchState {
-            version: "layer-cache-v2".to_string(),
+            version: "layer-cache-v2".to_owned(),
             root: PathBuf::from("/project"),
             cade_paths: vec![PathBuf::from("/project")],
             files: Vec::new(),
@@ -381,15 +392,19 @@ mod tests {
 
     #[test]
     fn watch_ref_stays_short_for_huge_watch_lists() {
-        let state_dir = std::env::temp_dir().join(format!("cade-watchref-{}", std::process::id()));
-        std::fs::create_dir_all(&state_dir).unwrap();
+        let state_dir = temp_dir().join(format!("cade-watchref-{}", id()));
+        create_dir_all(&state_dir).unwrap();
         let cade = Cade {
             db: rusqlite::Connection::open_in_memory().unwrap(),
             cwd: state_dir.clone(),
             state_dir: state_dir.clone(),
         };
-        let files = (0..5000)
-            .map(|i| PathBuf::from(format!("/project/third_party/component-{i}/package.json")))
+        let files = (0_i32..5_000_i32)
+            .map(|index| {
+                PathBuf::from(format!(
+                    "/project/third_party/component-{index}/package.json"
+                ))
+            })
             .collect::<Vec<PathBuf>>();
         let state = WatchState::capture(
             Path::new("/project"),
@@ -397,11 +412,11 @@ mod tests {
             &files,
         );
 
-        let watch_ref = cade.persist_watch_state("bigsession", &state).unwrap();
+        let watch_ref = persist_watch_state(&cade, "bigsession", &state).unwrap();
 
         assert!(watch_ref.len() < 512);
         assert_eq!(load_watch_ref(&watch_ref).unwrap().files.len(), 5000);
-        std::fs::remove_dir_all(state_dir).ok();
+        let _ = remove_dir_all(state_dir);
     }
 
     #[test]
@@ -413,7 +428,7 @@ mod tests {
     #[test]
     fn watch_state_round_trips_through_json() {
         let state = WatchState {
-            version: LAYER_CACHE_VERSION.to_string(),
+            version: LAYER_CACHE_VERSION.to_owned(),
             root: PathBuf::from("/project"),
             cade_paths: vec![PathBuf::from("/project")],
             files: vec![WatchEntry {

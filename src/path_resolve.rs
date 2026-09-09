@@ -1,3 +1,5 @@
+use std::env::var_os;
+use std::fs::canonicalize;
 use std::path::{Path, PathBuf};
 
 fn expand_tilde(arg: &str) -> PathBuf {
@@ -6,20 +8,20 @@ fn expand_tilde(arg: &str) -> PathBuf {
 
 fn expand_tilde_with(arg: &str, home: Option<PathBuf>) -> PathBuf {
     if arg == "~" {
-        if let Some(home) = home {
-            return home;
+        if let Some(resolved) = home {
+            return resolved;
         }
     } else if let Some(rest) = arg.strip_prefix("~/")
-        && let Some(home) = home
+        && let Some(resolved) = home
     {
-        return home.join(rest);
+        return resolved.join(rest);
     }
     PathBuf::from(arg)
 }
 
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
+    var_os("HOME")
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
 }
 
@@ -34,7 +36,7 @@ pub fn resolve_against(layer_dir: &Path, arg: &str) -> PathBuf {
 }
 
 pub fn resolve_for_watch(layer_dir: &Path, arg: &str) -> PathBuf {
-    std::fs::canonicalize(resolve_against(layer_dir, arg))
+    canonicalize(resolve_against(layer_dir, arg))
         .unwrap_or_else(|_| resolve_against(layer_dir, arg))
 }
 
@@ -51,7 +53,9 @@ fn normalize_lexical(path: &Path) -> PathBuf {
                 Some(Component::RootDir) => {}
                 _ => out.push(".."),
             },
-            other => out.push(other.as_os_str()),
+            other @ (Component::Prefix(_) | Component::RootDir | Component::Normal(_)) => {
+                out.push(other.as_os_str());
+            }
         }
     }
     if out.as_os_str().is_empty() {
@@ -64,6 +68,11 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env::temp_dir;
+    use std::fs::{create_dir_all, remove_dir_all, remove_file, write};
+    use std::os::unix::fs::symlink;
+    use std::process::id;
+    use std::thread::current;
 
     #[test]
     fn relative_joins_layer_dir() {
@@ -91,24 +100,24 @@ mod tests {
 
     #[test]
     fn watch_canonicalises_through_symlink() {
-        let base = std::env::temp_dir().join(format!(
+        let base = temp_dir().join(format!(
             "cade-symlink-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            id(),
+            current().name().unwrap_or("test")
         ));
         let real = base.join("real");
-        std::fs::create_dir_all(&real).unwrap();
-        std::fs::write(real.join(".env"), "X=1\n").unwrap();
+        create_dir_all(&real).unwrap();
+        write(real.join(".env"), "X=1\n").unwrap();
         let link = base.join("link");
-        let _ = std::fs::remove_file(&link);
-        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let _ = remove_file(&link);
+        symlink(&real, &link).unwrap();
 
         let via_link = resolve_for_watch(&link, ".env");
         let via_real = resolve_for_watch(&real, ".env");
         assert_eq!(via_link, via_real);
-        assert_eq!(via_link, std::fs::canonicalize(real.join(".env")).unwrap());
+        assert_eq!(via_link, canonicalize(real.join(".env")).unwrap());
 
-        std::fs::remove_dir_all(&base).ok();
+        let _ = remove_dir_all(&base);
     }
 
     #[test]

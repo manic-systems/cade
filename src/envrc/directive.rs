@@ -1,3 +1,5 @@
+use crate::shells::is_valid_key;
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Directive {
     UseFlake(Option<String>),
@@ -13,8 +15,8 @@ pub(super) fn parse(contents: &str) -> Vec<Directive> {
     contents.lines().filter_map(parse_line).collect()
 }
 
-fn is_literal_value(v: &str) -> bool {
-    !v.contains('$') && !v.contains('`')
+fn is_literal_value(value: &str) -> bool {
+    !value.contains('$') && !value.contains('`')
 }
 
 fn parse_line(raw: &str) -> Option<Directive> {
@@ -23,10 +25,10 @@ fn parse_line(raw: &str) -> Option<Directive> {
         return None;
     }
     let Some(tokens) = shlex::split(line) else {
-        return Some(Directive::Unhandled(line.to_string()));
+        return Some(Directive::Unhandled(line.to_owned()));
     };
     let (cmd, rest) = tokens.split_first()?;
-    let unhandled = || Some(Directive::Unhandled(line.to_string()));
+    let unhandled = || Some(Directive::Unhandled(line.to_owned()));
 
     match cmd.as_str() {
         "use" => match rest.first().map(String::as_str) {
@@ -44,9 +46,12 @@ fn parse_line(raw: &str) -> Option<Directive> {
         }),
         "PATH_add" if !rest.is_empty() => Some(Directive::PathAdd(rest.to_vec())),
         "watch_file" if !rest.is_empty() => Some(Directive::WatchFile(rest.to_vec())),
-        "export" => match rest.first().and_then(|t| t.split_once('=')) {
-            Some((k, v)) if is_literal_value(v) && crate::shells::is_valid_key(k) => {
-                Some(Directive::Export(k.to_string(), v.to_string()))
+        "export" => match rest
+            .first()
+            .and_then(|assignment| assignment.split_once('='))
+        {
+            Some((key, val)) if is_literal_value(val) && is_valid_key(key) => {
+                Some(Directive::Export(key.to_owned(), val.to_owned()))
             }
             _ => unhandled(),
         },
@@ -54,29 +59,30 @@ fn parse_line(raw: &str) -> Option<Directive> {
     }
 }
 
-fn parse_use_flake<F>(rest: &[String], unhandled: F) -> Option<Directive>
+fn parse_use_flake<Fallback>(rest: &[String], unhandled: Fallback) -> Option<Directive>
 where
-    F: FnOnce() -> Option<Directive>,
+    Fallback: FnOnce() -> Option<Directive>,
 {
     let args = &rest[1..];
-    let positional: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
-    let has_flags = args.iter().any(|a| a.starts_with('-'));
+    let positional: Vec<&String> = args.iter().filter(|arg| !arg.starts_with('-')).collect();
+    let has_flags = args.iter().any(|arg| arg.starts_with('-'));
     if has_flags || positional.len() > 1 {
         return unhandled();
     }
-    match positional.first().map(|s| s.as_str()) {
+    match positional.first().map(|entry| entry.as_str()) {
         None | Some(".") => Some(Directive::UseFlake(None)),
-        Some(s) if s.starts_with(".#") => Some(Directive::UseFlake(Some(s[2..].to_string()))),
-        Some(_) => unhandled(),
+        Some(spec) => spec.strip_prefix(".#").map_or_else(unhandled, |name| {
+            Some(Directive::UseFlake(Some(name.to_owned())))
+        }),
     }
 }
 
-fn parse_use_nix<F>(rest: &[String], unhandled: F) -> Option<Directive>
+fn parse_use_nix<Fallback>(rest: &[String], unhandled: Fallback) -> Option<Directive>
 where
-    F: FnOnce() -> Option<Directive>,
+    Fallback: FnOnce() -> Option<Directive>,
 {
     let args = &rest[1..];
-    if args.iter().any(|a| a.starts_with('-')) {
+    if args.iter().any(|arg| arg.starts_with('-')) {
         return unhandled();
     }
     Some(Directive::UseNix(args.first().cloned().unwrap_or_default()))
@@ -85,6 +91,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nix::target::FlakeTarget;
     use std::path::Path;
 
     #[test]
@@ -93,35 +100,36 @@ mod tests {
         assert_eq!(parse_line("use flake ."), Some(Directive::UseFlake(None)));
         assert_eq!(
             parse_line("use flake .#dev"),
-            Some(Directive::UseFlake(Some("dev".to_string())))
+            Some(Directive::UseFlake(Some("dev".to_owned())))
         );
         assert_eq!(
             parse_line("use nix shell.nix"),
-            Some(Directive::UseNix("shell.nix".to_string()))
+            Some(Directive::UseNix("shell.nix".to_owned()))
         );
         assert_eq!(
             parse_line("dotenv_if_exists .env.local"),
             Some(Directive::Dotenv {
-                file: ".env.local".to_string(),
+                file: ".env.local".to_owned(),
                 if_exists: true
             })
         );
         assert_eq!(
             parse_line("export FOO=bar"),
-            Some(Directive::Export("FOO".to_string(), "bar".to_string()))
+            Some(Directive::Export("FOO".to_owned(), "bar".to_owned()))
         );
         assert_eq!(
             parse_line("PATH_add ./bin"),
-            Some(Directive::PathAdd(vec!["./bin".to_string()]))
+            Some(Directive::PathAdd(vec!["./bin".to_owned()]))
         );
     }
 
     #[test]
     fn use_flake_named_output_stays_bare_output() {
-        let Some(Directive::UseFlake(output)) = parse_line("use flake .#dev") else {
-            panic!("expected UseFlake");
-        };
-        let target = crate::nix::FlakeTarget::bare_output(Path::new("/layer"), output.as_deref());
+        assert_eq!(
+            parse_line("use flake .#dev"),
+            Some(Directive::UseFlake(Some("dev".to_owned())))
+        );
+        let target = FlakeTarget::bare_output(Path::new("/layer"), Some("dev"));
         assert_eq!(target.installable, ".#dev");
         assert_eq!(target.spec.cache_key(), "flake:dev");
         assert_eq!(target.cwd, Path::new("/layer"));

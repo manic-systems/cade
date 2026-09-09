@@ -1,8 +1,8 @@
 use crate::verbosity::{self, Verbosity};
-use std::io::{IsTerminal, Write};
+use std::io::{IsTerminal as _, Write, stderr};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::JoinHandle;
+use std::thread::{JoinHandle, park_timeout, spawn};
 use std::time::Duration;
 
 const FRAMES: [char; 4] = ['/', '-', '\\', '|'];
@@ -39,7 +39,7 @@ impl State {
         let mut lines = vec![format!("[{colour}{frame}{RESET}] {}", self.message)];
         if self.long_running {
             lines.extend(self.recent.iter().map(|line| format!("    {line}")));
-            if let Some(bar) = &self.nix_bar {
+            if let Some(bar) = self.nix_bar.as_ref() {
                 lines.push(bar.clone());
             }
         }
@@ -48,14 +48,14 @@ impl State {
 
     fn render(&mut self) {
         let block = self.block();
-        let mut err = std::io::stderr().lock();
+        let mut err = stderr().lock();
         self.renderer.render(&mut err, &block);
         let _ = err.flush();
     }
 }
 
 #[derive(Default)]
-pub(crate) struct LiveRenderer {
+pub struct LiveRenderer {
     lines: Vec<String>,
 }
 
@@ -70,11 +70,11 @@ impl LiveRenderer {
     }
 
     fn render_at_width(&mut self, err: &mut impl Write, lines: &[String], width: usize) {
-        let lines: Vec<_> = lines
+        let fitted: Vec<_> = lines
             .iter()
             .map(|line| fit_terminal_line(line, width))
             .collect();
-        self.update(err, lines);
+        self.update(err, fitted);
     }
 
     fn update(&mut self, err: &mut impl Write, lines: Vec<String>) {
@@ -117,7 +117,7 @@ fn move_to_row(err: &mut impl Write, from: usize, to: usize) {
 fn fit_terminal_line(line: &str, width: usize) -> String {
     let max_columns = width.saturating_sub(1).max(1);
     if visible_columns(line) <= max_columns {
-        return line.to_string();
+        return line.to_owned();
     }
 
     let suffix = if max_columns >= 3 {
@@ -140,8 +140,8 @@ fn visible_columns(line: &str) -> usize {
     while let Some(ch) = chars.next() {
         if ch == '\x1b' && chars.peek() == Some(&'[') {
             chars.next();
-            for ch in chars.by_ref() {
-                if ('@'..='~').contains(&ch) {
+            for control in chars.by_ref() {
+                if ('@'..='~').contains(&control) {
                     break;
                 }
             }
@@ -164,9 +164,9 @@ fn take_visible_columns(line: &str, columns: usize) -> String {
         if ch == '\x1b' && chars.peek() == Some(&'[') {
             out.push(ch);
             out.push(chars.next().unwrap());
-            for ch in chars.by_ref() {
-                out.push(ch);
-                if ('@'..='~').contains(&ch) {
+            for control in chars.by_ref() {
+                out.push(control);
+                if ('@'..='~').contains(&control) {
                     break;
                 }
             }
@@ -182,13 +182,20 @@ fn take_visible_columns(line: &str, columns: usize) -> String {
 }
 
 #[cfg(unix)]
+#[expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "TIOCGWINSZ writes only to the initialized winsize buffer passed by pointer"
+)]
 fn terminal_width() -> Option<usize> {
-    let mut size = std::mem::MaybeUninit::<libc::winsize>::zeroed();
-
-    let result = unsafe { libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, size.as_mut_ptr()) };
+    let mut size = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let result = unsafe { libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &raw mut size) };
     if result == 0 {
-        let size = unsafe { size.assume_init() };
-        (size.ws_col > 0).then_some(size.ws_col as usize)
+        (size.ws_col > 0).then_some(usize::from(size.ws_col))
     } else {
         None
     }
@@ -199,7 +206,7 @@ pub fn is_active() -> bool {
 }
 
 pub fn eviction_marker() -> String {
-    if std::io::stderr().is_terminal() {
+    if stderr().is_terminal() {
         format!("[{YELLOW}{EVICTED}{RESET}] ")
     } else {
         String::new()
@@ -207,20 +214,21 @@ pub fn eviction_marker() -> String {
 }
 
 pub fn load_marker() -> String {
-    if std::io::stderr().is_terminal() {
+    if stderr().is_terminal() {
         format!("[{GREEN}{LOADED}{RESET}] ")
     } else {
         String::new()
     }
 }
 
-pub fn set_command_progress(lines: Vec<String>, nix_bar: Option<String>) {
+pub fn set_command_progress(mut lines: Vec<String>, nix_bar: Option<String>) {
     if !is_active() {
         return;
     }
     if let Some(state) = STATE.lock().unwrap().as_mut() {
         let start = lines.len().saturating_sub(RECENT_LINES);
-        state.recent = lines[start..].to_vec();
+        lines.drain(..start);
+        state.recent = lines;
         state.nix_bar = nix_bar;
     }
 }
@@ -241,7 +249,7 @@ fn durable_recent_block(state: &State) -> Vec<String> {
         return Vec::new();
     }
 
-    let mut lines = vec!["cade: recent output:".to_string()];
+    let mut lines = vec!["cade: recent output:".to_owned()];
     lines.extend(state.recent.iter().map(|line| format!("    {line}")));
     lines
 }
@@ -254,7 +262,7 @@ pub fn log_line(line: &str) {
     let mut guard = STATE.lock().unwrap();
     match guard.as_mut() {
         Some(state) => {
-            let mut err = std::io::stderr().lock();
+            let mut err = stderr().lock();
             state.renderer.clear(&mut err);
             let _ = writeln!(err, "{line}");
             let _ = err.flush();
@@ -265,7 +273,7 @@ pub fn log_line(line: &str) {
 
 pub fn start(subject: &str) -> Spinner {
     if !verbosity::enabled(Verbosity::Normal)
-        || !std::io::stderr().is_terminal()
+        || !stderr().is_terminal()
         || ACTIVE.swap(true, Ordering::AcqRel)
     {
         return Spinner {
@@ -284,7 +292,7 @@ pub fn start(subject: &str) -> Spinner {
         renderer: LiveRenderer::default(),
     });
 
-    let thread = std::thread::spawn(run_loop);
+    let thread = spawn(run_loop);
     Spinner {
         active: true,
         resolved: false,
@@ -298,7 +306,7 @@ fn run_loop() {
             state.frame = state.frame.wrapping_add(1);
             state.render();
         }
-        std::thread::park_timeout(FRAME_INTERVAL);
+        park_timeout(FRAME_INTERVAL);
     }
 }
 
@@ -312,7 +320,7 @@ impl Spinner {
     pub fn success(mut self, message: &str) {
         self.resolved = true;
         if self.active {
-            self.finish(GREEN, LOADED, message.to_string());
+            self.finish(GREEN, LOADED, message);
         } else {
             verbosity::log(Verbosity::Normal, format_args!("{message}"));
         }
@@ -328,9 +336,9 @@ impl Spinner {
             thread.thread().unpark();
             let _ = thread.join();
         }
-        let state = STATE.lock().unwrap().take();
-        let mut err = std::io::stderr().lock();
-        if let Some(mut state) = state {
+        let active_state = STATE.lock().unwrap().take();
+        let mut err = stderr().lock();
+        if let Some(mut state) = active_state {
             let recent = durable_recent_block(&state);
             state.renderer.clear(&mut err);
             for line in recent {
@@ -340,15 +348,15 @@ impl Spinner {
         let _ = err.flush();
     }
 
-    fn finish(&mut self, colour: &str, symbol: char, message: String) {
+    fn finish(&mut self, colour: &str, symbol: char, message: &str) {
         ACTIVE.store(false, Ordering::Release);
         if let Some(thread) = self.thread.take() {
             thread.thread().unpark();
             let _ = thread.join();
         }
-        let state = STATE.lock().unwrap().take();
-        let mut err = std::io::stderr().lock();
-        let recent = if let Some(mut state) = state {
+        let active_state = STATE.lock().unwrap().take();
+        let mut err = stderr().lock();
+        let recent = if let Some(mut state) = active_state {
             let recent = durable_recent_block(&state);
             state.renderer.clear(&mut err);
             recent
@@ -366,17 +374,17 @@ impl Spinner {
 impl Drop for Spinner {
     fn drop(&mut self) {
         if self.active && !self.resolved {
-            self.finish(RED, CROSS, "cade: environment failed to load.".to_string());
+            self.finish(RED, CROSS, "cade: environment failed to load.");
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::LiveRenderer;
+    use crate::progress::LiveRenderer;
 
     fn lines(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).to_string()).collect()
+        values.iter().map(|value| (*value).to_owned()).collect()
     }
 
     #[test]

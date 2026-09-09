@@ -1,5 +1,6 @@
 use crate::shells::{self, ShellOutput};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+use std::env::vars;
 
 type EnvDiff = BTreeMap<String, Option<String>>;
 
@@ -7,17 +8,18 @@ pub struct EnvDelta {
     changes: EnvDiff,
 }
 
-pub struct EnvDeltaInput<'a> {
-    pub env: &'a HashMap<String, Vec<String>>,
-    pub absorb: &'a HashSet<String>,
-    pub unset: &'a [String],
+#[derive(Clone, Copy)]
+pub struct EnvDeltaInput<'input> {
+    pub env: &'input BTreeMap<String, Vec<String>>,
+    pub absorb: &'input BTreeSet<String>,
+    pub unset: &'input [String],
     pub purified: bool,
-    pub live_env: &'a HashMap<String, String>,
-    pub baseline: &'a HashMap<String, String>,
+    pub live_env: &'input BTreeMap<String, String>,
+    pub baseline: &'input BTreeMap<String, String>,
 }
 
 impl EnvDelta {
-    pub fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self {
             changes: EnvDiff::new(),
         }
@@ -35,27 +37,28 @@ impl EnvDelta {
         let mut changes = EnvDiff::new();
 
         if purified {
-            for k in live_env.keys().chain(baseline.keys()) {
-                if !is_pure_preserved_key(k) {
-                    record_change(&mut changes, k, None);
+            for key in live_env.keys().chain(baseline.keys()) {
+                if !is_pure_preserved_key(key) {
+                    record_change(&mut changes, key, None);
                 }
             }
         }
 
-        for k in unset {
-            record_change(&mut changes, k, None);
+        for key in unset {
+            record_change(&mut changes, key, None);
         }
 
-        for (k, v) in env {
-            let mut value = v.join(":");
+        for (key, parts) in env {
+            let mut joined = parts.join(":");
 
             if !purified
-                && absorb.contains(k)
-                && let Some(amb) = baseline.get(k).filter(|a| !a.is_empty())
+                && absorb.contains(key)
+                && let Some(baseline_value) =
+                    baseline.get(key).filter(|candidate| !candidate.is_empty())
             {
-                value = format!("{value}:{amb}");
+                joined = format!("{joined}:{baseline_value}");
             }
-            record_change(&mut changes, k, Some(value));
+            record_change(&mut changes, key, Some(joined));
         }
 
         Self { changes }
@@ -63,10 +66,10 @@ impl EnvDelta {
 
     pub fn render_shell(&self, shell: &dyn ShellOutput) -> String {
         let mut output = String::new();
-        for (k, v) in &self.changes {
-            match v {
-                Some(value) => output.push_str(&shell.set_env(k, value)),
-                None => output.push_str(&shell.unset_env(k)),
+        for (key, change) in &self.changes {
+            match change.as_deref() {
+                Some(value) => output.push_str(&shell.set_env(key, value)),
+                None => output.push_str(&shell.unset_env(key)),
             }
         }
         output
@@ -92,9 +95,9 @@ impl EnvDelta {
     }
 }
 
-pub fn live_ambient_env() -> HashMap<String, String> {
-    std::env::vars()
-        .filter(|(k, _)| !k.starts_with("__CADE_"))
+pub fn live_ambient_env() -> BTreeMap<String, String> {
+    vars()
+        .filter(|pair| !pair.0.starts_with("__CADE_"))
         .collect()
 }
 
@@ -116,17 +119,17 @@ fn is_pure_preserved_key(key: &str) -> bool {
 
 fn record_change(changes: &mut EnvDiff, key: &str, value: Option<String>) {
     if shells::is_valid_key(key) {
-        changes.insert(key.to_string(), value);
+        changes.insert(key.to_owned(), value);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{EnvDelta, EnvDiff, is_pure_preserved_key, is_shell_managed};
 
     #[test]
     fn shell_managed_classification() {
-        for k in [
+        for key in [
             "PWD",
             "OLDPWD",
             "SHLVL",
@@ -135,10 +138,10 @@ mod tests {
             "__CADE_PREV",
             "__CADE_SET",
         ] {
-            assert!(is_shell_managed(k), "{k} should be shell-managed");
+            assert!(is_shell_managed(key), "{key} should be shell-managed");
         }
-        for k in ["PATH", "HOME", "MY_VAR"] {
-            assert!(!is_shell_managed(k), "{k} should not be shell-managed");
+        for key in ["PATH", "HOME", "MY_VAR"] {
+            assert!(!is_shell_managed(key), "{key} should not be shell-managed");
         }
         assert!(is_pure_preserved_key("HOME"));
     }
@@ -147,14 +150,14 @@ mod tests {
     fn json_escapes_separators() {
         let delta = EnvDelta {
             changes: EnvDiff::from([
-                ("A".to_string(), Some("x\x1fy".to_string())),
-                ("B".to_string(), None),
+                ("A".to_owned(), Some("x\x1fy".to_owned())),
+                ("B".to_owned(), None),
             ]),
         };
         let out = delta.to_json();
 
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["A"], "x\x1fy");
-        assert!(v["B"].is_null());
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["A"], "x\x1fy");
+        assert!(parsed["B"].is_null());
     }
 }

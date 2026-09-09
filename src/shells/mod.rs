@@ -6,13 +6,12 @@ mod nushell;
 mod posix;
 mod quote;
 
-pub use elvish::Elvish;
-pub use fish::Fish;
-pub use json::Json;
-pub use murex::Murex;
-pub use nushell::Nushell;
-pub use posix::{Bash, Zsh};
-
+use elvish::Elvish;
+use fish::Fish;
+use json::Json;
+use murex::Murex;
+use nushell::Nushell;
+use posix::{Bash, Zsh};
 use std::{fmt, str::FromStr};
 
 pub trait ShellOutput {
@@ -25,10 +24,10 @@ pub trait ShellOutput {
 pub fn is_valid_key(key: &str) -> bool {
     let mut chars = key.chars();
     match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
         _ => return false,
     }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -43,15 +42,19 @@ pub enum ShellName {
 }
 
 impl fmt::Display for ShellName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ShellName::Fish => write!(f, "fish"),
-            ShellName::Bash => write!(f, "bash"),
-            ShellName::Zsh => write!(f, "zsh"),
-            ShellName::Nushell => write!(f, "nushell"),
-            ShellName::Json => write!(f, "json"),
-            ShellName::Elvish => write!(f, "elvish"),
-            ShellName::Murex => write!(f, "murex"),
+    #[expect(
+        clippy::renamed_function_params,
+        reason = "Display names its formatter parameter f"
+    )]
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Fish => write!(formatter, "fish"),
+            Self::Bash => write!(formatter, "bash"),
+            Self::Zsh => write!(formatter, "zsh"),
+            Self::Nushell => write!(formatter, "nushell"),
+            Self::Json => write!(formatter, "json"),
+            Self::Elvish => write!(formatter, "elvish"),
+            Self::Murex => write!(formatter, "murex"),
         }
     }
 }
@@ -59,30 +62,30 @@ impl fmt::Display for ShellName {
 impl FromStr for ShellName {
     type Err = String;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "fish" => Ok(ShellName::Fish),
-            "bash" => Ok(ShellName::Bash),
-            "zsh" => Ok(ShellName::Zsh),
-            "nushell" | "nu" => Ok(ShellName::Nushell),
-            "json" => Ok(ShellName::Json),
-            "elvish" => Ok(ShellName::Elvish),
-            "murex" => Ok(ShellName::Murex),
-            _ => Err(format!("unknown shell: {s}")),
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text.to_lowercase().as_str() {
+            "fish" => Ok(Self::Fish),
+            "bash" => Ok(Self::Bash),
+            "zsh" => Ok(Self::Zsh),
+            "nushell" | "nu" => Ok(Self::Nushell),
+            "json" => Ok(Self::Json),
+            "elvish" => Ok(Self::Elvish),
+            "murex" => Ok(Self::Murex),
+            _ => Err(format!("unknown shell: {text}")),
         }
     }
 }
 
 impl ShellName {
-    pub fn get_output(&self) -> Box<dyn ShellOutput> {
+    pub fn get_output(self) -> Box<dyn ShellOutput> {
         match self {
-            ShellName::Fish => Box::new(Fish),
-            ShellName::Bash => Box::new(Bash),
-            ShellName::Zsh => Box::new(Zsh),
-            ShellName::Nushell => Box::new(Nushell),
-            ShellName::Json => Box::new(Json),
-            ShellName::Elvish => Box::new(Elvish),
-            ShellName::Murex => Box::new(Murex),
+            Self::Fish => Box::new(Fish),
+            Self::Bash => Box::new(Bash),
+            Self::Zsh => Box::new(Zsh),
+            Self::Nushell => Box::new(Nushell),
+            Self::Json => Box::new(Json),
+            Self::Elvish => Box::new(Elvish),
+            Self::Murex => Box::new(Murex),
         }
     }
 }
@@ -116,7 +119,7 @@ mod tests {
             .unwrap()
             .strip_suffix(';')
             .unwrap();
-        let inner = &body[1..body.len() - 1];
+        let inner = body.strip_prefix('\'').unwrap().strip_suffix('\'').unwrap();
         let decoded = inner.replace("'\\''", "'");
         assert_eq!(decoded, HOSTILE);
     }
@@ -147,14 +150,14 @@ mod tests {
     #[test]
     fn nushell_emits_json_data_not_code() {
         let out = Nushell.set_env("X", r#"$(id)"x"#);
-        let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
-        assert_eq!(v["s"]["X"], "$(id)\"x");
+        let parsed: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(parsed["s"]["X"], "$(id)\"x");
     }
 
     #[test]
     fn nushell_emits_path_as_a_list() {
         let out = Nushell.set_env("PATH", "/one:/two");
-        let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
-        assert_eq!(v["s"]["PATH"], serde_json::json!(["/one", "/two"]));
+        let parsed: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(parsed["s"]["PATH"], serde_json::json!(["/one", "/two"]));
     }
 }

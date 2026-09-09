@@ -1,7 +1,7 @@
 use super::Lookup;
 
 pub(super) fn expand_plain(input: &str, lookup: Lookup<'_>) -> String {
-    expand_with(input, lookup, &|v| v)
+    expand_with(input, lookup, &|value| value)
 }
 
 pub(super) fn expand_with(
@@ -11,69 +11,75 @@ pub(super) fn expand_with(
 ) -> String {
     let bytes = input.as_bytes();
     let mut out = String::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' if bytes.get(i + 1) == Some(&b'$') => {
+    let mut pos = 0;
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'\\' if bytes.get(pos + 1) == Some(&b'$') => {
                 out.push('$');
-                i += 2;
+                pos += 2;
             }
-            b'$' if bytes.get(i + 1) == Some(&b'{') => match find_close(input, i) {
-                Some((inner, end)) => {
+            b'$' if bytes.get(pos + 1) == Some(&b'{') => {
+                if let Some((inner, end)) = find_close(input, pos) {
                     out.push_str(&on_value(expand_ref(inner, lookup)));
-                    i = end;
-                }
-                None => {
+                    pos = end;
+                } else {
                     out.push_str("${");
-                    i += 2;
+                    pos += 2;
                 }
-            },
+            }
             _ => {
-                let ch = input[i..].chars().next().unwrap();
+                let ch = input
+                    .get(pos..)
+                    .and_then(|tail| tail.chars().next())
+                    .expect("byte index is always on a char boundary");
                 out.push(ch);
-                i += ch.len_utf8();
+                pos += ch.len_utf8();
             }
         }
     }
     out
 }
 
-fn find_close(s: &str, start: usize) -> Option<(&str, usize)> {
-    let bytes = s.as_bytes();
-    let mut depth = 1usize;
-    let mut j = start + 2;
-    while j < bytes.len() {
-        if bytes[j] == b'$' && bytes.get(j + 1) == Some(&b'{') {
+fn find_close(text: &str, start: usize) -> Option<(&str, usize)> {
+    let bytes = text.as_bytes();
+    let mut depth = 1_usize;
+    let mut scan = start + 2;
+    while scan < bytes.len() {
+        if bytes[scan] == b'$' && bytes.get(scan + 1) == Some(&b'{') {
             depth += 1;
-            j += 2;
-        } else if bytes[j] == b'}' {
+            scan += 2;
+        } else if bytes[scan] == b'}' {
             depth -= 1;
             if depth == 0 {
-                return Some((&s[start + 2..j], j + 1));
+                return Some((text.get(start + 2..scan)?, scan + 1));
             }
-            j += 1;
+            scan += 1;
         } else {
-            j += 1;
+            scan += 1;
         }
     }
     None
 }
 
-fn is_name_byte(b: u8, first: bool) -> bool {
-    b.is_ascii_alphabetic() || b == b'_' || (!first && b.is_ascii_digit())
+const fn is_name_byte(byte: u8, first: bool) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_' || (!first && byte.is_ascii_digit())
 }
 
 fn expand_ref(inner: &str, lookup: Lookup<'_>) -> String {
     let bytes = inner.as_bytes();
-    let mut n = 0;
-    while n < bytes.len() && is_name_byte(bytes[n], n == 0) {
-        n += 1;
+    let mut name_len = 0;
+    while name_len < bytes.len() && is_name_byte(bytes[name_len], name_len == 0) {
+        name_len += 1;
     }
-    if n == 0 {
+    if name_len == 0 {
         return format!("${{{inner}}}");
     }
-    let name = &inner[..n];
-    let rest = &inner[n..];
+    let name = inner
+        .get(..name_len)
+        .expect("name bytes are ascii so index is a char boundary");
+    let rest = inner
+        .get(name_len..)
+        .expect("name bytes are ascii so index is a char boundary");
     let val = lookup(name);
 
     if rest.is_empty() {
@@ -117,9 +123,9 @@ mod tests {
     fn lookup_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let map: HashMap<String, String> = pairs
             .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .map(|&(key, value)| (key.to_owned(), value.to_owned()))
             .collect();
-        move |k: &str| map.get(k).cloned()
+        move |name: &str| map.get(name).cloned()
     }
 
     fn exp(input: &str, pairs: &[(&str, &str)]) -> String {
@@ -143,6 +149,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "Shell parameter expansion is input to the parser"
+    )]
     fn colon_dash_uses_default_when_unset_or_empty() {
         assert_eq!(exp("${V:-fallback}", &[]), "fallback");
         assert_eq!(exp("${V:-fallback}", &[("V", "")]), "fallback");
@@ -157,6 +167,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "Shell parameter expansion is input to the parser"
+    )]
     fn colon_plus_alternate_requires_non_empty() {
         assert_eq!(exp("${V:+yes}", &[("V", "x")]), "yes");
         assert_eq!(exp("${V:+yes}", &[("V", "")]), "");

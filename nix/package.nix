@@ -23,6 +23,7 @@ rustPlatform.buildRustPackage {
       ../tests
       ../Cargo.toml
       ../Cargo.lock
+      ../README.md
     ];
   };
 

@@ -3,25 +3,28 @@ use std::{
     process::{Command, Stdio},
 };
 
+use crate::verbosity::Verbosity;
+use crate::verbosity::log;
+
 pub(super) fn wipe_history(profile: &Path) {
-    let status = Command::new("nix")
+    let spawn_result = Command::new("nix")
         .args(["profile", "wipe-history", "--profile"])
         .arg(profile)
         .stdout(Stdio::null())
         .status();
-    match status {
-        Ok(status) if status.success() => {}
-        Ok(status) => crate::verbosity::log(
-            crate::verbosity::Verbosity::Trace,
+    match spawn_result {
+        Ok(exit_status) if exit_status.success() => {}
+        Ok(exit_status) => log(
+            Verbosity::Trace,
             format_args!(
-                "cade: failed to wipe nix profile history for {} ({status}).",
+                "cade: failed to wipe nix profile history for {} ({exit_status}).",
                 profile.display()
             ),
         ),
-        Err(e) => crate::verbosity::log(
-            crate::verbosity::Verbosity::Trace,
+        Err(error) => log(
+            Verbosity::Trace,
             format_args!(
-                "cade: failed to run nix profile wipe-history for {}: {e}.",
+                "cade: failed to run nix profile wipe-history for {}: {error}.",
                 profile.display()
             ),
         ),

@@ -1,30 +1,34 @@
 use super::{parse, store_paths};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+use std::mem::take;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EnvSet {
-    vars: HashMap<String, Vec<String>>,
+    vars: BTreeMap<String, Vec<String>>,
     #[serde(default, rename = "hard")]
-    hard_replace: HashSet<String>,
+    hard_replace: BTreeSet<String>,
     #[serde(default)]
-    clears: HashSet<String>,
+    clears: BTreeSet<String>,
     #[serde(default)]
     nix_store_paths: Vec<String>,
 }
 
 pub(super) struct ParsedEnv {
-    vars: HashMap<String, Vec<String>>,
-    hard_replace: HashSet<String>,
-    clears: HashSet<String>,
+    vars: BTreeMap<String, Vec<String>>,
+    hard_replace: BTreeSet<String>,
+    clears: BTreeSet<String>,
 }
 
 impl ParsedEnv {
-    pub(super) fn new(vars: HashMap<String, Vec<String>>, hard_replace: HashSet<String>) -> Self {
+    pub(super) const fn new(
+        vars: BTreeMap<String, Vec<String>>,
+        hard_replace: BTreeSet<String>,
+    ) -> Self {
         Self {
             vars,
             hard_replace,
-            clears: HashSet::new(),
+            clears: BTreeSet::new(),
         }
     }
 
@@ -41,10 +45,10 @@ impl ParsedEnv {
     }
 }
 
-pub(crate) struct EnvSetMerge {
-    pub(crate) store_paths: Vec<String>,
-    pub(crate) clears: Vec<String>,
-    pub(crate) sets: Vec<String>,
+pub struct EnvSetMerge {
+    pub store_paths: Vec<String>,
+    pub clears: Vec<String>,
+    pub sets: Vec<String>,
 }
 
 impl EnvSet {
@@ -57,7 +61,7 @@ impl EnvSet {
         let mut env = Self {
             vars: parts.vars,
             hard_replace: parts.hard_replace,
-            clears: HashSet::new(),
+            clears: BTreeSet::new(),
             nix_store_paths: Vec::new(),
         };
         env.refresh_store_paths();
@@ -65,8 +69,8 @@ impl EnvSet {
     }
 
     pub fn from_captured_parts(
-        vars: HashMap<String, Vec<String>>,
-        clears: HashSet<String>,
+        vars: BTreeMap<String, Vec<String>>,
+        clears: BTreeSet<String>,
     ) -> Self {
         let mut env = Self::from_plain_vars(vars);
         env.clears = clears
@@ -77,8 +81,8 @@ impl EnvSet {
         env
     }
 
-    pub fn merge_loaded(&mut self, other: EnvSet) {
-        let EnvSet {
+    pub fn merge_loaded(&mut self, other: Self) {
+        let Self {
             vars,
             hard_replace,
             clears,
@@ -98,8 +102,8 @@ impl EnvSet {
         self.merge_store_paths(nix_store_paths);
     }
 
-    pub fn merge_layer_env(&mut self, other: EnvSet) -> EnvSetMerge {
-        let EnvSet {
+    pub fn merge_layer_env(&mut self, other: Self) -> EnvSetMerge {
+        let Self {
             vars,
             hard_replace,
             clears,
@@ -132,12 +136,12 @@ impl EnvSet {
     }
 
     pub fn prepend_path_entries(&mut self, values: Vec<String>) {
-        self.prepend_values("PATH".to_string(), values);
+        self.prepend_values("PATH".to_owned(), values);
     }
 
-    pub fn expand_values(&mut self, mut f: impl FnMut(&str) -> String) {
+    pub fn expand_values<Expander: FnMut(&str) -> String>(&mut self, mut expand: Expander) {
         for values in self.vars.values_mut() {
-            let value = f(&values.join(":"));
+            let value = expand(&values.join(":"));
             *values = parse::split_env_value(&value);
         }
         self.refresh_store_paths();
@@ -159,11 +163,11 @@ impl EnvSet {
         }
     }
 
-    fn from_plain_vars(vars: HashMap<String, Vec<String>>) -> Self {
+    const fn from_plain_vars(vars: BTreeMap<String, Vec<String>>) -> Self {
         Self {
             vars,
-            hard_replace: HashSet::new(),
-            clears: HashSet::new(),
+            hard_replace: BTreeSet::new(),
+            clears: BTreeSet::new(),
             nix_store_paths: Vec::new(),
         }
     }
@@ -187,8 +191,7 @@ impl EnvSet {
     }
 
     fn merge_store_paths(&mut self, incoming: Vec<String>) {
-        self.nix_store_paths =
-            store_paths::merge_unique(std::mem::take(&mut self.nix_store_paths), incoming);
+        self.nix_store_paths = store_paths::merge_unique(take(&mut self.nix_store_paths), incoming);
     }
 
     fn refresh_store_paths(&mut self) {
@@ -196,7 +199,7 @@ impl EnvSet {
     }
 }
 
-fn append_entry(vars: &mut HashMap<String, Vec<String>>, key: String, values: Vec<String>) {
+fn append_entry(vars: &mut BTreeMap<String, Vec<String>>, key: String, values: Vec<String>) {
     vars.entry(key)
         .and_modify(|current| current.extend(values.clone()))
         .or_insert(values);
@@ -208,7 +211,7 @@ mod tests {
 
     const STORE_PATH: &str = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo";
 
-    fn values<'a>(env: &'a EnvSet, key: &str) -> Option<&'a [String]> {
+    fn values<'env>(env: &'env EnvSet, key: &str) -> Option<&'env [String]> {
         env.vars.get(key).map(Vec::as_slice)
     }
 
@@ -256,7 +259,7 @@ mod tests {
 
     #[test]
     fn errors_on_line_without_equals() {
-        assert!(EnvSet::from_envs("NOT_A_PAIR").is_err());
+        EnvSet::from_envs("NOT_A_PAIR").unwrap_err();
     }
 
     #[test]
@@ -268,16 +271,16 @@ mod tests {
     #[test]
     fn appended_values_update_store_paths() {
         let mut env = EnvSet::new();
-        env.add_literal_export("TOOL".to_string(), STORE_PATH);
+        env.add_literal_export("TOOL".to_owned(), STORE_PATH);
         assert_eq!(env.nix_store_paths, [STORE_PATH]);
     }
 
     #[test]
     fn merge_loaded_preserves_cleared_store_paths() {
         let mut out = EnvSet::new();
-        let other = EnvSet::from_plain_vars(HashMap::from([(
-            "TOOL".to_string(),
-            vec![STORE_PATH.to_string()],
+        let other = EnvSet::from_plain_vars(BTreeMap::from([(
+            "TOOL".to_owned(),
+            vec![STORE_PATH.to_owned()],
         )]));
         out.merge_loaded(other);
         assert!(out.nix_store_paths.is_empty());

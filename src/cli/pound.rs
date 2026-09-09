@@ -1,6 +1,9 @@
 use pound::{Parse, ValueEnum};
 use std::path::PathBuf;
 
+use crate::shells::ShellName;
+use crate::verbosity::Verbosity;
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum CliVerbosity {
     Quiet,
@@ -9,7 +12,7 @@ pub enum CliVerbosity {
     Trace,
 }
 
-impl From<CliVerbosity> for crate::verbosity::Verbosity {
+impl From<CliVerbosity> for Verbosity {
     fn from(value: CliVerbosity) -> Self {
         match value {
             CliVerbosity::Quiet => Self::Quiet,
@@ -32,7 +35,7 @@ pub enum CliShell {
     Murex,
 }
 
-impl From<CliShell> for crate::shells::ShellName {
+impl From<CliShell> for ShellName {
     fn from(value: CliShell) -> Self {
         match value {
             CliShell::Fish => Self::Fish,
@@ -138,21 +141,29 @@ pub struct Cli {
 
 #[cfg(test)]
 mod tests {
-    use pound::Parse;
+    use pound::Parse as _;
 
     use super::{Cli, CliAction, CliShell};
+    use crate::shells::ShellName;
 
     #[test]
     fn shell_switches_use_typed_values() {
         let cli = Cli::try_parse_from(["enter", "--shell", "nu"]).expect("parse shell value");
-        let CliAction::Enter { shell } = cli.action else {
-            panic!("expected enter action");
-        };
+        let shell = match cli.action {
+            CliAction::Enter { shell } => Some(shell),
+            CliAction::Exit { .. }
+            | CliAction::Reload { .. }
+            | CliAction::Allow
+            | CliAction::Disallow
+            | CliAction::Edit
+            | CliAction::Hook { .. }
+            | CliAction::Export { .. }
+            | CliAction::Lease { .. }
+            | CliAction::Status => None,
+        }
+        .expect("expected enter action");
 
         assert_eq!(shell, CliShell::Nu);
-        assert!(matches!(
-            crate::shells::ShellName::from(shell),
-            crate::shells::ShellName::Nushell
-        ));
+        assert!(matches!(ShellName::from(shell), ShellName::Nushell));
     }
 }

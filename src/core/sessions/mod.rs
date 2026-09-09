@@ -1,6 +1,6 @@
-mod gc_roots;
-mod identity;
-mod leases;
+pub mod gc_roots;
+pub mod identity;
+pub mod leases;
 
 use crate::config;
 use anyhow::{Result, bail};
@@ -35,7 +35,7 @@ pub(super) enum SessionHolder {
 }
 
 impl SessionHolder {
-    pub(super) fn process(pid: u32, start_time: String, last_seen: u64) -> Self {
+    pub(super) const fn process(pid: u32, start_time: String, last_seen: u64) -> Self {
         Self::Process {
             pid,
             start_time,
@@ -43,25 +43,27 @@ impl SessionHolder {
         }
     }
 
-    pub(super) fn lease(client_id: String) -> Self {
+    pub(super) const fn lease(client_id: String) -> Self {
         Self::Lease { client_id }
     }
 
     pub(super) fn file_name(&self) -> Result<String> {
-        match self {
-            SessionHolder::Process {
-                pid, start_time, ..
+        match *self {
+            Self::Process {
+                pid,
+                ref start_time,
+                ..
             } => {
                 if start_time
                     .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
                 {
                     Ok(format!("process-{pid}-{start_time}.json"))
                 } else {
                     bail!("invalid process start time")
                 }
             }
-            SessionHolder::Lease { client_id } => {
+            Self::Lease { ref client_id } => {
                 validate_client_id(client_id)?;
                 Ok(format!("lease-{client_id}.json"))
             }
@@ -71,11 +73,11 @@ impl SessionHolder {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(super) struct LeaseRecord {
-    pub(super) client_id: String,
-    pub(super) kind: String,
-    pub(super) project: Option<String>,
-    pub(super) expires_at: u64,
-    pub(super) last_seen: u64,
+    pub client_id: String,
+    pub kind: String,
+    pub project: Option<String>,
+    pub expires_at: u64,
+    pub last_seen: u64,
 }
 
 impl LeaseRecord {

@@ -1,31 +1,35 @@
-mod activation;
-mod cache;
-mod enter;
+pub mod activation;
+pub mod cache;
+pub mod enter;
 mod layer;
 mod participants;
-mod permissions;
-mod reload;
-mod restore;
-mod sessions;
+pub mod permissions;
+pub mod reload;
+pub mod restore;
+pub mod sessions;
 pub mod shell_state;
 mod snapshot;
-mod status;
+pub mod status;
 mod watch;
 
-use participants::{find_cade_root, participant_dirs};
-use sessions::is_valid_session;
-use watch::WatchState;
-
+use crate::core::cache::{
+    ensure_layer_cache_schema, prune_stale_layer_cache, prune_stale_watch_discovery,
+};
 use crate::{
+    progress::{eviction_marker, load_marker},
     shells::ShellOutput,
-    types::{HookType, InnerHook, Keyword},
+    types::hook::{HookType, InnerHook},
     verbosity::{self, Verbosity},
 };
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
+use rusqlite::Connection;
+use std::env::{current_dir, var, var_os};
+use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub struct Cade {
-    db: rusqlite::Connection,
+    db: Connection,
     cwd: PathBuf,
     state_dir: PathBuf,
 }
@@ -40,16 +44,16 @@ pub enum Announce {
 }
 
 impl Announce {
-    fn verb(self) -> &'static str {
+    const fn verb(self) -> &'static str {
         match self {
-            Announce::Loaded => "loaded",
-            Announce::Reloaded => "reloaded",
+            Self::Loaded => "loaded",
+            Self::Reloaded => "reloaded",
         }
     }
 }
 
-fn hook_label(kind: &HookType) -> &'static str {
-    match kind {
+const fn hook_label(kind: &HookType) -> &'static str {
+    match *kind {
         HookType::LoadPre => "preload",
         HookType::LoadPost => "load",
         HookType::UnloadPre => "preunload",
@@ -73,41 +77,41 @@ fn log_disallowed_reminder() {
 }
 
 fn mark_disallowed_root(root: &Path, shell: &dyn ShellOutput) {
-    let root = root.to_string_lossy();
-    if std::env::var(DISALLOWED_ROOT_MARKER).as_deref() == Ok(root.as_ref()) {
+    let root_text = root.to_string_lossy();
+    if var(DISALLOWED_ROOT_MARKER).as_deref() == Ok(root_text.as_ref()) {
         return;
     }
 
-    print!("{}", shell.set_env(DISALLOWED_ROOT_MARKER, &root));
+    print!("{}", shell.set_env(DISALLOWED_ROOT_MARKER, &root_text));
     log_disallowed_reminder();
 }
 
 fn clear_disallowed_root_marker(shell: &dyn ShellOutput) {
-    if std::env::var_os(DISALLOWED_ROOT_MARKER).is_some() {
+    if var_os(DISALLOWED_ROOT_MARKER).is_some() {
         print!("{}", shell.unset_env(DISALLOWED_ROOT_MARKER));
     }
 }
 
-fn log_key_list<I, S>(label: &str, keys: I)
+fn log_key_list<Keys, Key>(label: &str, keys: Keys)
 where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
+    Keys: IntoIterator<Item = Key>,
+    Key: AsRef<str>,
 {
     if !verbosity::enabled(Verbosity::Vars) {
         return;
     }
 
-    let mut keys: Vec<String> = keys
+    let mut sorted: Vec<String> = keys
         .into_iter()
-        .map(|k| k.as_ref().to_owned())
-        .filter(|k| !k.is_empty())
+        .map(|key| key.as_ref().to_owned())
+        .filter(|key| !key.is_empty())
         .collect();
-    keys.sort_unstable();
-    keys.dedup();
-    if !keys.is_empty() {
+    sorted.sort_unstable();
+    sorted.dedup();
+    if !sorted.is_empty() {
         verbosity::log(
             Verbosity::Vars,
-            format_args!("cade: {label} {}.", keys.join(", ")),
+            format_args!("cade: {label} {}.", sorted.join(", ")),
         );
     }
 }
@@ -125,7 +129,7 @@ fn announce_unloaded(dir: &str, total: usize) {
         Verbosity::Normal,
         format_args!(
             "{}cade: unloaded {}{}.",
-            crate::progress::eviction_marker(),
+            eviction_marker(),
             dir,
             layer_count_suffix(total)
         ),
@@ -135,30 +139,30 @@ fn announce_unloaded(dir: &str, total: usize) {
 fn announce_loaded(dir: &str) {
     verbosity::log(
         Verbosity::Normal,
-        format_args!("{}cade: loaded {}.", crate::progress::load_marker(), dir),
+        format_args!("{}cade: loaded {}.", load_marker(), dir),
     );
 }
 
 impl Cade {
-    pub fn init() -> anyhow::Result<Cade> {
+    pub fn init() -> Result<Self> {
         let state_dir = if let Some(path) = shell_state::state_dir_from_env() {
-            std::fs::create_dir_all(&path).context("create cade state path")?;
+            create_dir_all(&path).context("create cade state path")?;
             path
         } else {
-            Cade::ensure_dir()?
+            Self::ensure_dir()?
         };
         let db_path = state_dir.join("cade.db");
-        let mut db = rusqlite::Connection::open(db_path)?;
-        Cade::ensure_db(&mut db)?;
+        let db = Connection::open(db_path)?;
+        Self::ensure_db(&db)?;
         Ok(Self {
             db,
             state_dir,
-            cwd: std::env::current_dir().context("determine cwd")?,
+            cwd: current_dir().context("determine cwd")?,
         })
     }
 
-    fn ensure_db(conn: &mut rusqlite::Connection) -> Result<()> {
-        conn.busy_timeout(std::time::Duration::from_secs(5))
+    fn ensure_db(conn: &Connection) -> Result<()> {
+        conn.busy_timeout(Duration::from_secs(5))
             .context("set busy_timeout")?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("enable WAL")?;
@@ -180,8 +184,8 @@ impl Cade {
                 );",
         )
         .context("create LayerCache table")?;
-        Cade::ensure_layer_cache_schema(conn).context("migrate LayerCache schema")?;
-        Cade::prune_stale_layer_cache(conn).context("prune stale layer cache entries")?;
+        ensure_layer_cache_schema(conn).context("migrate LayerCache schema")?;
+        prune_stale_layer_cache(conn).context("prune stale layer cache entries")?;
 
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS WatchDiscovery (
@@ -192,7 +196,7 @@ impl Cade {
                 );",
         )
         .context("create WatchDiscovery table")?;
-        Cade::prune_stale_watch_discovery(conn).context("prune stale watch discovery entries")?;
+        prune_stale_watch_discovery(conn).context("prune stale watch discovery entries")?;
         Ok(())
     }
 
@@ -202,15 +206,13 @@ impl Cade {
         {
             state_dir
         } else {
-            let mut p = PathBuf::from("/home");
-            p.push(whoami::username().context("determine username for cade state path")?);
-            p.push(".local");
-            p.push("state");
-            p
+            PathBuf::from("/home")
+                .join(whoami::username().context("determine username for cade state path")?)
+                .join(".local/state")
         };
         path.push("cade");
 
-        std::fs::create_dir_all(&path).context("create cade state path")?;
+        create_dir_all(&path).context("create cade state path")?;
         Ok(path)
     }
 }

@@ -1,8 +1,11 @@
 use super::{Lookup, eval::expand_with};
+use std::borrow::Cow;
 
 pub(super) fn expand_shell_args(input: &str, lookup: Lookup<'_>) -> String {
-    expand_with(input, lookup, &|v| {
-        shlex::try_quote(&v).map(|c| c.into_owned()).unwrap_or(v)
+    expand_with(input, lookup, &|value| {
+        shlex::try_quote(&value)
+            .map(Cow::into_owned)
+            .unwrap_or(value)
     })
 }
 
@@ -14,9 +17,9 @@ mod tests {
     fn lookup_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let map: HashMap<String, String> = pairs
             .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .map(|&(key, val)| (key.to_owned(), val.to_owned()))
             .collect();
-        move |k: &str| map.get(k).cloned()
+        move |key: &str| map.get(key).cloned()
     }
 
     fn args(input: &str, pairs: &[(&str, &str)]) -> Vec<String> {

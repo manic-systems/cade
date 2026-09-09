@@ -1,26 +1,29 @@
 use super::filter::{is_kept_nix_env_var, keep_loaded_env_var};
 use crate::{
     core::shell_state::{SET_VAR, decode_key_list},
-    env::EnvSet,
+    env::set::EnvSet,
 };
-use anyhow::{Context, Result, bail};
-use std::{collections::HashMap, process::Command};
+use anyhow::{Context as _, Result, bail};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    process::Command,
+};
 
 const ENV_MARKER: &[u8] = b"\0__CADE_ENV_BEGIN__\0";
 const ENV_CAPTURE_SCRIPT: &str = "printf '\\0__CADE_ENV_BEGIN__\\0'\nexec \"$1\" -0";
 
-pub(super) fn env_capture_script() -> &'static str {
+pub(super) const fn env_capture_script() -> &'static str {
     ENV_CAPTURE_SCRIPT
 }
 
-pub(super) fn remove_cade_managed_env(previous: &mut HashMap<String, String>, proc: &mut Command) {
+pub(super) fn remove_cade_managed_env(previous: &mut BTreeMap<String, String>, proc: &mut Command) {
     for key in cade_managed_env_keys(previous) {
         previous.remove(&key);
         proc.env_remove(&key);
     }
 }
 
-fn cade_managed_env_keys(env: &HashMap<String, String>) -> Vec<String> {
+fn cade_managed_env_keys(env: &BTreeMap<String, String>) -> Vec<String> {
     let mut keys: Vec<String> = env
         .keys()
         .filter(|key| key.starts_with("__CADE_"))
@@ -40,10 +43,10 @@ fn cade_managed_env_keys(env: &HashMap<String, String>) -> Vec<String> {
     keys
 }
 
-pub(super) fn captured_env_output<'a>(
-    stdout: &'a [u8],
+pub(super) fn captured_env_output<'output>(
+    stdout: &'output [u8],
     what: &str,
-) -> Result<(&'a [u8], &'a [u8])> {
+) -> Result<(&'output [u8], &'output [u8])> {
     let Some(start) = stdout
         .windows(ENV_MARKER.len())
         .position(|window| window == ENV_MARKER)
@@ -56,18 +59,21 @@ pub(super) fn captured_env_output<'a>(
 
 pub(super) fn env_set_from_captured_env(
     raw: &[u8],
-    previous: &HashMap<String, String>,
+    previous: &BTreeMap<String, String>,
 ) -> Result<EnvSet> {
     let path_suffix = previous.get("PATH").map(String::as_str);
-    let mut vars: HashMap<String, Vec<String>> = HashMap::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut vars: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut seen = BTreeSet::new();
 
-    for entry in raw.split(|&b| b == b'\0').filter(|entry| !entry.is_empty()) {
-        let text = std::str::from_utf8(entry).context("parsing exported environment")?;
+    for entry in raw
+        .split(|&byte| byte == b'\0')
+        .filter(|entry| !entry.is_empty())
+    {
+        let text = str::from_utf8(entry).context("parsing exported environment")?;
         let Some((key, raw_value)) = text.split_once('=') else {
             continue;
         };
-        seen.insert(key.to_string());
+        seen.insert(key.to_owned());
         if !keep_loaded_env_var(key) {
             continue;
         }
@@ -78,15 +84,15 @@ pub(super) fn env_set_from_captured_env(
         let value = if key == "PATH" {
             clean_captured_path(raw_value, path_suffix)
         } else {
-            raw_value.to_string()
+            raw_value.to_owned()
         };
         if key == "PATH" && value.is_empty() {
             continue;
         }
 
         vars.insert(
-            key.to_string(),
-            value.split(':').map(|s| s.to_string()).collect(),
+            key.to_owned(),
+            value.split(':').map(ToOwned::to_owned).collect(),
         );
     }
 
@@ -127,7 +133,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|value| value.as_str().unwrap().to_string())
+            .map(|value| value.as_str().unwrap().to_owned())
             .collect()
     }
 
@@ -140,12 +146,12 @@ mod tests {
 
     #[test]
     fn cade_managed_env_keys_drop_active_shell_vars_but_keep_path_suffix() {
-        let env = HashMap::from([
-            ("__CADE_SESSION".to_string(), "s1".to_string()),
-            ("__CADE_SET".to_string(), "FOO\x1FPATH\x1FBAR".to_string()),
-            ("FOO".to_string(), "old".to_string()),
-            ("PATH".to_string(), "/old/bin".to_string()),
-            ("BAR".to_string(), "old".to_string()),
+        let env = BTreeMap::from([
+            ("__CADE_SESSION".to_owned(), "s1".to_owned()),
+            ("__CADE_SET".to_owned(), "FOO\x1FPATH\x1FBAR".to_owned()),
+            ("FOO".to_owned(), "old".to_owned()),
+            ("PATH".to_owned(), "/old/bin".to_owned()),
+            ("BAR".to_owned(), "old".to_owned()),
         ]);
 
         assert_eq!(
@@ -165,7 +171,7 @@ mod tests {
 
     #[test]
     fn captured_env_strips_runner_path_suffix_and_nix_sentinel() {
-        let previous = HashMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]);
+        let previous = BTreeMap::from([("PATH".to_owned(), "/usr/bin:/bin".to_owned())]);
         let env = env_set_from_captured_env(
             b"PATH=/dev/bin:/path-not-set:/usr/bin:/bin\0FOO=bar\0",
             &previous,
@@ -178,10 +184,10 @@ mod tests {
 
     #[test]
     fn captured_env_keeps_unchanged_nix_wrapper_vars() {
-        let previous = HashMap::from([
-            ("NIX_CC".to_string(), "/nix/store/gcc-wrapper".to_string()),
-            ("PKG_CONFIG_PATH".to_string(), "/old/pkgconfig".to_string()),
-            ("AMBIENT".to_string(), "same".to_string()),
+        let previous = BTreeMap::from([
+            ("NIX_CC".to_owned(), "/nix/store/gcc-wrapper".to_owned()),
+            ("PKG_CONFIG_PATH".to_owned(), "/old/pkgconfig".to_owned()),
+            ("AMBIENT".to_owned(), "same".to_owned()),
         ]);
         let env = env_set_from_captured_env(
             b"NIX_CC=/nix/store/gcc-wrapper\0PKG_CONFIG_PATH=/old/pkgconfig\0AMBIENT=same\0",

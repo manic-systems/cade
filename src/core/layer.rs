@@ -1,13 +1,17 @@
 use crate::core::Cade;
+use crate::core::sessions::gc_roots::nix_profile_path;
+use crate::env::set::EnvSet;
+use crate::envrc::envrc_arg;
 use crate::envrc::load::{activate_envrc, load_envrc};
-use crate::loaders::{call, load_env};
+use crate::envrc::watch::envrc_watch_files;
+use crate::loaders::call::call;
+use crate::loaders::env_file::load_env;
 use crate::nix::develop::{load_flake, load_shell};
-use crate::types::layer::CachedLayer;
-use crate::{
-    env::EnvSet,
-    types::{CadeAction, CadeLayer, Keyword, LoadSpec, Loadable},
-};
-use anyhow::{Context, Result, anyhow};
+use crate::nix::target::{FlakeTarget, flake_watch_files, resolve_flake_target};
+use crate::types::keyword::{Keyword, Loadable};
+use crate::types::layer::{CachedLayer, CadeAction, CadeLayer};
+use crate::types::load_spec::LoadSpec;
+use anyhow::{Context as _, Result, anyhow};
 use std::path::{Path, PathBuf};
 
 impl CadeLayer {
@@ -21,17 +25,17 @@ impl CadeLayer {
     }
 
     pub fn push_action(&mut self, action: &CadeAction) -> Result<()> {
-        match action {
+        match *action {
             CadeAction::Purify => self.purify = true,
-            CadeAction::Environ(env) => self.merge_env(env.clone()),
-            CadeAction::EnvFile(file) => {
+            CadeAction::Environ(ref env) => self.merge_env(env.clone()),
+            CadeAction::EnvFile(ref file) => {
                 self.merge_env(load_env(file).context("loading env file")?);
             }
-            CadeAction::NixDevEnv(dev_env) => self.merge_env(dev_env.activate()?),
-            CadeAction::Envrc(actions) => self.merge_env(activate_envrc(actions)?),
-            CadeAction::Hook(hook) => self.hooks.push(hook.clone()),
-            CadeAction::Clear(vars) => self.clears.extend(vars.iter().cloned()),
-            CadeAction::Concat(vars) => self.concat.extend(vars.iter().cloned()),
+            CadeAction::NixDevEnv(ref dev_env) => self.merge_env(dev_env.activate()?),
+            CadeAction::Envrc(ref actions) => self.merge_env(activate_envrc(actions)?),
+            CadeAction::Hook(ref hook) => self.hooks.push(hook.clone()),
+            CadeAction::Clear(ref vars) => self.clears.extend(vars.iter().cloned()),
+            CadeAction::Concat(ref vars) => self.concat.extend(vars.iter().cloned()),
         }
         Ok(())
     }
@@ -47,47 +51,55 @@ impl CachedLayer {
     }
 }
 
-enum LoadRun {
-    Flake(crate::nix::FlakeTarget),
+pub(super) enum LoadRun {
+    Flake(FlakeTarget),
     Shell(PathBuf),
     Env(PathBuf),
     Envrc(PathBuf),
 }
 
 pub(super) struct ResolvedLoad {
-    run: LoadRun,
-    spec: LoadSpec,
-    pub(super) watch: Vec<PathBuf>,
+    pub run: LoadRun,
+    pub spec: LoadSpec,
+    pub watch: Vec<PathBuf>,
 }
 
 impl Loadable {
     fn file_arg(&self) -> Option<&str> {
-        match self {
-            Loadable::Shell(f) => Some(if f.is_empty() { "./shell.nix" } else { f }),
-            Loadable::Env(f) => Some(if f.is_empty() { ".env" } else { f }),
-            Loadable::Envrc(f) => Some(crate::envrc::envrc_arg(f)),
-            Loadable::Default | Loadable::Flake(_) => None,
+        match *self {
+            Self::Shell(ref shell_file) => Some(if shell_file.is_empty() {
+                "./shell.nix"
+            } else {
+                shell_file
+            }),
+            Self::Env(ref env_file) => Some(if env_file.is_empty() {
+                ".env"
+            } else {
+                env_file
+            }),
+            Self::Envrc(ref envrc_file) => Some(envrc_arg(envrc_file)),
+            Self::Default | Self::Flake(_) => None,
         }
     }
 
     pub(super) fn resolve(&self, layer_dir: &Path) -> ResolvedLoad {
         use crate::path_resolve::resolve_for_watch;
-        match self {
-            Loadable::Default | Loadable::Flake(_) => {
-                let arg = match self {
-                    Loadable::Flake(a) => Some(a.as_str()),
-                    _ => None,
+        match *self {
+            Self::Default | Self::Flake(_) => {
+                let arg = match *self {
+                    Self::Flake(ref flake_arg) => Some(flake_arg.as_str()),
+                    Self::Default | Self::Shell(_) | Self::Env(_) | Self::Envrc(_) => None,
                 };
 
-                let target = crate::nix::resolve_flake_target(layer_dir, arg);
-                let watch = crate::nix::flake_watch_files(&target.cwd);
+                let target = resolve_flake_target(layer_dir, arg);
+                let watch = flake_watch_files(&target.cwd);
                 ResolvedLoad {
                     spec: target.spec.clone(),
                     watch,
                     run: LoadRun::Flake(target),
                 }
             }
-            Loadable::Shell(_) => {
+            Self::Shell(_) => {
                 let file = resolve_for_watch(layer_dir, self.file_arg().unwrap());
                 ResolvedLoad {
                     spec: LoadSpec::Shell(file.clone()),
@@ -95,7 +107,7 @@ impl Loadable {
                     run: LoadRun::Shell(file),
                 }
             }
-            Loadable::Env(_) => {
+            Self::Env(_) => {
                 let file = resolve_for_watch(layer_dir, self.file_arg().unwrap());
                 ResolvedLoad {
                     spec: LoadSpec::Env(file.clone()),
@@ -103,9 +115,9 @@ impl Loadable {
                     run: LoadRun::Env(file),
                 }
             }
-            Loadable::Envrc(_) => {
+            Self::Envrc(_) => {
                 let path = resolve_for_watch(layer_dir, self.file_arg().unwrap());
-                let watch = crate::envrc::envrc_watch_files(&path);
+                let watch = envrc_watch_files(&path);
                 ResolvedLoad {
                     spec: LoadSpec::Envrc(path.clone()),
                     watch,
@@ -127,16 +139,16 @@ pub(super) fn load_single_layer(
     let mut layer = CadeLayer::default();
 
     for (action_index, keyword) in keywords.iter().enumerate() {
-        let action = match keyword {
+        let action = match *keyword {
             Keyword::Pure => CadeAction::Purify,
-            Keyword::Call(raw) => {
+            Keyword::Call(ref raw) => {
                 CadeAction::Environ(call(path, tokenize_args(raw)?).context("calling process")?)
             }
-            Keyword::Load(loadable) => {
+            Keyword::Load(ref loadable) => {
                 let resolved = loadable.resolve(path);
                 let spec_key = resolved.spec.cache_key();
                 let profile =
-                    cade.nix_profile_path(session, layer_count, action_index, path, &spec_key);
+                    nix_profile_path(cade, session, layer_count, action_index, path, &spec_key);
                 let (loaded_action, env) = match resolved.run {
                     LoadRun::Flake(target) => {
                         let (dev_env, env) =
@@ -155,7 +167,8 @@ pub(super) fn load_single_layer(
                         (CadeAction::EnvFile(file), env)
                     }
                     LoadRun::Envrc(file) => {
-                        let (envrc, env) = load_envrc(&file, profile).context("loading .envrc")?;
+                        let (envrc, env) =
+                            load_envrc(&file, profile.as_deref()).context("loading .envrc")?;
                         (CadeAction::Envrc(envrc), env)
                     }
                 };
@@ -163,10 +176,10 @@ pub(super) fn load_single_layer(
                 actions.push(loaded_action);
                 continue;
             }
-            Keyword::Hook(hook) => CadeAction::Hook(hook.clone()),
-            Keyword::Clear(vars) => CadeAction::Clear(vars.clone()),
-            Keyword::Concat(vars) => CadeAction::Concat(vars.clone()),
-            Keyword::Set(env) => CadeAction::Environ(env.clone()),
+            Keyword::Hook(ref hook) => CadeAction::Hook(hook.clone()),
+            Keyword::Clear(ref vars) => CadeAction::Clear(vars.clone()),
+            Keyword::Concat(ref vars) => CadeAction::Concat(vars.clone()),
+            Keyword::Set(ref env) => CadeAction::Environ(env.clone()),
             Keyword::Watch(_) | Keyword::Disinherit => continue,
         };
         layer.push_action(&action)?;
@@ -186,8 +199,8 @@ pub(super) fn tokenize_args(raw: &str) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{env::EnvSet, types::CadeAction};
+    use crate::env::set::EnvSet;
+    use crate::types::layer::{CadeAction, CadeLayer};
 
     const STORE_PATH: &str = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-layer";
 

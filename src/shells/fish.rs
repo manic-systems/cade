@@ -23,12 +23,12 @@ impl ShellOutput for Fish {
     }
 
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
-        r#"function __cade_hook --on-event fish_prompt
+        "function __cade_hook --on-event fish_prompt
     set -l __cade_status $status
     __CADE__ --owner-pid $fish_pid reload --shell fish | source
     return $__cade_status
 end
-"#
+"
         .replace("__CADE__", &fish_command(cade_exe, cade_args))
     }
 }

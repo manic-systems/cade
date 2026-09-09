@@ -1,10 +1,12 @@
+use std::env::split_paths;
+
 use super::{ShellOutput, is_valid_key};
 
 pub struct Json;
 
 pub(super) fn set_directive(key: &str, value: &str) -> String {
     let mut rec = serde_json::Map::new();
-    rec.insert(key.to_string(), env_value(key, value));
+    rec.insert(key.to_owned(), env_value(key, value));
     format!("{}\n", serde_json::json!({ "s": rec }))
 }
 
@@ -19,7 +21,7 @@ pub(super) fn hook_directive(command: &str) -> String {
 fn env_value(key: &str, value: &str) -> serde_json::Value {
     if key == "PATH" {
         return serde_json::Value::Array(
-            std::env::split_paths(value)
+            split_paths(value)
                 .map(|path| serde_json::Value::from(path.to_string_lossy().into_owned()))
                 .collect(),
         );

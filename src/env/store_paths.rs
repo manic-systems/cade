@@ -1,17 +1,17 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 const NIX_STORE_PREFIX: &str = "/nix/store/";
 const NIX_STORE_HASH_LEN: usize = 32;
 
-pub(super) fn from_env(vars: &HashMap<String, Vec<String>>) -> Vec<String> {
+pub(super) fn from_env(vars: &BTreeMap<String, Vec<String>>) -> Vec<String> {
     from_values(
         vars.values()
             .flat_map(|values| values.iter().map(String::as_str)),
     )
 }
 
-pub(super) fn from_values<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
-    let mut paths = HashSet::new();
+pub(super) fn from_values<'item>(values: impl Iterator<Item = &'item str>) -> Vec<String> {
+    let mut paths = BTreeSet::new();
     for value in values {
         collect_from_str(value, &mut paths);
     }
@@ -22,28 +22,29 @@ pub(super) fn merge_unique(
     current: Vec<String>,
     incoming: impl IntoIterator<Item = String>,
 ) -> Vec<String> {
-    let mut paths: HashSet<String> = current.into_iter().collect();
+    let mut paths: BTreeSet<String> = current.into_iter().collect();
     paths.extend(incoming);
     sorted(paths)
 }
 
-fn sorted(paths: HashSet<String>) -> Vec<String> {
-    let mut paths: Vec<String> = paths.into_iter().collect();
-    paths.sort_unstable();
-    paths
+fn sorted(path_set: BTreeSet<String>) -> Vec<String> {
+    path_set.into_iter().collect()
 }
 
-fn is_store_name_char(byte: u8) -> bool {
+const fn is_store_name_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
 }
 
-fn is_store_hash_char(byte: u8) -> bool {
+const fn is_store_hash_char(byte: u8) -> bool {
     matches!(byte, b'0'..=b'9' | b'a'..=b'd' | b'f'..=b'n' | b'p'..=b's' | b'v'..=b'z')
 }
 
-fn collect_from_str(text: &str, out: &mut HashSet<String>) {
+fn collect_from_str(text: &str, out: &mut BTreeSet<String>) {
     let mut offset = 0;
-    while let Some(relative_start) = text[offset..].find(NIX_STORE_PREFIX) {
+    while let Some(suffix) = text.get(offset..) {
+        let Some(relative_start) = suffix.find(NIX_STORE_PREFIX) else {
+            break;
+        };
         let start = offset + relative_start;
         let hash_start = start + NIX_STORE_PREFIX.len();
         let hash_end = hash_start + NIX_STORE_HASH_LEN;
@@ -62,8 +63,10 @@ fn collect_from_str(text: &str, out: &mut HashSet<String>) {
         while end < bytes.len() && is_store_name_char(bytes[end]) {
             end += 1;
         }
-        if end > hash_end + 1 {
-            out.insert(text[start..end].to_string());
+        if end > hash_end + 1
+            && let Some(matched) = text.get(start..end)
+        {
+            out.insert(matched.to_owned());
         }
         offset = end;
     }

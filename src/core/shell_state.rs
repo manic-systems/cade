@@ -1,5 +1,10 @@
-use super::{WatchState, is_valid_session};
-use crate::{shells::ShellOutput, types::InnerHook};
+use crate::core::sessions::identity::is_valid_session;
+use crate::core::watch::WatchState;
+use crate::core::watch::load_watch_ref;
+use crate::env::rollup::RollupResult;
+use crate::shells::ShellOutput;
+use crate::types::hook::InnerHook;
+use std::env::var;
 use std::path::PathBuf;
 
 const KEY_SEPARATOR: &str = "\x1F";
@@ -42,44 +47,38 @@ pub(super) struct ShellState {
 
 impl ShellState {
     pub(super) fn from_env() -> Self {
-        let layers = std::env::var(LAYERS_VAR).ok();
-        let set = std::env::var(SET_VAR).ok();
-        let watches_ref = std::env::var(WATCHES_VAR).ok();
+        let layers = var(LAYERS_VAR).ok();
+        let set = var(SET_VAR).ok();
+        let watches_ref = var(WATCHES_VAR).ok();
         Self {
             layers_present: layers.is_some(),
-            session: std::env::var(SESSION_VAR).ok(),
+            session: var(SESSION_VAR).ok(),
             layers: layers.as_deref().map(decode_path_list).unwrap_or_default(),
-            state_dir: std::env::var(STATE_DIR_VAR).ok().map(PathBuf::from),
-            config_path: std::env::var(CONFIG_PATH_VAR).ok().map(PathBuf::from),
+            state_dir: var(STATE_DIR_VAR).ok().map(PathBuf::from),
+            config_path: var(CONFIG_PATH_VAR).ok().map(PathBuf::from),
             set_keys: set.as_deref().map(decode_key_list).unwrap_or_default(),
             set_present: set.is_some(),
-            unset_keys: std::env::var(UNSET_VAR)
+            unset_keys: var(UNSET_VAR)
                 .ok()
                 .as_deref()
                 .map(decode_key_list)
                 .unwrap_or_default(),
-            pure: std::env::var(PURE_VAR).map(|v| v == "1").unwrap_or(false),
-            hooks: std::env::var(HOOKS_VAR)
+            pure: var(PURE_VAR).is_ok_and(|value| value == "1"),
+            hooks: var(HOOKS_VAR)
                 .ok()
-                .and_then(|h| serde_json::from_str(&h).ok())
+                .and_then(|hooks_json| serde_json::from_str(&hooks_json).ok())
                 .unwrap_or_default(),
-            watches: watches_ref
-                .as_deref()
-                .and_then(super::watch::load_watch_ref),
+            watches: watches_ref.as_deref().and_then(load_watch_ref),
             watches_ref,
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn active(
         session: String,
         layers: Vec<PathBuf>,
         state_dir: PathBuf,
         config_path: Option<PathBuf>,
-        set_keys: Vec<String>,
-        unset_keys: Vec<String>,
-        pure: bool,
-        hooks: Vec<InnerHook>,
+        rollup: &RollupResult,
         watches_ref: String,
     ) -> Self {
         Self {
@@ -89,20 +88,20 @@ impl ShellState {
             state_dir: Some(state_dir),
             config_path,
             set_present: true,
-            set_keys,
-            unset_keys,
-            pure,
-            hooks,
+            set_keys: rollup.set_keys().into_iter().map(str::to_owned).collect(),
+            unset_keys: rollup.unset().to_vec(),
+            pure: rollup.purified(),
+            hooks: rollup.hooks().to_vec(),
             watches: None,
             watches_ref: Some(watches_ref),
         }
     }
 
-    pub(super) fn is_empty(&self) -> bool {
+    pub(super) const fn is_empty(&self) -> bool {
         !self.layers_present && self.session.is_none() && !self.set_present
     }
 
-    pub(super) fn is_active(&self) -> bool {
+    pub(super) const fn is_active(&self) -> bool {
         self.layers_present
     }
 
@@ -122,7 +121,7 @@ impl ShellState {
         &self.unset_keys
     }
 
-    pub(super) fn pure(&self) -> bool {
+    pub(super) const fn pure(&self) -> bool {
         self.pure
     }
 
@@ -130,7 +129,7 @@ impl ShellState {
         &self.hooks
     }
 
-    pub(super) fn take_watch_state(&mut self) -> Option<WatchState> {
+    pub(super) const fn take_watch_state(&mut self) -> Option<WatchState> {
         self.watches.take()
     }
 
@@ -142,14 +141,14 @@ impl ShellState {
 
     pub(super) fn render_activation(&self, shell: &dyn ShellOutput, new_session: bool) -> String {
         let mut out = String::new();
-        if new_session && let Some(session) = &self.session {
+        if new_session && let Some(session) = self.session.as_ref() {
             out.push_str(&shell.set_env(SESSION_VAR, session));
         }
         out.push_str(&shell.set_env(LAYERS_VAR, &encode_paths(&self.layers)));
-        if let Some(state_dir) = &self.state_dir {
+        if let Some(state_dir) = self.state_dir.as_ref() {
             out.push_str(&shell.set_env(STATE_DIR_VAR, &state_dir.to_string_lossy()));
         }
-        if let Some(config_path) = &self.config_path {
+        if let Some(config_path) = self.config_path.as_ref() {
             out.push_str(&shell.set_env(CONFIG_PATH_VAR, &config_path.to_string_lossy()));
         }
         out.push_str(&shell.set_env(SET_VAR, &encode_key_list(&self.set_keys)));
@@ -159,16 +158,16 @@ impl ShellState {
             HOOKS_VAR,
             &serde_json::to_string(&self.hooks).unwrap_or_default(),
         ));
-        if let Some(watches_ref) = &self.watches_ref {
+        if let Some(watches_ref) = self.watches_ref.as_ref() {
             out.push_str(&shell.set_env(WATCHES_VAR, watches_ref));
         }
         out
     }
 
-    pub(super) fn render_clear(&self, shell: &dyn ShellOutput, finalise: bool) -> String {
+    pub(super) fn render_clear(shell: &dyn ShellOutput, finalise: bool) -> String {
         let mut out = String::new();
-        for var in ACTIVATION_VARS {
-            out.push_str(&shell.unset_env(var));
+        for var_name in ACTIVATION_VARS {
+            out.push_str(&shell.unset_env(var_name));
         }
         if finalise {
             out.push_str(&shell.unset_env(SESSION_VAR));
@@ -180,7 +179,7 @@ impl ShellState {
 pub fn decode_key_list(raw: &str) -> Vec<String> {
     raw.split(KEY_SEPARATOR)
         .filter(|item| !item.is_empty())
-        .map(str::to_string)
+        .map(str::to_owned)
         .collect()
 }
 
@@ -204,5 +203,5 @@ fn encode_paths(paths: &[PathBuf]) -> String {
 }
 
 pub(super) fn state_dir_from_env() -> Option<PathBuf> {
-    std::env::var(STATE_DIR_VAR).ok().map(PathBuf::from)
+    var(STATE_DIR_VAR).ok().map(PathBuf::from)
 }

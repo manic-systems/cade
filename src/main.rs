@@ -15,123 +15,146 @@ mod shells;
 mod types;
 mod verbosity;
 
-use anyhow::{Context, Result};
-use pound::Parse;
+use anyhow::{Context as _, Result};
+use pound::Parse as _;
+use shlex::split;
+use std::env::{current_dir, current_exe, var};
+use std::fs::canonicalize;
+use std::path::Path;
+use std::process::{Command, exit};
 
+use crate::cli::pound::{Cli, CliAction, CliExportFormat, LeaseAction};
+use crate::config::{load as load_config, set as set_config};
+use crate::core::activation::export_env_delta;
+use crate::core::enter::do_activation;
+use crate::core::permissions::{allow_here, set_permission};
+use crate::core::reload::do_reload;
+use crate::core::restore::do_restore;
+use crate::core::sessions::leases::{lease_close, lease_open, lease_refresh};
+use crate::core::status::do_status;
 use crate::core::{Announce, Cade};
+use crate::shells::ShellName;
+use crate::verbosity::set as set_verbosity;
+
+fn print_hook(shell: ShellName, config_path: Option<&Path>) -> Result<()> {
+    let output = shell.get_output();
+    let exe = current_exe()
+        .context("resolve cade executable for shell hook")?
+        .to_string_lossy()
+        .into_owned();
+    let hook_args = config_path
+        .map(|raw_path| -> Result<Vec<String>> {
+            let resolved = canonicalize(raw_path).context("resolve config path for shell hook")?;
+            Ok(vec![
+                "--config".to_owned(),
+                resolved.to_string_lossy().into_owned(),
+            ])
+        })
+        .transpose()?
+        .unwrap_or_default();
+    print!("{}", output.hook_init(&exe, &hook_args));
+    Ok(())
+}
 
 fn try_main() -> Result<()> {
-    let args = cli::pound::Cli::parse();
-    let config = crate::config::load(args.config.as_deref())?;
-    crate::config::set(config);
-    if let Some(verbosity) = args.verbosity {
-        crate::verbosity::set(verbosity.into());
+    let Cli {
+        config,
+        verbosity,
+        client_id,
+        owner_pid,
+        action,
+    } = Cli::parse();
+    set_config(load_config(config.as_deref())?);
+    if let Some(level) = verbosity {
+        set_verbosity(level.into());
     }
-    use cli::pound::CliAction::*;
-
-    if let Hook { shell } = &args.action {
-        let shell_name: crate::shells::ShellName = (*shell).into();
-        let output = shell_name.get_output();
-        let cade_exe = std::env::current_exe()
-            .context("resolve cade executable for shell hook")?
-            .to_string_lossy()
-            .into_owned();
-        let cade_args = args
-            .config
-            .as_ref()
-            .map(|path| -> Result<Vec<String>> {
-                let path =
-                    std::fs::canonicalize(path).context("resolve config path for shell hook")?;
-                Ok(vec![
-                    "--config".to_string(),
-                    path.to_string_lossy().into_owned(),
-                ])
-            })
-            .transpose()?
-            .unwrap_or_default();
-        print!("{}", output.hook_init(&cade_exe, &cade_args));
-        return Ok(());
-    }
-
-    let mut cade = Cade::init()?;
-    match args.action {
-        Enter { shell } => {
-            let shell_name: crate::shells::ShellName = shell.into();
-            let output = shell_name.get_output();
-            cade.do_activation(
+    match action {
+        CliAction::Hook { shell } => print_hook(shell.into(), config.as_deref())?,
+        CliAction::Enter { shell } => {
+            let cade = Cade::init()?;
+            let output = ShellName::from(shell).get_output();
+            do_activation(
+                &cade,
                 output.as_ref(),
                 Some(Announce::Loaded),
-                args.client_id.as_deref(),
-                args.owner_pid,
+                client_id.as_deref(),
+                owner_pid,
             )
             .context("activate cade environment")?;
         }
-        Exit { shell } => {
-            let shell_name: crate::shells::ShellName = shell.into();
-            let output = shell_name.get_output();
-            cade.do_restore(
+        CliAction::Exit { shell } => {
+            let cade = Cade::init()?;
+            let output = ShellName::from(shell).get_output();
+            do_restore(
+                &cade,
                 output.as_ref(),
                 true,
                 true,
-                args.client_id.as_deref(),
-                args.owner_pid,
-            )
-            .context("deactivate cade environment")?;
+                client_id.as_deref(),
+                owner_pid,
+            );
         }
-        Reload { shell } => {
-            let shell_name: crate::shells::ShellName = shell.into();
-            let output = shell_name.get_output();
-            cade.do_reload(output.as_ref(), args.client_id.as_deref(), args.owner_pid)
+        CliAction::Reload { shell } => {
+            let cade = Cade::init()?;
+            let output = ShellName::from(shell).get_output();
+            do_reload(&cade, output.as_ref(), client_id.as_deref(), owner_pid)
                 .context("reload cade environment")?;
         }
-        Export { format } => match format {
-            cli::pound::CliExportFormat::Json => {
-                let delta = cade
-                    .export_env_delta(args.client_id.as_deref(), args.owner_pid)
-                    .context("export cade environment")?;
-                print!("{}", delta.to_json());
-            }
-        },
-        Allow => cade.allow_here(true)?,
-        Disallow => cade.allow_here(false)?,
-        Edit => {
-            let editor = std::env::var("EDITOR").context("find EDITOR variable")?;
-            let parts = shlex::split(&editor).context("parse EDITOR variable")?;
-            let (program, args) = parts.split_first().context("EDITOR variable is empty")?;
-            let mut session = std::process::Command::new(program)
-                .args(args)
+        CliAction::Export {
+            format: CliExportFormat::Json,
+        } => {
+            let cade = Cade::init()?;
+            let delta = export_env_delta(&cade, client_id.as_deref(), owner_pid)
+                .context("export cade environment")?;
+            print!("{}", delta.to_json());
+        }
+        CliAction::Allow => {
+            allow_here(&Cade::init()?, true)?;
+        }
+        CliAction::Disallow => {
+            allow_here(&Cade::init()?, false)?;
+        }
+        CliAction::Edit => {
+            let cade = Cade::init()?;
+            let editor = var("EDITOR").context("find EDITOR variable")?;
+            let parts = split(&editor).context("parse EDITOR variable")?;
+            let (program, editor_args) = parts.split_first().context("EDITOR variable is empty")?;
+            let mut session = Command::new(program)
+                .args(editor_args)
                 .arg(".cade")
                 .spawn()
                 .context("spawn editor process")?;
             session.wait().context("wait for editor process")?;
-
-            let cwd = std::env::current_dir().context("determine cwd")?;
-            cade.set_permission(&cwd, true)?;
+            let cwd = current_dir().context("determine cwd")?;
+            set_permission(&cade, &cwd, true)?;
         }
-        Hook { .. } => unreachable!("handled before Cade::init()"),
-        Lease { action } => {
-            use cli::pound::LeaseAction::*;
-            match action {
-                Open {
+        CliAction::Lease { action: lease } => {
+            let cade = Cade::init()?;
+            match lease {
+                LeaseAction::Open {
                     kind,
                     project,
                     ttl_seconds,
-                } => cade.lease_open(&kind, project.as_deref(), ttl_seconds)?,
-                Refresh {
-                    client_id,
+                } => lease_open(&cade, &kind, project.as_deref(), ttl_seconds)?,
+                LeaseAction::Refresh {
+                    client_id: lease_client,
                     ttl_seconds,
-                } => cade.lease_refresh(&client_id, ttl_seconds)?,
-                Close { client_id } => cade.lease_close(&client_id)?,
+                } => lease_refresh(&cade, &lease_client, ttl_seconds)?,
+                LeaseAction::Close {
+                    client_id: lease_client,
+                } => lease_close(&cade, &lease_client)?,
             }
         }
-        Status => cade.do_status().context("report status")?,
-    };
+        CliAction::Status => {
+            do_status(&Cade::init()?).context("report status")?;
+        }
+    }
     Ok(())
 }
 
 fn main() {
-    if let Err(e) = try_main() {
-        eprintln!("failed to {e:#}");
-        std::process::exit(1);
+    if let Err(error) = try_main() {
+        eprintln!("failed to {error:#}");
+        exit(1);
     }
 }

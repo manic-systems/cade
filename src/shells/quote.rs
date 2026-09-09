@@ -1,23 +1,25 @@
-pub(super) fn posix_single_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
+use std::iter::once;
+
+pub(super) fn posix_single_quote(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
     out.push('\'');
-    for c in s.chars() {
-        if c == '\'' {
+    for ch in text.chars() {
+        if ch == '\'' {
             out.push_str("'\\''");
         } else {
-            out.push(c);
+            out.push(ch);
         }
     }
     out.push('\'');
     out
 }
 
-fn fish_single_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+fn fish_single_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
 pub(super) fn posix_command(cade_exe: &str, cade_args: &[String]) -> String {
-    std::iter::once(cade_exe)
+    once(cade_exe)
         .chain(cade_args.iter().map(String::as_str))
         .map(posix_single_quote)
         .collect::<Vec<_>>()
@@ -25,7 +27,7 @@ pub(super) fn posix_command(cade_exe: &str, cade_args: &[String]) -> String {
 }
 
 pub(super) fn fish_command(cade_exe: &str, cade_args: &[String]) -> String {
-    std::iter::once(cade_exe)
+    once(cade_exe)
         .chain(cade_args.iter().map(String::as_str))
         .map(fish_single_quote)
         .collect::<Vec<_>>()

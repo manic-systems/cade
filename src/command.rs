@@ -1,13 +1,15 @@
 use crate::{
     config,
-    nix::NixProgress,
+    nix::progress::NixProgress,
+    progress::{LiveRenderer, is_active, mark_long_running, set_command_progress},
     verbosity::{self, Verbosity},
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context as _, Result, bail};
 use std::{
-    io::{IsTerminal, Read, Write},
+    io::{IsTerminal as _, Read, Write as _, stderr as io_stderr},
     process::{Command, Output, Stdio},
-    sync::mpsc::RecvTimeoutError,
+    sync::mpsc::{RecvTimeoutError, Sender, channel},
+    thread::{JoinHandle, spawn},
     time::{Duration, Instant},
 };
 
@@ -16,8 +18,7 @@ const LONG_RUNNING_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 fn long_running_warning_after() -> Duration {
     config::long_running_warning_ms()
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_LONG_RUNNING_WARNING_AFTER)
+        .map_or(DEFAULT_LONG_RUNNING_WARNING_AFTER, Duration::from_millis)
 }
 
 #[derive(Clone, Copy)]
@@ -31,23 +32,23 @@ struct StreamEvent {
     data: Vec<u8>,
 }
 
-struct LongRunningProgress<'a> {
-    what: &'a str,
+struct LongRunningProgress<'task> {
+    what: &'task str,
     enabled: bool,
     interactive: bool,
     shown: bool,
-    renderer: crate::progress::LiveRenderer,
+    renderer: LiveRenderer,
     last_render: Option<Instant>,
 }
 
-impl<'a> LongRunningProgress<'a> {
-    fn new(what: &'a str) -> Self {
+impl<'task> LongRunningProgress<'task> {
+    fn new(what: &'task str) -> Self {
         Self {
             what,
             enabled: verbosity::enabled(Verbosity::Normal),
-            interactive: std::io::stderr().is_terminal(),
+            interactive: io_stderr().is_terminal(),
             shown: false,
-            renderer: crate::progress::LiveRenderer::default(),
+            renderer: LiveRenderer::default(),
             last_render: None,
         }
     }
@@ -67,7 +68,7 @@ impl<'a> LongRunningProgress<'a> {
         }
     }
 
-    fn wants_live(&self) -> bool {
+    const fn wants_live(&self) -> bool {
         self.shown && self.enabled && self.interactive
     }
 
@@ -97,14 +98,14 @@ impl<'a> LongRunningProgress<'a> {
 
     fn render(&mut self, recent: &[String], bar: Option<&str>) {
         let block = self.block(recent, bar);
-        let mut err = std::io::stderr().lock();
+        let mut err = io_stderr().lock();
         self.renderer.render(&mut err, &block);
         let _ = err.flush();
         self.last_render = Some(Instant::now());
     }
 
     fn clear(&mut self) {
-        let mut err = std::io::stderr().lock();
+        let mut err = io_stderr().lock();
         self.renderer.clear(&mut err);
         let _ = err.flush();
     }
@@ -115,38 +116,37 @@ impl<'a> LongRunningProgress<'a> {
             self.what
         )];
         if !recent.is_empty() {
-            lines.push("cade: recent output:".to_string());
+            lines.push("cade: recent output:".to_owned());
             lines.extend(recent.iter().map(|line| format!("    {line}")));
         }
-        if let Some(bar) = bar {
-            lines.push(bar.to_string());
+        if let Some(bar_text) = bar {
+            lines.push(bar_text.to_owned());
         }
         lines
     }
 }
 
-fn spawn_reader<R: Read + Send + 'static>(
-    mut reader: R,
+fn spawn_reader<Reader: Read + Send + 'static>(
+    mut reader: Reader,
     kind: StreamKind,
-    tx: std::sync::mpsc::Sender<StreamEvent>,
-) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
+    tx: Sender<StreamEvent>,
+) -> JoinHandle<()> {
+    spawn(move || {
         let mut buf = [0; 8192];
         loop {
             match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
+                Ok(0) | Err(_) => break,
+                Ok(count) => {
                     if tx
                         .send(StreamEvent {
                             kind,
-                            data: buf[..n].to_vec(),
+                            data: buf[..count].to_vec(),
                         })
                         .is_err()
                     {
                         break;
                     }
                 }
-                Err(_) => break,
             }
         }
     })
@@ -167,9 +167,9 @@ fn handle_stream_event(
             let recent = nix.recent_lines();
             let bar = nix.bar_line();
             match progress {
-                Some(progress) if progress.wants_live() => progress.update(&recent, bar.as_deref()),
+                Some(tracker) if tracker.wants_live() => tracker.update(&recent, bar.as_deref()),
                 Some(_) => {}
-                None => crate::progress::set_command_progress(recent, bar),
+                None => set_command_progress(recent, bar),
             }
         }
     }
@@ -178,7 +178,7 @@ fn handle_stream_event(
 pub fn run_checked_output(mut cmd: Command, what: &str) -> Result<Output> {
     verbosity::log(Verbosity::Trace, format_args!("cade: running {what}."));
 
-    let (tx, rx) = std::sync::mpsc::channel();
+    let (tx, rx) = channel();
     let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -196,7 +196,7 @@ pub fn run_checked_output(mut cmd: Command, what: &str) -> Result<Output> {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut nix = NixProgress::new();
-    let mut progress = (!crate::progress::is_active()).then(|| LongRunningProgress::new(what));
+    let mut progress = (!is_active()).then(|| LongRunningProgress::new(what));
     let mut warned = false;
     let start = Instant::now();
     let warn_after = long_running_warning_after();
@@ -207,10 +207,10 @@ pub fn run_checked_output(mut cmd: Command, what: &str) -> Result<Output> {
 
         if !warned && start.elapsed() >= warn_after {
             warned = true;
-            match &mut progress {
-                Some(progress) => progress.show(&nix.recent_lines(), nix.bar_line().as_deref()),
+            match progress.as_mut() {
+                Some(tracker) => tracker.show(&nix.recent_lines(), nix.bar_line().as_deref()),
                 None => {
-                    crate::progress::mark_long_running(format!(
+                    mark_long_running(format!(
                         "cade: {what} is taking a long time; press Ctrl-C to stop and inspect the command."
                     ));
                 }
@@ -227,11 +227,12 @@ pub fn run_checked_output(mut cmd: Command, what: &str) -> Result<Output> {
 
         match rx.recv_timeout(wait_for) {
             Ok(event) => {
-                handle_stream_event(event, &mut stdout, &mut stderr, &mut nix, progress.as_mut())
+                handle_stream_event(event, &mut stdout, &mut stderr, &mut nix, progress.as_mut());
             }
             Err(RecvTimeoutError::Timeout) => {
-                if let Some(progress) = progress.as_mut().filter(|progress| progress.wants_live()) {
-                    progress.update(&nix.recent_lines(), nix.bar_line().as_deref());
+                if let Some(tracker) = progress.as_mut().filter(|candidate| candidate.wants_live())
+                {
+                    tracker.update(&nix.recent_lines(), nix.bar_line().as_deref());
                 }
             }
             Err(RecvTimeoutError::Disconnected) => {
@@ -247,8 +248,8 @@ pub fn run_checked_output(mut cmd: Command, what: &str) -> Result<Output> {
         handle_stream_event(event, &mut stdout, &mut stderr, &mut nix, progress.as_mut());
     }
     nix.finish();
-    if let Some(mut progress) = progress {
-        progress.finish(&nix.recent_lines());
+    if let Some(mut tracker) = progress {
+        tracker.finish(&nix.recent_lines());
     }
 
     let out = Output {
@@ -264,14 +265,14 @@ pub fn run_checked_output(mut cmd: Command, what: &str) -> Result<Output> {
         } else {
             String::from_utf8_lossy(&out.stderr).into_owned()
         };
-        let summary = summary.trim();
+        let trimmed = summary.trim();
         bail!(
             "{what} failed ({}){}",
             out.status,
-            if summary.is_empty() {
+            if trimmed.is_empty() {
                 String::new()
             } else {
-                format!(":\n{summary}")
+                format!(":\n{trimmed}")
             }
         );
     }

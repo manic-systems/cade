@@ -22,12 +22,12 @@ impl ShellOutput for Elvish {
     }
 
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
-        r#"set edit:before-readline = [
+        "set edit:before-readline = [
     {||
         eval (__CADE_CMD__ reload --shell elvish | slurp)
     }
 ]
-"#
+"
         .replace("__CADE_CMD__", &posix_command(cade_exe, cade_args))
     }
 }

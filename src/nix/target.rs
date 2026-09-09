@@ -1,4 +1,5 @@
-use crate::types::LoadSpec;
+use crate::path_resolve::resolve_for_watch;
+use crate::types::load_spec::LoadSpec;
 use std::path::{Path, PathBuf};
 
 const FLAKE_WATCH_EXCLUDED_DIRS: &[&str] = &[
@@ -65,18 +66,18 @@ pub struct FlakeTarget {
 
 impl FlakeTarget {
     pub fn bare_output(dir: &Path, output: Option<&str>) -> Self {
-        match output.filter(|o| !o.is_empty()) {
-            Some(o) => FlakeTarget {
-                cwd: dir.to_path_buf(),
-                installable: format!(".#{o}"),
-                spec: LoadSpec::FlakeOutput(o.to_string()),
-            },
-            None => FlakeTarget {
+        output.filter(|text| !text.is_empty()).map_or_else(
+            || Self {
                 cwd: dir.to_path_buf(),
                 installable: String::new(),
                 spec: LoadSpec::FlakeDefault,
             },
-        }
+            |output_name| Self {
+                cwd: dir.to_path_buf(),
+                installable: format!(".#{output_name}"),
+                spec: LoadSpec::FlakeOutput(output_name.to_owned()),
+            },
+        )
     }
 }
 
@@ -89,22 +90,22 @@ fn looks_like_path(arg: &str) -> bool {
 }
 
 pub fn resolve_flake_target(layer_dir: &Path, arg: Option<&str>) -> FlakeTarget {
-    let Some(arg) = arg.filter(|a| !a.is_empty()) else {
+    let Some(target_arg) = arg.filter(|text| !text.is_empty()) else {
         return FlakeTarget::bare_output(layer_dir, None);
     };
 
-    if !looks_like_path(arg) {
-        return FlakeTarget::bare_output(layer_dir, Some(arg));
+    if !looks_like_path(target_arg) {
+        return FlakeTarget::bare_output(layer_dir, Some(target_arg));
     }
 
-    let (path_part, output) = match arg.split_once('#') {
-        Some((p, o)) => (p, Some(o)),
-        None => (arg, None),
+    let (path_part, output) = match target_arg.split_once('#') {
+        Some((path_text, output_text)) => (path_text, Some(output_text)),
+        None => (target_arg, None),
     };
-    let path_part = if path_part.is_empty() { "." } else { path_part };
-    let dir = crate::path_resolve::resolve_for_watch(layer_dir, path_part);
+    let resolved_part = if path_part.is_empty() { "." } else { path_part };
+    let dir = resolve_for_watch(layer_dir, resolved_part);
     let installable = match output {
-        Some(o) if !o.is_empty() => format!("{}#{o}", dir.display()),
+        Some(fragment) if !fragment.is_empty() => format!("{}#{fragment}", dir.display()),
         _ => dir.display().to_string(),
     };
     FlakeTarget {
@@ -138,9 +139,7 @@ fn collect_flake_watch_files(root: &Path, out: &mut Vec<PathBuf>) {
         let Some(file_type) = entry.file_type() else {
             continue;
         };
-        if (file_type.is_file() || file_type.is_symlink())
-            && entry.file_name().to_str().is_some_and(is_flake_input_file)
-        {
+        if !file_type.is_dir() && entry.file_name().to_str().is_some_and(is_flake_input_file) {
             out.push(entry.into_path());
         }
     }
@@ -157,6 +156,10 @@ fn is_excluded_dir(entry: &ignore::DirEntry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env::temp_dir;
+    use std::fs::{canonicalize, create_dir_all, remove_dir_all, write};
+    use std::process::id;
+    use std::thread::current;
 
     #[test]
     fn bare_output_stays_current_dir_installable() {
@@ -178,24 +181,27 @@ mod tests {
 
     #[test]
     fn directed_flake_path_resolves_and_runs_in_target_dir() {
-        let base = std::env::temp_dir().join(format!(
+        let base = temp_dir().join(format!(
             "cade-flake-target-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            id(),
+            current().name().unwrap_or("test")
         ));
         let sub = base.join("svc");
-        std::fs::create_dir_all(&sub).unwrap();
-        let canon_sub = std::fs::canonicalize(&sub).unwrap();
+        create_dir_all(&sub).unwrap();
+        let canon_sub = canonicalize(&sub).unwrap();
 
-        let target = resolve_flake_target(&base, Some("./svc#dev"));
-        assert_eq!(target.cwd, canon_sub);
-        assert_eq!(target.installable, format!("{}#dev", canon_sub.display()));
+        let dev_target = resolve_flake_target(&base, Some("./svc#dev"));
+        assert_eq!(dev_target.cwd, canon_sub);
+        assert_eq!(
+            dev_target.installable,
+            format!("{}#dev", canon_sub.display())
+        );
 
-        let target = resolve_flake_target(&base, Some("./svc"));
-        assert_eq!(target.cwd, canon_sub);
-        assert_eq!(target.installable, canon_sub.display().to_string());
+        let path_target = resolve_flake_target(&base, Some("./svc"));
+        assert_eq!(path_target.cwd, canon_sub);
+        assert_eq!(path_target.installable, canon_sub.display().to_string());
 
-        std::fs::remove_dir_all(&base).ok();
+        let _ = remove_dir_all(&base);
     }
 
     #[test]
@@ -209,29 +215,29 @@ mod tests {
 
     #[test]
     fn flake_watch_includes_local_imports_and_excludes_build_outputs() {
-        let root = std::env::temp_dir().join(format!(
+        let root = temp_dir().join(format!(
             "cade-flake-watch-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            id(),
+            current().name().unwrap_or("test")
         ));
-        std::fs::create_dir_all(root.join(".tack")).unwrap();
-        std::fs::create_dir_all(root.join(".jj")).unwrap();
-        std::fs::create_dir_all(root.join("nix")).unwrap();
-        std::fs::create_dir_all(root.join("target")).unwrap();
-        std::fs::write(root.join("flake.nix"), "").unwrap();
-        std::fs::write(root.join(".jj").join("repo"), "").unwrap();
-        std::fs::write(root.join(".tack").join("default.nix"), "").unwrap();
-        std::fs::write(root.join("nix").join("package.nix"), "").unwrap();
-        std::fs::write(root.join("result"), "").unwrap();
-        std::fs::write(root.join("result-dev"), "").unwrap();
-        std::fs::write(root.join("target").join("generated.nix"), "").unwrap();
+        create_dir_all(root.join(".tack")).unwrap();
+        create_dir_all(root.join(".jj")).unwrap();
+        create_dir_all(root.join("nix")).unwrap();
+        create_dir_all(root.join("target")).unwrap();
+        write(root.join("flake.nix"), "").unwrap();
+        write(root.join(".jj").join("repo"), "").unwrap();
+        write(root.join(".tack").join("default.nix"), "").unwrap();
+        write(root.join("nix").join("package.nix"), "").unwrap();
+        write(root.join("result"), "").unwrap();
+        write(root.join("result-dev"), "").unwrap();
+        write(root.join("target").join("generated.nix"), "").unwrap();
         // dependency manifests nix may read still need watching
-        std::fs::write(root.join("Cargo.lock"), "").unwrap();
-        std::fs::write(root.join("gomod2nix.toml"), "").unwrap();
-        std::fs::write(root.join("nix").join("requirements.txt"), "").unwrap();
+        write(root.join("Cargo.lock"), "").unwrap();
+        write(root.join("gomod2nix.toml"), "").unwrap();
+        write(root.join("nix").join("requirements.txt"), "").unwrap();
         // plain source is irrelevant to the dev env and must not be watched
-        std::fs::write(root.join("main.cpp"), "").unwrap();
-        std::fs::write(root.join("nix").join("notes.md"), "").unwrap();
+        write(root.join("main.cpp"), "").unwrap();
+        write(root.join("nix").join("notes.md"), "").unwrap();
 
         let watch = flake_watch_files(&root);
 
@@ -249,40 +255,40 @@ mod tests {
         assert!(!watch.contains(&root.join("main.cpp")));
         assert!(!watch.contains(&root.join("nix").join("notes.md")));
 
-        std::fs::remove_dir_all(&root).ok();
+        let _ = remove_dir_all(&root);
     }
 
     #[test]
     fn flake_watch_skips_vcs_ignored_trees() {
-        let root = std::env::temp_dir().join(format!(
+        let root = temp_dir().join(format!(
             "cade-flake-watch-ignored-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            id(),
+            current().name().unwrap_or("test")
         ));
-        std::fs::create_dir_all(root.join("out").join("deep")).unwrap();
-        std::fs::create_dir_all(root.join("nix")).unwrap();
-        std::fs::write(root.join(".gitignore"), "out/\n").unwrap();
-        std::fs::write(root.join("flake.nix"), "").unwrap();
-        std::fs::write(root.join("nix").join("package.nix"), "").unwrap();
-        std::fs::write(root.join("out").join("deep").join("generated.nix"), "").unwrap();
+        create_dir_all(root.join("out").join("deep")).unwrap();
+        create_dir_all(root.join("nix")).unwrap();
+        write(root.join(".gitignore"), "out/\n").unwrap();
+        write(root.join("flake.nix"), "").unwrap();
+        write(root.join("nix").join("package.nix"), "").unwrap();
+        write(root.join("out").join("deep").join("generated.nix"), "").unwrap();
 
         let watch = flake_watch_files(&root);
 
         assert!(watch.contains(&root.join("nix").join("package.nix")));
         assert!(!watch.contains(&root.join("out").join("deep").join("generated.nix")));
 
-        std::fs::remove_dir_all(&root).ok();
+        let _ = remove_dir_all(&root);
     }
 
     #[test]
     fn flake_watch_tracks_missing_flake_files_without_watching_root_dir() {
-        let root = std::env::temp_dir().join(format!(
+        let root = temp_dir().join(format!(
             "cade-flake-watch-missing-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            id(),
+            current().name().unwrap_or("test")
         ));
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join(".envrc"), "use flake\n").unwrap();
+        create_dir_all(&root).unwrap();
+        write(root.join(".envrc"), "use flake\n").unwrap();
 
         let watch = flake_watch_files(&root);
 
@@ -290,6 +296,6 @@ mod tests {
         assert!(watch.contains(&root.join("flake.lock")));
         assert!(!watch.contains(&root));
 
-        std::fs::remove_dir_all(&root).ok();
+        let _ = remove_dir_all(&root);
     }
 }

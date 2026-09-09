@@ -25,8 +25,8 @@ impl ShellOutput for Nushell {
     }
 
     fn hook_init(&self, cade_exe: &str, cade_args: &[String]) -> String {
-        let cade = serde_json::to_string(cade_exe).unwrap_or_else(|_| "\"cade\"".to_string());
-        let cade_args = serde_json::to_string(cade_args).unwrap_or_else(|_| "[]".to_string());
+        let cade = serde_json::to_string(cade_exe).unwrap_or_else(|_| "\"cade\"".to_owned());
+        let encoded_args = serde_json::to_string(cade_args).unwrap_or_else(|_| "[]".to_owned());
         r#"let cade = __CADE__
 let cade_args = __CADE_ARGS__
 let nu_exe = (try { which nu | get path.0 } catch { "nu" })
@@ -52,6 +52,6 @@ $env.config.hooks.pre_prompt = (
 )
 "#
         .replace("__CADE__", &cade)
-        .replace("__CADE_ARGS__", &cade_args)
+        .replace("__CADE_ARGS__", &encoded_args)
     }
 }
