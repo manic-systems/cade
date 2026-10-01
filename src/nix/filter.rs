@@ -16,6 +16,7 @@ const KEPT_NIX_ENV_PREFIXES: &[&str] = &[
 ];
 const IGNORED_ENV_KEYS: &[&str] = &[
     "SHELL",
+    "LD_PRELOAD",
     "pkg",
     "prefix",
     "guess",
