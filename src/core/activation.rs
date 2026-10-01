@@ -41,7 +41,10 @@ use crate::{
             read_snapshot,
             write_snapshot,
         },
-        watch::layer_watch,
+        watch::{
+            WatchState,
+            layer_watch,
+        },
     },
     direnv_export,
     env::{
@@ -155,6 +158,28 @@ fn maybe_activation_plan_for_root(
         nix_store_paths,
         rollup,
     }))
+}
+
+pub(super) fn chain_watch_state(cade: &Cade) -> Result<Option<WatchState>> {
+    let Some(root) = find_cade_root(&cade.cwd) else {
+        return Ok(None);
+    };
+    let cade_files = approved_chain(cade, &root)?;
+    let Some(effective_root) = cade_files.last().map(|entry| entry.0.clone()) else {
+        return Ok(None);
+    };
+
+    let mut watch_files = Vec::new();
+    for layer_entry in &cade_files {
+        watch_files.extend(layer_watch(cade, &layer_entry.0, &layer_entry.1)?.0);
+    }
+
+    let layer_paths = cade_files.into_iter().map(|entry| entry.0).collect();
+    Ok(Some(WatchState::capture(
+        &effective_root,
+        layer_paths,
+        &watch_files,
+    )))
 }
 
 fn reusable_cached_layer(

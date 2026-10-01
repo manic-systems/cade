@@ -27,6 +27,7 @@ pub(super) const UNSET_VAR: &str = "__CADE_UNSET";
 pub(super) const PURE_VAR: &str = "__CADE_PURE";
 pub(super) const HOOKS_VAR: &str = "__CADE_HOOKS";
 pub(super) const WATCHES_VAR: &str = "__CADE_WATCHES";
+pub(super) const FAILED_WATCHES_VAR: &str = "__CADE_FAILED_WATCHES";
 
 const ACTIVATION_VARS: &[&str] = &[
     LAYERS_VAR,

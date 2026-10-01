@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    env::var,
     path::Path,
 };
 
@@ -9,6 +10,7 @@ use crate::{
     core::{
         Announce,
         Cade,
+        activation::chain_watch_state,
         announce_loaded,
         announce_unloaded,
         clear_disallowed_root_marker,
@@ -16,14 +18,21 @@ use crate::{
         mark_disallowed_root,
         permissions::resolve_active,
         restore::do_restore,
-        sessions::gc_roots::refresh_session_holders,
+        sessions::{
+            gc_roots::refresh_session_holders,
+            is_valid_session,
+            new_session_id,
+        },
         shell_state::{
+            FAILED_WATCHES_VAR,
+            SESSION_VAR,
             ShellState,
             WATCHES_VAR,
         },
         watch::{
             WatchChange,
             WatchState,
+            load_watch_ref,
             persist_watch_state,
         },
     },
@@ -44,9 +53,20 @@ pub fn do_reload(
         .collect();
     let mut shell_state = ShellState::from_env();
 
+    if let Ok(failed_ref) = var(FAILED_WATCHES_VAR) {
+        let unchanged = load_watch_ref(&failed_ref).is_some_and(|mut failed| {
+            failed.cade_path_set() == new_set && failed.refresh() != WatchChange::Content
+        });
+        if unchanged {
+            sync_disallowed_prompt(disallowed_tip.as_deref(), shell);
+            return Ok(());
+        }
+        print!("{}", shell.unset_env(FAILED_WATCHES_VAR));
+    }
+
     if !shell_state.is_active() {
         if new_root.is_some() {
-            do_activation(cade, shell, Some(Announce::Loaded), client_id, owner_pid)?;
+            activate_or_mark_failed(cade, shell, Some(Announce::Loaded), client_id, owner_pid)?;
         }
         sync_disallowed_prompt(disallowed_tip.as_deref(), shell);
         return Ok(());
@@ -106,11 +126,35 @@ pub fn do_reload(
                     announce_loaded(dir);
                 }
             }
-            do_activation(cade, shell, verb, client_id, owner_pid)?;
+            activate_or_mark_failed(cade, shell, verb, client_id, owner_pid)?;
         },
     }
     sync_disallowed_prompt(disallowed_tip.as_deref(), shell);
     Ok(())
+}
+
+fn activate_or_mark_failed(
+    cade: &Cade,
+    shell: &dyn ShellOutput,
+    announce: Option<Announce>,
+    client_id: Option<&str>,
+    owner_pid: Option<u32>,
+) -> Result<()> {
+    let error = match do_activation(cade, shell, announce, client_id, owner_pid) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+
+    let session = var(SESSION_VAR)
+        .ok()
+        .filter(|session| is_valid_session(session))
+        .unwrap_or_else(new_session_id);
+    if let Ok(Some(watches)) = chain_watch_state(cade)
+        && let Ok(watches_ref) = persist_watch_state(cade, &session, &watches)
+    {
+        print!("{}", shell.set_env(FAILED_WATCHES_VAR, &watches_ref));
+    }
+    Err(error)
 }
 
 fn sync_disallowed_prompt(disallowed_tip: Option<&Path>, shell: &dyn ShellOutput) {
