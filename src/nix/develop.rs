@@ -84,8 +84,9 @@ impl NixDevEnv {
 }
 
 fn capture_dev_env(mut proc: Command, cwd: &Path) -> Result<EnvSet> {
-    let mut previous_env: BTreeMap<_, _> = vars().collect();
-    proc.args(["--log-format", "internal-json", "--command"])
+    let mut previous_env = vars().collect::<BTreeMap<String, String>>();
+    proc.args(["--unset-env-var", "LD_PRELOAD"])
+        .args(["--log-format", "internal-json", "--command"])
         .arg(find_on_path("sh"))
         .args(["-c", capture::env_capture_script(), "cade-env"])
         .arg(find_on_path("env"))
