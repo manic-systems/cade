@@ -85,7 +85,11 @@ impl NixDevEnv {
 
 fn capture_dev_env(mut proc: Command, cwd: &Path) -> Result<EnvSet> {
     let mut previous_env = vars().collect::<BTreeMap<String, String>>();
-    proc.args(["--unset-env-var", "LD_PRELOAD"])
+    // NOTE: We need to use `-u` over `--unset-env-var` here since mainline
+    // Nix and Lix use different flags. Both accept the short form `-u`,
+    // but while Nix's long-form for unsetting env vars is `--unset-env-var`,
+    // Lix's is `--unset`.
+    proc.args(["-u", "LD_PRELOAD"])
         .args(["--log-format", "internal-json", "--command"])
         .arg(find_on_path("sh"))
         .args(["-c", capture::env_capture_script(), "cade-env"])
