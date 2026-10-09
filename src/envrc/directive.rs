@@ -1,4 +1,7 @@
-use crate::shells::is_valid_key;
+use crate::shells::{
+    is_valid_key,
+    quote::split_words,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Directive {
@@ -24,7 +27,7 @@ fn parse_line(raw: &str) -> Option<Directive> {
     if line.is_empty() || line.starts_with('#') {
         return None;
     }
-    let Some(tokens) = shlex::split(line) else {
+    let Some(tokens) = split_words(line) else {
         return Some(Directive::Unhandled(line.to_owned()));
     };
     let (cmd, rest) = tokens.split_first()?;

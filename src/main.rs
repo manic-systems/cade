@@ -35,7 +35,6 @@ use misstep::{
     ResultExt as _,
 };
 use pound::Parse as _;
-use shlex::split;
 
 use crate::{
     cli::pound::{
@@ -66,7 +65,10 @@ use crate::{
         },
         status::do_status,
     },
-    shells::ShellName,
+    shells::{
+        ShellName,
+        quote::split_words,
+    },
     verbosity::set as set_verbosity,
 };
 
@@ -151,7 +153,7 @@ fn try_main() -> Result<()> {
         CliAction::Edit => {
             let cade = Cade::init()?;
             let editor = var("EDITOR").context("find EDITOR variable")?;
-            let parts = split(&editor).context("parse EDITOR variable")?;
+            let parts = split_words(&editor).context("parse EDITOR variable")?;
             let (program, editor_args) = parts.split_first().context("EDITOR variable is empty")?;
             let mut session = Command::new(program)
                 .args(editor_args)
