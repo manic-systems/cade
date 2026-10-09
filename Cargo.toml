@@ -21,7 +21,7 @@ cognos     = "1.0.1"
 ignore     = "0.4.33"
 libc       = "0.2.189"
 microxdg   = "0.2.0"
-pound      = "0.1.6"
+pound      = "0.2.0"
 serde      = { features = [ "derive" ], version = "1.0.229" }
 serde_json = "1.0.151"
 shlex      = "2.0.1"
