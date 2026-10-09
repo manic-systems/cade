@@ -67,9 +67,12 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::types::hook::{
-        HookType,
-        InnerHook,
+    use crate::{
+        shells::quote::split_words,
+        types::hook::{
+            HookType,
+            InnerHook,
+        },
     };
 
     fn lookup_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
@@ -96,7 +99,7 @@ mod tests {
         expand_keyword_with(&mut call, &lookup);
         assert!(matches!(call, Keyword::Call(_)));
         if let Keyword::Call(command) = call {
-            assert_eq!(shlex::split(&command).unwrap(), vec!["tool", "--t=secret"]);
+            assert_eq!(split_words(&command).unwrap(), vec!["tool", "--t=secret"]);
         }
 
         let mut load = Keyword::Load(Loadable::Env("${DIR}/.env".into()));

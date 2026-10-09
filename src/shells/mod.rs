@@ -4,7 +4,7 @@ mod json;
 mod murex;
 mod nushell;
 mod posix;
-mod quote;
+pub mod quote;
 
 use std::{
     fmt,

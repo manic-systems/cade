@@ -24,7 +24,6 @@ misstep    = "0.3.0"
 pound      = "0.2.0"
 serde      = { features = [ "derive" ], version = "1.0.229" }
 serde_json = "1.0.151"
-shlex      = "2.0.1"
 whoami     = { default-features = false, features = [ "std" ], version = "2.1.3" }
 
 [dependencies.rusqlite]

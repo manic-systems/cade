@@ -39,6 +39,7 @@ use crate::{
             resolve_flake_target,
         },
     },
+    shells::quote::split_words,
     types::{
         keyword::{
             Keyword,
@@ -237,7 +238,7 @@ pub(super) fn load_single_layer(
 }
 
 pub(super) fn tokenize_args(raw: &str) -> Result<Vec<String>> {
-    shlex::split(raw).ok_or_else(|| report!("unbalanced quotes in `{raw}`"))
+    split_words(raw).ok_or_else(|| report!("unbalanced quotes in `{raw}`"))
 }
 
 #[cfg(test)]

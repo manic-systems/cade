@@ -1,16 +1,11 @@
-use std::borrow::Cow;
-
 use super::{
     Lookup,
     eval::expand_with,
 };
+use crate::shells::quote::posix_single_quote;
 
 pub(super) fn expand_shell_args(input: &str, lookup: Lookup<'_>) -> String {
-    expand_with(input, lookup, &|value| {
-        shlex::try_quote(&value)
-            .map(Cow::into_owned)
-            .unwrap_or(value)
-    })
+    expand_with(input, lookup, &|value| posix_single_quote(&value))
 }
 
 #[cfg(test)]
@@ -18,6 +13,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::shells::quote::split_words;
 
     fn lookup_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let map: HashMap<String, String> = pairs
@@ -29,7 +25,7 @@ mod tests {
 
     fn args(input: &str, pairs: &[(&str, &str)]) -> Vec<String> {
         let expanded = expand_shell_args(input, &lookup_from(pairs));
-        shlex::split(&expanded).expect("balanced quotes")
+        split_words(&expanded).expect("balanced quotes")
     }
 
     #[test]
