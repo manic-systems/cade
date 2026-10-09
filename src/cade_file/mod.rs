@@ -7,10 +7,10 @@ use std::{
     str::from_utf8,
 };
 
-use anyhow::{
-    Context as _,
+use misstep::{
     Result,
-    anyhow,
+    ResultExt as _,
+    report,
 };
 
 use crate::{
@@ -29,7 +29,7 @@ pub fn read(path: &Path) -> Result<Vec<Keyword>> {
     for (line_idx, raw_line) in contents.split(|&byte| byte == b'\n').enumerate() {
         let no_cr = raw_line.strip_suffix(b"\r").unwrap_or(raw_line);
         let line = from_utf8(no_cr).map_err(|utf8_err| {
-            anyhow!(
+            report!(
                 "parse cade file at {}: line {} is not valid UTF-8: {utf8_err}",
                 path.display(),
                 line_idx + 1
@@ -39,7 +39,7 @@ pub fn read(path: &Path) -> Result<Vec<Keyword>> {
             Ok(kw) => accum.push(kw),
             Err(parse::ParseError::EmptyLine) => {},
             Err(parse_err) => {
-                return Err(anyhow!(
+                return Err(report!(
                     "parse cade file at {}: line {}: {parse_err}",
                     path.display(),
                     line_idx + 1

@@ -3,10 +3,11 @@ use std::path::{
     PathBuf,
 };
 
-use anyhow::{
-    Context as _,
+use misstep::{
+    OptionExt as _,
     Result,
-    anyhow,
+    ResultExt as _,
+    report,
 };
 
 use crate::{
@@ -236,7 +237,7 @@ pub(super) fn load_single_layer(
 }
 
 pub(super) fn tokenize_args(raw: &str) -> Result<Vec<String>> {
-    shlex::split(raw).ok_or_else(|| anyhow!("unbalanced quotes in `{raw}`"))
+    shlex::split(raw).ok_or_else(|| report!("unbalanced quotes in `{raw}`"))
 }
 
 #[cfg(test)]

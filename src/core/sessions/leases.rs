@@ -12,9 +12,9 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{
-    Context as _,
+use misstep::{
     Result,
+    ResultExt as _,
     bail,
 };
 use serde::Serialize;

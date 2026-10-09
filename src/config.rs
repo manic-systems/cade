@@ -16,9 +16,9 @@ use std::{
     sync::OnceLock,
 };
 
-use anyhow::{
-    Context as _,
+use misstep::{
     Result,
+    ResultExt as _,
     bail,
 };
 use serde::Deserialize;
@@ -184,7 +184,7 @@ fn read_config(path: &Path, strict: bool) -> Result<Config> {
 }
 
 impl TryFrom<RawConfig> for Config {
-    type Error = anyhow::Error;
+    type Error = misstep::Report;
 
     fn try_from(raw: RawConfig) -> Result<Self> {
         let verbosity = match raw.verbosity {
@@ -192,7 +192,7 @@ impl TryFrom<RawConfig> for Config {
                 Some(
                     verbosity_text
                         .parse::<Verbosity>()
-                        .map_err(|parse_error| anyhow::anyhow!("{parse_error}"))?,
+                        .map_err(|parse_error| misstep::report!("{parse_error}"))?,
                 )
             },
             None => None,
@@ -207,7 +207,7 @@ impl TryFrom<RawConfig> for Config {
             Some(direnv_text) => {
                 direnv_text
                     .parse::<DirenvMode>()
-                    .map_err(|parse_error| anyhow::anyhow!("{parse_error}"))?
+                    .map_err(|parse_error| misstep::report!("{parse_error}"))?
             },
             None => DirenvMode::default(),
         };
@@ -246,7 +246,7 @@ mod tests {
             verbosity: Some("loud".into()),
             ..Default::default()
         };
-        Config::try_from(raw).unwrap_err();
+        drop(Config::try_from(raw).unwrap_err());
     }
 
     #[test]
@@ -255,7 +255,7 @@ mod tests {
             long_running_warning_ms: Some(0),
             ..Default::default()
         };
-        Config::try_from(raw).unwrap_err();
+        drop(Config::try_from(raw).unwrap_err());
     }
 
     #[test]
@@ -264,7 +264,7 @@ mod tests {
             shell_gc_root_ttl_seconds: Some(0),
             ..Default::default()
         };
-        Config::try_from(raw).unwrap_err();
+        drop(Config::try_from(raw).unwrap_err());
     }
 
     #[test]
@@ -288,7 +288,7 @@ mod tests {
             direnv: Some("sometimes".into()),
             ..Default::default()
         };
-        Config::try_from(raw).unwrap_err();
+        drop(Config::try_from(raw).unwrap_err());
     }
 
     #[test]

@@ -12,12 +12,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.104"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
-
-[[package]]
 name = "bitflags"
 version = "2.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -43,11 +37,11 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 name = "cade"
 version = "0.1.3"
 dependencies = [
- "anyhow",
  "cognos",
  "ignore",
  "libc",
  "microxdg",
+ "misstep",
  "pound",
  "rusqlite",
  "serde",
@@ -245,6 +239,12 @@ name = "microxdg"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd0ba94daabea2c803df477d4dc1d37a6f15726e4bed53be7067022ddb89328e"
+
+[[package]]
+name = "misstep"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78535bf5c8617e488ae09df837dd55c083781f496948e43c5a69504fc741e3c4"
 
 [[package]]
 name = "objc2-core-foundation"

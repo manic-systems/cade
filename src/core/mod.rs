@@ -26,9 +26,9 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{
-    Context as _,
+use misstep::{
     Result,
+    ResultExt as _,
 };
 use rusqlite::Connection;
 

@@ -3,9 +3,9 @@ use std::{
     path::Path,
 };
 
-use anyhow::{
-    Context as _,
+use misstep::{
     Result,
+    ResultExt as _,
 };
 
 use crate::env::set::EnvSet;

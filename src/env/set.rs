@@ -69,7 +69,7 @@ impl EnvSet {
         Self::default()
     }
 
-    pub fn from_envs(text: &str) -> anyhow::Result<Self> {
+    pub fn from_envs(text: &str) -> misstep::Result<Self> {
         let parts = parse::parse_env_text(text)?;
         let mut env = Self {
             vars:            parts.vars,
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn errors_on_line_without_equals() {
-        EnvSet::from_envs("NOT_A_PAIR").unwrap_err();
+        drop(EnvSet::from_envs("NOT_A_PAIR").unwrap_err());
     }
 
     #[test]

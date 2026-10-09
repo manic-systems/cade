@@ -25,10 +25,6 @@ use std::{
     },
 };
 
-use anyhow::{
-    Result,
-    bail,
-};
 #[cfg(target_os = "macos")]
 use libc::{
     PROC_PIDTBSDINFO,
@@ -37,6 +33,10 @@ use libc::{
     pid_t,
     proc_bsdinfo,
     proc_pidinfo,
+};
+use misstep::{
+    Result,
+    bail,
 };
 
 pub fn atomic_write(path: &Path, body: &[u8]) -> IoResult<()> {

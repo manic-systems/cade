@@ -3,8 +3,8 @@ use std::path::{
     PathBuf,
 };
 
-use anyhow::{
-    Context as _,
+use misstep::{
+    OptionExt as _,
     Result,
 };
 use rusqlite::named_params;

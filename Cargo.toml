@@ -16,7 +16,7 @@ panic         = "abort"
 strip         = true
 
 [dependencies]
-anyhow     = { default-features = false, version = "1.0.104" }
+misstep    = "0.3.0"
 cognos     = "1.0.1"
 ignore     = "0.4.33"
 libc       = "0.2.189"

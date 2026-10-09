@@ -7,10 +7,11 @@ use std::{
     },
 };
 
-use anyhow::{
-    Context as _,
+use misstep::{
+    OptionExt as _,
     Result,
-    anyhow,
+    ResultExt as _,
+    report,
 };
 
 use crate::{
@@ -102,7 +103,7 @@ pub(super) fn activation_plan(cade: &Cade, session: &str) -> Result<ActivationPl
 
 fn activation_plan_for_root(cade: &Cade, root: &Path, session: &str) -> Result<ActivationPlan> {
     maybe_activation_plan_for_root(cade, root, session)?
-        .ok_or_else(|| anyhow!("{DISALLOWED_REMINDER}"))
+        .ok_or_else(|| report!("{DISALLOWED_REMINDER}"))
 }
 
 fn maybe_activation_plan_for_root(
@@ -262,7 +263,7 @@ pub fn export_env_delta(
         if export.previous.is_some() {
             return Ok(direnv_export::inactive_delta(export.previous));
         }
-        anyhow::bail!(
+        misstep::bail!(
             "cade project is not allowed; run `cade allow` in {}",
             cade.cwd.display()
         );

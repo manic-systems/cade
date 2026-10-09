@@ -4,10 +4,6 @@ pub mod leases;
 
 use std::time::Duration;
 
-use anyhow::{
-    Result,
-    bail,
-};
 use identity::validate_client_id;
 pub(super) use identity::{
     atomic_write,
@@ -16,6 +12,10 @@ pub(super) use identity::{
     is_valid_session,
     new_session_id,
     stable_hash_hex,
+};
+use misstep::{
+    Result,
+    bail,
 };
 use serde::{
     Deserialize,
