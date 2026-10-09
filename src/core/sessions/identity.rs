@@ -17,6 +17,7 @@ use std::{
         Read as _,
         Result as IoResult,
     },
+    os::unix::process::parent_id,
     path::Path,
     process::id as process_id,
     time::{
@@ -173,15 +174,6 @@ pub(super) fn process_start_time(pid: u32) -> Option<String> {
     })
 }
 
-#[cfg(unix)]
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "getppid takes no pointers and has no caller preconditions"
-)]
-pub(super) fn parent_pid() -> Option<u32> {
-    u32::try_from(unsafe { libc::getppid() }).ok()
-}
-
 pub(super) fn process_holder_is_live(pid: u32, start_time: &str) -> bool {
     process_start_time(pid).is_some_and(|current| current == start_time)
 }
@@ -197,7 +189,7 @@ pub fn direnv_session_id(client_id: Option<&str>, owner_pid: Option<u32>) -> Opt
     if let Some(resolved) = configured_client_id(client_id) {
         return Some(format!("direnv-lease-{}", stable_hash_hex(&resolved)));
     }
-    let pid = owner_pid.or_else(parent_pid)?;
+    let pid = owner_pid.unwrap_or_else(parent_id);
     let start_time = process_start_time(pid)?;
     Some(format!("direnv-{pid}-{}", stable_hash_hex(&start_time)))
 }
