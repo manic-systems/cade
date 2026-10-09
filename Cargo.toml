@@ -18,12 +18,10 @@ strip         = true
 [dependencies]
 cognos     = "1.0.1"
 libc       = "0.2.189"
-microxdg   = "0.2.0"
 misstep    = "0.3.0"
 pound      = "0.2.0"
 serde      = { features = [ "derive" ], version = "1.0.229" }
 serde_json = "1.0.151"
-whoami     = { default-features = false, features = [ "std" ], version = "2.1.3" }
 
 [dependencies.rusqlite]
 default-features = false
