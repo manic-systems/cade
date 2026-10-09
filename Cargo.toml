@@ -17,7 +17,6 @@ strip         = true
 
 [dependencies]
 cognos     = "1.0.1"
-ignore     = "0.4.33"
 libc       = "0.2.189"
 microxdg   = "0.2.0"
 misstep    = "0.3.0"

@@ -1,6 +1,15 @@
-use std::path::{
-    Path,
-    PathBuf,
+use std::{
+    ffi::OsStr,
+    fs::{
+        read,
+        read_dir,
+        read_to_string,
+    },
+    os::unix::ffi::OsStrExt as _,
+    path::{
+        Path,
+        PathBuf,
+    },
 };
 
 use crate::{
@@ -138,29 +147,135 @@ pub fn flake_watch_files(root: &Path) -> Vec<PathBuf> {
 // Nix reads only VCS-tracked files when evaluating a local flake, so an ignored
 // subtree cannot affect the dev shell.
 fn collect_flake_watch_files(root: &Path, out: &mut Vec<PathBuf>) {
-    let walk = ignore::WalkBuilder::new(root)
-        .hidden(false)
-        .ignore(false)
-        .require_git(false)
-        .filter_entry(|entry| entry.depth() == 0 || !is_excluded_dir(entry))
-        .build();
+    let Some(tracked) = tracked_files(root) else {
+        walk_flake_dir(root, out);
+        return;
+    };
 
-    for entry in walk.flatten() {
-        let Some(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() && entry.file_name().to_str().is_some_and(is_flake_input_file) {
-            out.push(entry.into_path());
-        }
-    }
+    out.extend(tracked.into_iter().filter(|path| {
+        path.file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(is_flake_input_file)
+    }));
 }
 
-fn is_excluded_dir(entry: &ignore::DirEntry) -> bool {
-    entry.file_type().is_some_and(|ty| ty.is_dir())
-        && entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| FLAKE_WATCH_EXCLUDED_DIRS.contains(&name))
+fn tracked_files(root: &Path) -> Option<Vec<PathBuf>> {
+    let (top, dot_git) = root.ancestors().find_map(|dir| {
+        let candidate = dir.join(".git");
+        candidate.exists().then_some((dir, candidate))
+    })?;
+    let git_dir = if dot_git.is_file() {
+        let pointer = read_to_string(&dot_git).ok()?;
+        top.join(pointer.strip_prefix("gitdir:")?.trim())
+    } else {
+        dot_git
+    };
+    let prefix = root.strip_prefix(top).ok()?;
+    let index = read(git_dir.join("index")).ok()?;
+
+    Some(
+        parse_index(&index)?
+            .iter()
+            .filter_map(|path| path.strip_prefix(prefix).ok())
+            .map(|relative| root.join(relative))
+            .collect(),
+    )
+}
+
+// Returns None for anything this reader can't fully account for (split or
+// sparse indexes, sha256 repos), so the caller falls back to walking the tree.
+#[expect(clippy::big_endian_bytes, reason = "git index fields are big-endian")]
+fn parse_index(data: &[u8]) -> Option<Vec<PathBuf>> {
+    let be32 = |at: usize| -> Option<u32> {
+        Some(u32::from_be_bytes(
+            data.get(at..at.checked_add(4)?)?.try_into().ok()?,
+        ))
+    };
+    let body_len = data.len().checked_sub(20)?;
+
+    if data.get(..4)? != b"DIRC" {
+        return None;
+    }
+
+    let version = be32(4)?;
+    if !matches!(version, 2..=4) {
+        return None;
+    }
+
+    let mut paths = Vec::new();
+    let mut previous = Vec::new();
+    let mut pos = 12;
+    for _ in 0..be32(8)? {
+        let start = pos;
+        let mode = be32(start + 24)?;
+        let flags = u16::from_be_bytes(data.get(start + 60..start + 62)?.try_into().ok()?);
+        pos = start + 62 + if flags & 0x4000 == 0 { 0 } else { 2 };
+
+        if version == 4 {
+            let mut strip = 0;
+            loop {
+                let byte = *data.get(pos)?;
+                pos += 1;
+                strip = (strip << 7_u32) | usize::from(byte & 0x7F);
+                if byte & 0x80 == 0 {
+                    break;
+                }
+                strip += 1;
+            }
+            previous.truncate(previous.len().checked_sub(strip)?);
+        } else {
+            previous.clear();
+        }
+
+        let name_len = data
+            .get(pos..body_len)?
+            .iter()
+            .position(|&byte| byte == 0)?;
+        previous.extend_from_slice(&data[pos..pos + name_len]);
+        pos += name_len + 1;
+        if version != 4 {
+            pos = start + (pos - 1 - start) / 8 * 8 + 8;
+        }
+
+        match mode >> 12_u32 {
+            0o10 | 0o12 => paths.push(PathBuf::from(OsStr::from_bytes(&previous))),
+            0o16 => {},
+            _ => return None,
+        }
+    }
+
+    while pos < body_len {
+        if data.get(pos..pos + 4)? == b"link" {
+            return None;
+        }
+        pos = pos.checked_add(8)?.checked_add(be32(pos + 4)? as usize)?;
+    }
+
+    (pos == body_len).then_some(paths)
+}
+
+fn walk_flake_dir(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+
+        if file_type.is_dir() {
+            if !FLAKE_WATCH_EXCLUDED_DIRS.contains(&name) {
+                walk_flake_dir(&entry.path(), out);
+            }
+        } else if is_flake_input_file(name) {
+            out.push(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -277,25 +392,40 @@ mod tests {
     }
 
     #[test]
-    fn flake_watch_skips_vcs_ignored_trees() {
-        let root = temp_dir().join(format!(
-            "cade-flake-watch-ignored-{}-{}",
+    #[expect(clippy::big_endian_bytes, reason = "git index fields are big-endian")]
+    fn flake_watch_reads_tracked_files_from_git_index() {
+        let repo = temp_dir().join(format!(
+            "cade-flake-watch-index-{}-{}",
             id(),
             current().name().unwrap_or("test")
         ));
-        create_dir_all(root.join("out").join("deep")).unwrap();
+        let root = repo.join("app");
+        create_dir_all(repo.join(".git")).unwrap();
         create_dir_all(root.join("nix")).unwrap();
-        write(root.join(".gitignore"), "out/\n").unwrap();
-        write(root.join("flake.nix"), "").unwrap();
-        write(root.join("nix").join("package.nix"), "").unwrap();
-        write(root.join("out").join("deep").join("generated.nix"), "").unwrap();
+        create_dir_all(root.join("out")).unwrap();
+        write(root.join("out").join("generated.nix"), "").unwrap();
+
+        let tracked = ["app/flake.nix", "app/nix/package.nix", "other/default.nix"];
+        let mut index = b"DIRC\0\0\0\x02".to_vec();
+        index.extend_from_slice(&u32::try_from(tracked.len()).unwrap().to_be_bytes());
+        for path in tracked {
+            let mut entry = vec![0; 62];
+            entry[24..28].copy_from_slice(&0o100_644_u32.to_be_bytes());
+            entry[60..62].copy_from_slice(&u16::try_from(path.len()).unwrap().to_be_bytes());
+            entry.extend_from_slice(path.as_bytes());
+            entry.resize((entry.len() / 8 + 1) * 8, 0);
+            index.extend(entry);
+        }
+        index.extend([0; 20]);
+        write(repo.join(".git").join("index"), index).unwrap();
 
         let watch = flake_watch_files(&root);
 
         assert!(watch.contains(&root.join("nix").join("package.nix")));
-        assert!(!watch.contains(&root.join("out").join("deep").join("generated.nix")));
+        assert!(!watch.contains(&root.join("out").join("generated.nix")));
+        assert!(!watch.iter().any(|path| path.ends_with("other/default.nix")));
 
-        let _ = remove_dir_all(&root);
+        let _ = remove_dir_all(&repo);
     }
 
     #[test]
