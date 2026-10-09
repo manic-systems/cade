@@ -117,23 +117,19 @@ pub fn direnv_mode() -> DirenvMode {
     )
 }
 
-fn home_config_path() -> Option<PathBuf> {
-    let path = PathBuf::from(var_os("HOME")?)
-        .join(".config")
-        .join("cade")
-        .join("config.toml");
-    Some(path)
+pub fn xdg_dir(xdg_var: &str, home_relative: &str) -> Option<PathBuf> {
+    var_os(xdg_var)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            var_os("HOME")
+                .map(|home| PathBuf::from(home).join(home_relative))
+                .filter(|path| path.is_absolute())
+        })
 }
 
 pub fn default_config_path() -> Option<PathBuf> {
-    microxdg::XdgApp::new("cade")
-        .ok()
-        .and_then(|app| app.app_config().ok())
-        .map(|mut path| {
-            path.push("config.toml");
-            path
-        })
-        .or_else(home_config_path)
+    xdg_dir("XDG_CONFIG_HOME", ".config").map(|dir| dir.join("cade").join("config.toml"))
 }
 
 fn active_config_path() -> Option<PathBuf> {

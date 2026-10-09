@@ -27,12 +27,14 @@ use std::{
 };
 
 use misstep::{
+    OptionExt as _,
     Result,
     ResultExt as _,
 };
 use rusqlite::Connection;
 
 use crate::{
+    config::xdg_dir,
     core::cache::{
         ensure_layer_cache_schema,
         prune_stale_layer_cache,
@@ -226,16 +228,9 @@ impl Cade {
     }
 
     fn ensure_dir() -> Result<PathBuf> {
-        let mut path = if let Ok(xdg) = microxdg::Xdg::new()
-            && let Ok(state_dir) = xdg.state()
-        {
-            state_dir
-        } else {
-            PathBuf::from("/home")
-                .join(whoami::username().context("determine username for cade state path")?)
-                .join(".local/state")
-        };
-        path.push("cade");
+        let path = xdg_dir("XDG_STATE_HOME", ".local/state")
+            .context("find cade state path, neither XDG_STATE_HOME nor HOME is set")?
+            .join("cade");
 
         create_dir_all(&path).context("create cade state path")?;
         Ok(path)
