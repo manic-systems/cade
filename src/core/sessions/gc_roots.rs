@@ -9,6 +9,7 @@ use std::{
         remove_file,
         write as write_file,
     },
+    os::unix::process::parent_id,
     path::{
         Path,
         PathBuf,
@@ -36,7 +37,6 @@ use crate::{
                 is_valid_client_id,
                 is_valid_session,
                 now_secs,
-                parent_pid,
                 process_holder_is_live,
                 process_start_time,
                 stable_hash_hex,
@@ -257,9 +257,7 @@ pub(super) fn remove_session_holder(cade: &Cade, session: &str, holder: &Session
 }
 
 fn refresh_process_holder(cade: &Cade, session: &str, owner_pid: Option<u32>) -> Result<()> {
-    let Some(pid) = owner_pid.or_else(parent_pid) else {
-        return Ok(());
-    };
+    let pid = owner_pid.unwrap_or_else(parent_id);
     let Some(start_time) = process_start_time(pid) else {
         return Ok(());
     };
@@ -302,9 +300,8 @@ pub fn remove_current_session_holders(
     client_id: Option<&str>,
     owner_pid: Option<u32>,
 ) {
-    if let Some(pid) = owner_pid.or_else(parent_pid)
-        && let Some(start_time) = process_start_time(pid)
-    {
+    let pid = owner_pid.unwrap_or_else(parent_id);
+    if let Some(start_time) = process_start_time(pid) {
         remove_session_holder(
             cade,
             session,
