@@ -6,10 +6,7 @@ mod nushell;
 mod posix;
 pub mod quote;
 
-use std::{
-    fmt,
-    str::FromStr,
-};
+use std::fmt;
 
 use elvish::Elvish;
 use fish::Fish;
@@ -62,23 +59,6 @@ impl fmt::Display for ShellName {
             Self::Json => write!(formatter, "json"),
             Self::Elvish => write!(formatter, "elvish"),
             Self::Murex => write!(formatter, "murex"),
-        }
-    }
-}
-
-impl FromStr for ShellName {
-    type Err = String;
-
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        match text.to_lowercase().as_str() {
-            "fish" => Ok(Self::Fish),
-            "bash" => Ok(Self::Bash),
-            "zsh" => Ok(Self::Zsh),
-            "nushell" | "nu" => Ok(Self::Nushell),
-            "json" => Ok(Self::Json),
-            "elvish" => Ok(Self::Elvish),
-            "murex" => Ok(Self::Murex),
-            _ => Err(format!("unknown shell: {text}")),
         }
     }
 }

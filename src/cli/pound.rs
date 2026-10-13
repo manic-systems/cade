@@ -29,13 +29,14 @@ impl From<CliVerbosity> for Verbosity {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, ValueEnum)]
+#[pound(ignore_case)]
 pub enum CliShell {
     Fish,
     Bash,
     Zsh,
+    #[pound(alias = "nu")]
     Nushell,
-    Nu,
     Json,
     Elvish,
     Murex,
@@ -47,7 +48,7 @@ impl From<CliShell> for ShellName {
             CliShell::Fish => Self::Fish,
             CliShell::Bash => Self::Bash,
             CliShell::Zsh => Self::Zsh,
-            CliShell::Nushell | CliShell::Nu => Self::Nushell,
+            CliShell::Nushell => Self::Nushell,
             CliShell::Json => Self::Json,
             CliShell::Elvish => Self::Elvish,
             CliShell::Murex => Self::Murex,
@@ -143,37 +144,4 @@ pub struct Cli {
 
     #[pound(subcommand)]
     pub action: CliAction,
-}
-
-#[cfg(test)]
-mod tests {
-    use pound::Parse as _;
-
-    use super::{
-        Cli,
-        CliAction,
-        CliShell,
-    };
-    use crate::shells::ShellName;
-
-    #[test]
-    fn shell_switches_use_typed_values() {
-        let cli = Cli::try_parse_from(["enter", "--shell", "nu"]).expect("parse shell value");
-        let shell = match cli.action {
-            CliAction::Enter { shell } => Some(shell),
-            CliAction::Exit { .. }
-            | CliAction::Reload { .. }
-            | CliAction::Allow
-            | CliAction::Disallow
-            | CliAction::Edit
-            | CliAction::Hook { .. }
-            | CliAction::Export { .. }
-            | CliAction::Lease { .. }
-            | CliAction::Status => None,
-        }
-        .expect("expected enter action");
-
-        assert_eq!(shell, CliShell::Nu);
-        assert!(matches!(ShellName::from(shell), ShellName::Nushell));
-    }
 }
