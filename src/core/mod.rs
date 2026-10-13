@@ -172,12 +172,8 @@ fn announce_loaded(dir: &str) {
 
 impl Cade {
     pub fn init() -> Result<Self> {
-        let state_dir = if let Some(path) = shell_state::state_dir_from_env() {
-            create_dir_all(&path).context("create cade state path")?;
-            path
-        } else {
-            Self::ensure_dir()?
-        };
+        let state_dir = Self::state_dir_path()?;
+        create_dir_all(&state_dir).context("create cade state path")?;
         let db_path = state_dir.join("cade.db");
         let db = Connection::open(db_path)?;
         Self::ensure_db(&db)?;
@@ -227,12 +223,13 @@ impl Cade {
         Ok(())
     }
 
-    fn ensure_dir() -> Result<PathBuf> {
-        let path = xdg_dir("XDG_STATE_HOME", ".local/state")
-            .context("find cade state path, neither XDG_STATE_HOME nor HOME is set")?
-            .join("cade");
+    pub fn state_dir_path() -> Result<PathBuf> {
+        if let Some(path) = shell_state::state_dir_from_env() {
+            return Ok(path);
+        }
 
-        create_dir_all(&path).context("create cade state path")?;
-        Ok(path)
+        Ok(xdg_dir("XDG_STATE_HOME", ".local/state")
+            .context("find cade state path, neither XDG_STATE_HOME nor HOME is set")?
+            .join("cade"))
     }
 }
