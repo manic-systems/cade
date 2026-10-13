@@ -147,6 +147,7 @@ pub enum LeaseAction {
 }
 
 #[derive(Parse)]
+#[pound(help_if_empty)]
 pub struct Cli {
     #[pound(long)]
     pub config: Option<PathBuf>,
