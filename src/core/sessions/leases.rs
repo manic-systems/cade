@@ -61,12 +61,12 @@ pub(super) fn lease_record_is_live(lease: &LeaseRecord) -> bool {
     lease.expires_at > now_secs()
 }
 
-fn lease_dir(cade: &Cade) -> PathBuf {
-    cade.state_dir.join("leases")
+fn lease_dir(state_dir: &Path) -> PathBuf {
+    state_dir.join("leases")
 }
 
 fn lease_path(cade: &Cade, client_id: &str) -> PathBuf {
-    lease_dir(cade).join(format!("{client_id}.json"))
+    lease_dir(&cade.state_dir).join(format!("{client_id}.json"))
 }
 
 pub(super) fn read_lease_record(cade: &Cade, client_id: &str) -> Result<LeaseRecord> {
@@ -82,7 +82,7 @@ pub(super) fn read_lease_record(cade: &Cade, client_id: &str) -> Result<LeaseRec
 
 fn write_lease_record(cade: &Cade, lease: &LeaseRecord) -> Result<()> {
     validate_client_id(&lease.client_id)?;
-    create_dir_all(lease_dir(cade)).context("create cade leases dir")?;
+    create_dir_all(lease_dir(&cade.state_dir)).context("create cade leases dir")?;
     let body = serde_json::to_vec(lease).context("serialise cade lease")?;
     atomic_write(&lease_path(cade, &lease.client_id), &body).context("write cade lease")
 }
@@ -137,6 +137,26 @@ pub fn lease_refresh(cade: &Cade, client_id: &str, ttl_seconds: Option<u64>) -> 
     let response = LeaseResponse::from(&lease);
     println!("{}", serde_json::to_string(&response)?);
     Ok(())
+}
+
+pub fn lease_ids() -> Vec<String> {
+    let Some(entries) = Cade::state_dir_path()
+        .ok()
+        .and_then(|state_dir| read_dir(lease_dir(&state_dir)).ok())
+    else {
+        return Vec::new();
+    };
+
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension()? != "json" {
+                return None;
+            }
+            path.file_stem()?.to_str().map(str::to_owned)
+        })
+        .collect()
 }
 
 pub fn lease_close(cade: &Cade, client_id: &str) -> Result<()> {

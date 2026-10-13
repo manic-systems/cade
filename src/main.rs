@@ -189,6 +189,7 @@ fn try_main() -> Result<()> {
 }
 
 fn main() {
+    caress::handle(Cli::SPEC);
     if let Err(error) = try_main() {
         eprintln!("failed to {error:#}");
         exit(1);

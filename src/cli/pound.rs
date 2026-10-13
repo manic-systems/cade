@@ -3,12 +3,21 @@ use std::path::PathBuf;
 use pound::{
     Parse,
     ValueEnum,
+    complete::{
+        Candidate,
+        Partial,
+    },
 };
 
 use crate::{
+    core::sessions::leases::lease_ids,
     shells::ShellName,
     verbosity::Verbosity,
 };
+
+fn complete_lease_id(_partial: &Partial<'_, '_>, _typed: &str) -> Vec<Candidate> {
+    lease_ids().into_iter().map(Candidate::new).collect()
+}
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 #[pound(ignore_case)]
@@ -124,7 +133,7 @@ pub enum LeaseAction {
     },
 
     Refresh {
-        #[pound(long)]
+        #[pound(long, complete = complete_lease_id)]
         client_id: String,
 
         #[pound(long)]
@@ -132,7 +141,7 @@ pub enum LeaseAction {
     },
 
     Close {
-        #[pound(long)]
+        #[pound(long, complete = complete_lease_id)]
         client_id: String,
     },
 }
@@ -145,7 +154,7 @@ pub struct Cli {
     #[pound(long)]
     pub verbosity: Option<CliVerbosity>,
 
-    #[pound(long)]
+    #[pound(long, complete = complete_lease_id)]
     pub client_id: Option<String>,
 
     #[pound(long)]
