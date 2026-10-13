@@ -11,10 +11,19 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
+#[pound(ignore_case)]
 pub enum CliVerbosity {
+    /// no lifecycle text or warnings
+    #[pound(alias = "0, silent, none")]
     Quiet,
+    /// load, unload, and reload text and warnings
+    #[pound(alias = "1, lifecycle, default")]
     Normal,
+    /// normal plus the names of variables set, cleared, and restored
+    #[pound(alias = "2, variables")]
     Vars,
+    /// vars plus layer, cache, external command, and hook details
+    #[pound(alias = "3, debug, all")]
     Trace,
 }
 
