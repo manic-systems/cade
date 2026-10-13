@@ -2,15 +2,48 @@ name: CI
 
 on:
   push:
-    branches: [main, working]
+    branches: [main]
   pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
-  nix:
-    name: nix build / flake check
+  checks:
+    name: Checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-26.04-arm]
+    permissions:
+      actions: write
+      contents: read
+    uses: manic-systems/workflows/.github/workflows/nix-checks.yml@d93951cf50722594dc1d64602eb9453dc7da2fb6 # v2.3.0
+    with:
+      os: ${{ matrix.os }}
+      flake-check-command: nix flake check -L
+      build: true
+      build-command: nix build -L --no-link
+      cache: true
+      cache-save: true
+
+  actions:
+    name: Actions Lint
+    uses: manic-systems/workflows/.github/workflows/actions-lint.yml@d93951cf50722594dc1d64602eb9453dc7da2fb6 # v2.3.0
+
+  required:
+    name: Required Checks
+    if: always()
+    needs:
+      - checks
+      - actions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: cachix/install-nix-action@v31
-      - run: nix flake check --print-build-logs
-      - run: nix build --print-build-logs
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
