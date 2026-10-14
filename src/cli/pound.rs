@@ -23,16 +23,16 @@ fn complete_lease_id(_partial: &Partial<'_, '_>, _typed: &str) -> Vec<Candidate>
 #[pound(ignore_case)]
 pub enum CliVerbosity {
     /// no lifecycle text or warnings
-    #[pound(alias = "0, silent, none")]
+    #[pound(alias = ["0", "silent", "none"])]
     Quiet,
     /// load, unload, and reload text and warnings
-    #[pound(alias = "1, lifecycle, default")]
+    #[pound(alias = ["1", "lifecycle", "default"])]
     Normal,
     /// normal plus the names of variables set, cleared, and restored
-    #[pound(alias = "2, variables")]
+    #[pound(alias = ["2", "variables"])]
     Vars,
     /// vars plus layer, cache, external command, and hook details
-    #[pound(alias = "3, debug, all")]
+    #[pound(alias = ["3", "debug", "all"])]
     Trace,
 }
 
