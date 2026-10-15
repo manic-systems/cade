@@ -144,7 +144,7 @@ pub enum LeaseAction {
         project: Option<PathBuf>,
 
         /// how long the lease lasts, the GC root retention by default
-        #[pound(long)]
+        #[pound(long, min = 1)]
         ttl_seconds: Option<u64>,
     },
 
@@ -155,7 +155,7 @@ pub enum LeaseAction {
         client_id: String,
 
         /// how long the lease lasts from now, the GC root retention by default
-        #[pound(long)]
+        #[pound(long, min = 1)]
         ttl_seconds: Option<u64>,
     },
 
@@ -185,7 +185,7 @@ pub struct Cli {
     pub client_id: Option<String>,
 
     /// the process that owns this session, the parent process by default
-    #[pound(long)]
+    #[pound(long, min = 1)]
     pub owner_pid: Option<u32>,
 
     #[pound(subcommand)]
