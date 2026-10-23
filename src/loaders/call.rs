@@ -44,8 +44,8 @@ mod tests {
         ])
         .expect_err("invalid UTF-8 call output must fail");
         assert!(
-            format!("{error:#}").contains("must be valid UTF-8"),
-            "{error:#}"
+            format!("{error}").contains("must be valid UTF-8"),
+            "{error}"
         );
     }
 }

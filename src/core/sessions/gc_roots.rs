@@ -242,7 +242,9 @@ fn write_session_holder(cade: &Cade, session: &str, holder: &SessionHolder) -> R
     create_dir_all(&holders_dir).context("create cade session holders dir")?;
     let path = holders_dir.join(holder.file_name()?);
     let body = serde_json::to_vec(holder).context("serialise cade session holder")?;
-    atomic_write(&path, &body).context("write cade session holder")
+    atomic_write(&path, &body)
+        .context("write cade session holder")
+        .erase()
 }
 
 pub(super) fn remove_session_holder(cade: &Cade, session: &str, holder: &SessionHolder) {

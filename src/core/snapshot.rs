@@ -44,7 +44,9 @@ pub(super) fn write_snapshot(
     let dir = cade.state_dir.join("snapshots");
     create_dir_all(&dir).context("create snapshots dir")?;
     let body = serde_json::to_vec(env).context("serialize snapshot")?;
-    atomic_write(&snapshot_path(cade, session), &body).context("write snapshot")
+    atomic_write(&snapshot_path(cade, session), &body)
+        .context("write snapshot")
+        .erase()
 }
 
 fn read_legacy_snapshot(raw: &str) -> BTreeMap<String, String> {

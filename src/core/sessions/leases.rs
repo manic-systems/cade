@@ -84,7 +84,9 @@ fn write_lease_record(cade: &Cade, lease: &LeaseRecord) -> Result<()> {
     validate_client_id(&lease.client_id)?;
     create_dir_all(lease_dir(&cade.state_dir)).context("create cade leases dir")?;
     let body = serde_json::to_vec(lease).context("serialise cade lease")?;
-    atomic_write(&lease_path(cade, &lease.client_id), &body).context("write cade lease")
+    atomic_write(&lease_path(cade, &lease.client_id), &body)
+        .context("write cade lease")
+        .erase()
 }
 
 fn refresh_lease_record(
