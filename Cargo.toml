@@ -19,7 +19,7 @@ strip         = true
 caress     = "0.3.0"
 cognos     = "2.0.0"
 libc       = "0.2.191"
-misstep    = "0.3.0"
+misstep    = "0.4.1"
 pound      = "0.6.0"
 serde      = { features = [ "derive" ], version = "1.0.229" }
 serde_json = "1.0.154"

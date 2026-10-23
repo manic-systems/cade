@@ -168,7 +168,8 @@ fn read_config(path: &Path, strict: bool) -> Result<Config> {
         },
         Err(read_error) => {
             return Err(read_error)
-                .with_context(|| format!("reading config at {}", path.display()));
+                .with_context(|| format!("reading config at {}", path.display()))
+                .erase();
         },
     };
 
