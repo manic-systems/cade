@@ -110,7 +110,8 @@ impl NixProgress {
                     | Activities::QueryPathInfo
                     | Activities::PostBuildHook
                     | Activities::BuildWaiting
-                    | Activities::FetchTree => {},
+                    | Activities::FetchTree
+                    | Activities::FetchToStore => {},
                 }
                 let lively = matches!(
                     activity,
@@ -155,7 +156,8 @@ impl NixProgress {
                     | ResultType::CorruptedPath
                     | ResultType::SetPhase
                     | ResultType::SetExpected
-                    | ResultType::FetchStatus => {},
+                    | ResultType::FetchStatus
+                    | ResultType::FetchToStore => {},
                 }
             },
             Actions::Message { level, msg, .. } => {
