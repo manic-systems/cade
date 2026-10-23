@@ -16,13 +16,13 @@ panic         = "abort"
 strip         = true
 
 [dependencies]
-caress     = "0.2.0"
+caress     = "0.2.1"
 cognos     = "1.0.1"
-libc       = "0.2.189"
+libc       = "0.2.191"
 misstep    = "0.3.0"
-pound      = "0.5.1"
+pound      = "0.5.3"
 serde      = { features = [ "derive" ], version = "1.0.229" }
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 
 [dependencies.rusqlite]
 default-features = false
@@ -32,7 +32,7 @@ version          = "0.40.2"
 [dependencies.toml]
 default-features = false
 features         = [ "std", "serde", "parse" ]
-version          = "1.1.5"
+version          = "1.1.8"
 
 [lints.clippy]
 cargo    = { level = "warn", priority = -1 }
