@@ -17,7 +17,7 @@ strip         = true
 
 [dependencies]
 caress     = "0.3.0"
-cognos     = "1.0.1"
+cognos     = "2.0.0"
 libc       = "0.2.191"
 misstep    = "0.3.0"
 pound      = "0.6.0"
