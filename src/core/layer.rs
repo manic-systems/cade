@@ -1,6 +1,9 @@
-use std::path::{
-    Path,
-    PathBuf,
+use std::{
+    path::{
+        Path,
+        PathBuf,
+    },
+    str::from_utf8,
 };
 
 use misstep::{
@@ -11,6 +14,10 @@ use misstep::{
 };
 
 use crate::{
+    cade_file::{
+        ConfigKind,
+        ConfigSnapshot,
+    },
     core::{
         Cade,
         sessions::gc_roots::nix_profile_path,
@@ -21,6 +28,7 @@ use crate::{
         load::{
             activate_envrc,
             load_envrc,
+            load_envrc_from_contents,
         },
         watch::envrc_watch_files,
     },
@@ -176,9 +184,13 @@ pub(super) fn load_single_layer(
     layer_count: usize,
     path: &Path,
     keywords: &[Keyword],
+    snapshot: &ConfigSnapshot,
     cade: &Cade,
     session: &str,
 ) -> Result<(CachedLayer, CadeLayer)> {
+    if snapshot.kind == ConfigKind::Envrc {
+        return load_implicit_envrc(layer_count, path, snapshot, cade, session);
+    }
     let mut actions = Vec::new();
     let mut layer = CadeLayer::default();
 
@@ -193,29 +205,7 @@ pub(super) fn load_single_layer(
                 let spec_key = resolved.spec.cache_key();
                 let profile =
                     nix_profile_path(cade, session, layer_count, action_index, path, &spec_key);
-                let (loaded_action, env) = match resolved.run {
-                    LoadRun::Flake(target) => {
-                        let (dev_env, env) =
-                            load_flake(&target, &profile.context("creating nix profile")?)
-                                .context("loading flake")?;
-                        (CadeAction::NixDevEnv(dev_env), env)
-                    },
-                    LoadRun::Shell(file) => {
-                        let (dev_env, env) =
-                            load_shell(&file, &profile.context("creating nix profile")?)
-                                .context("loading shell")?;
-                        (CadeAction::NixDevEnv(dev_env), env)
-                    },
-                    LoadRun::Env(file) => {
-                        let env = load_env(&file).context("loading env file")?;
-                        (CadeAction::EnvFile(file), env)
-                    },
-                    LoadRun::Envrc(file) => {
-                        let (envrc, env) =
-                            load_envrc(&file, profile.as_deref()).context("loading .envrc")?;
-                        (CadeAction::Envrc(envrc), env)
-                    },
-                };
+                let (loaded_action, env) = execute_load(resolved.run, profile.as_deref())?;
                 layer.merge_env(env);
                 actions.push(loaded_action);
                 continue;
@@ -232,6 +222,50 @@ pub(super) fn load_single_layer(
 
     let cached = CachedLayer {
         actions,
+        nix_store_paths: layer.nix_store_paths.clone(),
+    };
+    Ok((cached, layer))
+}
+
+fn execute_load(run: LoadRun, profile: Option<&Path>) -> Result<(CadeAction, EnvSet)> {
+    Ok(match run {
+        LoadRun::Flake(target) => {
+            let (dev_env, env) = load_flake(&target, profile.context("creating nix profile")?)
+                .context("loading flake")?;
+            (CadeAction::NixDevEnv(dev_env), env)
+        },
+        LoadRun::Shell(file) => {
+            let (dev_env, env) = load_shell(&file, profile.context("creating nix profile")?)
+                .context("loading shell")?;
+            (CadeAction::NixDevEnv(dev_env), env)
+        },
+        LoadRun::Env(file) => {
+            let env = load_env(&file).context("loading env file")?;
+            (CadeAction::EnvFile(file), env)
+        },
+        LoadRun::Envrc(file) => {
+            let (envrc, env) = load_envrc(&file, profile).context("loading .envrc")?;
+            (CadeAction::Envrc(envrc), env)
+        },
+    })
+}
+
+fn load_implicit_envrc(
+    layer_count: usize,
+    path: &Path,
+    snapshot: &ConfigSnapshot,
+    cade: &Cade,
+    session: &str,
+) -> Result<(CachedLayer, CadeLayer)> {
+    let file = path.join(".envrc");
+    let spec = LoadSpec::Envrc(file.clone()).cache_key();
+    let profile = nix_profile_path(cade, session, layer_count, 0, path, &spec);
+    let contents = from_utf8(&snapshot.contents).context("parse approved .envrc")?;
+    let (actions, env) = load_envrc_from_contents(&file, contents, profile.as_deref())?;
+    let mut layer = CadeLayer::default();
+    layer.merge_env(env);
+    let cached = CachedLayer {
+        actions:         vec![CadeAction::Envrc(actions)],
         nix_store_paths: layer.nix_store_paths.clone(),
     };
     Ok((cached, layer))

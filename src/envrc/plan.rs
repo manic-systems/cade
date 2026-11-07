@@ -12,13 +12,14 @@ use crate::nix::target::{
     flake_watch_files,
 };
 
+pub(super) enum NixDirective {
+    Flake(FlakeTarget),
+    Shell(PathBuf),
+}
+
 pub(super) enum PlannedDirective {
-    UseFlake {
-        target:       FlakeTarget,
-        profile_name: String,
-    },
     UseNix {
-        shell:        PathBuf,
+        source:       NixDirective,
         profile_name: String,
     },
     Dotenv {
@@ -49,8 +50,8 @@ fn plan_directive(dir: &Path, idx: usize, directive: Directive) -> EnvrcDirectiv
         Directive::UseFlake(output) => {
             let target = FlakeTarget::bare_output(dir, output.as_deref());
             EnvrcDirective {
-                action: PlannedDirective::UseFlake {
-                    target,
+                action: PlannedDirective::UseNix {
+                    source:       NixDirective::Flake(target),
                     profile_name: format!("{idx}-flake"),
                 },
                 watch:  flake_watch_files(dir),
@@ -60,7 +61,7 @@ fn plan_directive(dir: &Path, idx: usize, directive: Directive) -> EnvrcDirectiv
             let shell = dir.join(if file.is_empty() { "shell.nix" } else { &file });
             EnvrcDirective {
                 action: PlannedDirective::UseNix {
-                    shell:        shell.clone(),
+                    source:       NixDirective::Shell(shell.clone()),
                     profile_name: format!("{idx}-nix"),
                 },
                 watch:  vec![shell],

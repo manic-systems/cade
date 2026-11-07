@@ -1,5 +1,9 @@
 mod common;
 
+#[path = "scenarios/project_commands.rs"]
+mod project_commands;
+#[path = "scenarios/reload.rs"] mod reload;
+
 use std::{
     env::{
         join_paths,
@@ -842,6 +846,7 @@ exec "$@"
 
     sb.write(".cade", "load envrc\n");
     sb.write(".envrc", "use flake\n");
+    sb.allow(&sb.root);
     let third = enter(&sb, &sb.root, &env);
     let fourth = enter(&sb, &sb.root, &env);
 
@@ -895,6 +900,7 @@ fn reload_notices_cade_created_over_implicit_envrc() {
     );
 
     sb.write(".cade", "FROM_CADE=2\n");
+    sb.allow(&sb.root);
     let state_dir = cade_state(&sb).to_string_lossy().to_string();
     let root = sb.root.to_string_lossy().to_string();
     let watches = exported_value(&first_stdout, "__CADE_WATCHES");
@@ -1006,42 +1012,6 @@ fn concat_uses_snapshot_ambient_so_reloads_dont_grow() {
         "concat must use snapshot ambient, not live: {}",
         stdout(&out)
     );
-}
-
-#[test]
-fn reload_into_disallowed_child_keeps_the_approved_parent() {
-    let sb = Sandbox::new();
-    sb.write(".cade", "A=1\n");
-    let sub = sb.dir("sub");
-    sb.write("sub/.cade", "B=2\n");
-    sb.allow(&sb.root);
-    sb.write_snapshot("s5", "PATH=/orig");
-
-    let root_str = sb.root.to_string_lossy().to_string();
-    let watches = serde_json::json!({
-        "version": "layer-cache-v7",
-        "root": root_str,
-        "cade_paths": [root_str],
-        "files": []
-    })
-    .to_string();
-
-    let out = sb.run(&sub, &["reload", "--shell", "bash"], &[
-        ("__CADE_SESSION", "s5"),
-        ("__CADE_SET", "A"),
-        ("__CADE_UNSET", ""),
-        ("__CADE_PURE", "0"),
-        ("__CADE_HOOKS", "[]"),
-        ("__CADE_LAYERS", root_str.as_str()),
-        ("__CADE_WATCHES", watches.as_str()),
-        ("A", "1"),
-    ]);
-    assert!(out.status.success(), "{out:?}");
-    let err = stderr(&out);
-    assert!(!err.contains("cade: unloaded"), "{err}");
-    assert!(err.contains("disallowed"), "{err}");
-
-    assert!(!stdout(&out).contains("__CADE_LAYERS"), "{}", stdout(&out));
 }
 
 #[test]

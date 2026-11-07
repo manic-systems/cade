@@ -19,6 +19,7 @@ use serde::{
 };
 
 use crate::{
+    cade_file::ConfigSnapshot,
     config::direnv_mode,
     core::{
         Cade,
@@ -85,6 +86,7 @@ use crate::{
 #[derive(Serialize, Deserialize)]
 pub(super) struct ActivationPlan {
     pub root:            PathBuf,
+    pub config_file:     PathBuf,
     pub layer_paths:     Vec<PathBuf>,
     pub all_watch_files: Vec<PathBuf>,
     pub nix_store_paths: Vec<String>,
@@ -125,54 +127,61 @@ fn maybe_activation_plan_for_root(
     root: &Path,
     session: &str,
 ) -> Result<Option<ActivationPlan>> {
-    let cade_files = approved_chain(cade, root)?;
-    if cade_files.is_empty() {
+    let approved = approved_chain(cade, root)?;
+    let Some(tip) = approved.last() else {
         return Ok(None);
-    }
-    let effective_root = cade_files
-        .last()
-        .map(|entry| entry.0.clone())
-        .expect("cade_files non-empty: checked above");
+    };
+    let root_path = tip.0.clone();
+    let config_file = tip.0.join(tip.1.filename());
+    let mut cade_files = Vec::with_capacity(approved.len());
 
     let mut cade_layers = Vec::new();
     let mut all_watch_files: Vec<PathBuf> = Vec::new();
     let mut nix_store_paths: Vec<String> = Vec::new();
 
-    for (layer_count, layer_entry) in cade_files.iter().enumerate() {
-        let path = &layer_entry.0;
-        let keywords = &layer_entry.1;
-        let (watch_files, token) = layer_watch(cade, path, keywords)?;
+    for (layer_count, (path, snapshot)) in approved.into_iter().enumerate() {
+        let keywords = snapshot.keywords(&path)?;
+        let (watch_files, token) = layer_watch(cade, &path, &keywords, &snapshot)?;
         all_watch_files.extend(watch_files);
-
-        let dir = path.to_string_lossy();
-
-        let (layer, store_paths) = if let Some(reused) =
-            reusable_cached_layer(cade, &dir, &token, path)?
-        {
-            reused
-        } else {
-            verbosity::log(
-                Verbosity::Trace,
-                format_args!("cade: loading layer {}.", path.display()),
-            );
-            let (cached, layer) = load_single_layer(layer_count, path, keywords, cade, session)?;
-            store_cached_layer(cade, &dir, &token, &cached)?;
-            let store_paths = layer.nix_store_paths.clone();
-            (layer, store_paths)
-        };
-        nix_store_paths.extend(store_paths);
+        let entry = (path, keywords);
+        let layer = activate_layer(cade, session, layer_count, &entry, &snapshot, &token)?;
+        cade_files.push(entry);
+        nix_store_paths.extend(layer.nix_store_paths.iter().cloned());
         cade_layers.push(layer);
     }
 
     let rollup = rollup_envs(cade_layers);
 
     Ok(Some(ActivationPlan {
-        root: effective_root,
+        root: root_path,
+        config_file,
         layer_paths: cade_files.into_iter().map(|entry| entry.0).collect(),
         all_watch_files,
         nix_store_paths,
         rollup,
     }))
+}
+
+fn activate_layer(
+    cade: &Cade,
+    session: &str,
+    layer_count: usize,
+    entry: &(PathBuf, Vec<Keyword>),
+    snapshot: &ConfigSnapshot,
+    token: &str,
+) -> Result<CadeLayer> {
+    let path = &entry.0;
+    let dir = path.to_string_lossy();
+    if let Some(layer) = reusable_cached_layer(cade, &dir, token, path)? {
+        return Ok(layer);
+    }
+    verbosity::log(
+        Verbosity::Trace,
+        format_args!("cade: loading layer {}.", path.display()),
+    );
+    let (cached, layer) = load_single_layer(layer_count, path, &entry.1, snapshot, cade, session)?;
+    store_cached_layer(cade, &dir, token, &cached)?;
+    Ok(layer)
 }
 
 pub(super) fn chain_watch_state(cade: &Cade) -> Result<Option<WatchState>> {
@@ -186,7 +195,8 @@ pub(super) fn chain_watch_state(cade: &Cade) -> Result<Option<WatchState>> {
 
     let mut watch_files = Vec::new();
     for layer_entry in &cade_files {
-        watch_files.extend(layer_watch(cade, &layer_entry.0, &layer_entry.1)?.0);
+        let keywords = layer_entry.1.keywords(&layer_entry.0)?;
+        watch_files.extend(layer_watch(cade, &layer_entry.0, &keywords, &layer_entry.1)?.0);
     }
 
     let layer_paths = cade_files.into_iter().map(|entry| entry.0).collect();
@@ -208,8 +218,9 @@ pub(super) fn chain_key(cade: &Cade) -> Result<Option<ChainKey>> {
     };
     let mut parts = Vec::new();
     let mut runs_commands = false;
-    for (path, keywords) in approved_chain(cade, &root)? {
-        let (_, token) = layer_watch(cade, &path, &keywords)?;
+    for (path, snapshot) in approved_chain(cade, &root)? {
+        let keywords = snapshot.keywords(&path)?;
+        let (_, token) = layer_watch(cade, &path, &keywords, &snapshot)?;
         parts.push(format!("{}\n{token}", path.display()));
         runs_commands |= keywords
             .iter()
@@ -246,7 +257,7 @@ fn reusable_cached_layer(
     dir: &str,
     token: &str,
     path: &Path,
-) -> Result<Option<(CadeLayer, Vec<String>)>> {
+) -> Result<Option<CadeLayer>> {
     let Some(cached) = get_cached_layer(cade, dir, token)? else {
         return Ok(None);
     };
@@ -254,12 +265,11 @@ fn reusable_cached_layer(
         let layer = cached
             .activate()
             .with_context(|| format!("replaying entry actions for {}", path.display()))?;
-        let store_paths = layer.nix_store_paths.clone();
         verbosity::log(
             Verbosity::Trace,
             format_args!("cade: using cached layer {}.", path.display()),
         );
-        Ok(Some((layer, store_paths)))
+        Ok(Some(layer))
     } else {
         verbosity::log(
             Verbosity::Trace,
@@ -334,7 +344,7 @@ pub fn export_env_delta(
     };
     let metadata = direnv_export::ExportMetadata {
         root:    plan.root.to_string_lossy().to_string(),
-        file:    direnv_export_file(&plan.root).to_string_lossy().to_string(),
+        file:    plan.config_file.to_string_lossy().to_string(),
         watches: plan
             .all_watch_files
             .iter()
@@ -348,15 +358,6 @@ pub fn export_env_delta(
         export.previous.as_ref(),
         metadata,
     )
-}
-
-fn direnv_export_file(root: &Path) -> PathBuf {
-    let cade = root.join(".cade");
-    if cade.exists() {
-        cade
-    } else {
-        root.join(".envrc")
-    }
 }
 
 fn store_paths_all_present(paths: &[String]) -> bool {

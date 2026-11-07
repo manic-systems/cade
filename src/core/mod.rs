@@ -194,10 +194,13 @@ impl Cade {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS WorkingPaths (
                     Path TEXT PRIMARY KEY,
-                    Permission INTEGER NOT NULL DEFAULT 0
+                    Permission INTEGER NOT NULL DEFAULT 0,
+                    ConfigFile TEXT,
+                    ConfigContents BLOB
                 );",
         )
         .context("create WorkingPaths table")?;
+        permissions::ensure_permission_schema(conn).context("migrate WorkingPaths schema")?;
 
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS LayerCache (

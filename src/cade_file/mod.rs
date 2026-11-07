@@ -1,9 +1,10 @@
 use std::{
-    fs::{
-        exists,
-        read as fs_read,
+    ffi::OsStr,
+    fs::read as fs_read,
+    path::{
+        Path,
+        PathBuf,
     },
-    path::Path,
     str::from_utf8,
 };
 
@@ -14,6 +15,7 @@ use misstep::{
 };
 
 use crate::{
+    config,
     expand::walk::expand_keyword,
     types::keyword::{
         Keyword,
@@ -23,8 +25,74 @@ use crate::{
 
 mod parse;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigKind {
+    Cade,
+    Envrc,
+}
+
+impl ConfigKind {
+    pub const fn filename(self) -> &'static str {
+        match self {
+            Self::Cade => ".cade",
+            Self::Envrc => ".envrc",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ConfigSnapshot {
+    pub kind:     ConfigKind,
+    pub contents: Vec<u8>,
+}
+
+pub fn effective_config(dir: &Path) -> Result<Option<PathBuf>> {
+    let cade = dir.join(".cade");
+    if cade.try_exists().context("check .cade path")? {
+        return Ok(Some(cade));
+    }
+    let envrc = dir.join(".envrc");
+    if config::direnv_mode().loads_envrc() && envrc.try_exists().context("check .envrc path")? {
+        return Ok(Some(envrc));
+    }
+    Ok(None)
+}
+
+impl ConfigSnapshot {
+    pub const fn filename(&self) -> &'static str {
+        self.kind.filename()
+    }
+
+    pub fn read_effective(dir: &Path) -> Result<Option<Self>> {
+        let Some(path) = effective_config(dir)? else {
+            return Ok(None);
+        };
+        let kind = if path.file_name() == Some(OsStr::new(".cade")) {
+            ConfigKind::Cade
+        } else {
+            ConfigKind::Envrc
+        };
+        let contents = fs_read(&path).context("read effective project configuration")?;
+        Ok(Some(Self { kind, contents }))
+    }
+
+    pub fn keywords(&self, dir: &Path) -> Result<Vec<Keyword>> {
+        let mut keywords = match self.kind {
+            ConfigKind::Cade => parse_contents(&dir.join(".cade"), &self.contents)?,
+            ConfigKind::Envrc => vec![Keyword::Load(Loadable::Envrc(String::new()))],
+        };
+        for keyword in &mut keywords {
+            expand_keyword(keyword);
+        }
+        Ok(keywords)
+    }
+}
+
 pub fn read(path: &Path) -> Result<Vec<Keyword>> {
-    let contents = fs_read(path).context("reading cade file")?;
+    parse_contents(path, &fs_read(path).context("reading cade file")?)
+}
+
+fn parse_contents(path: &Path, contents: &[u8]) -> Result<Vec<Keyword>> {
     let mut accum = Vec::new();
     for (line_idx, raw_line) in contents.split(|&byte| byte == b'\n').enumerate() {
         let no_cr = raw_line.strip_suffix(b"\r").unwrap_or(raw_line);
@@ -48,18 +116,6 @@ pub fn read(path: &Path) -> Result<Vec<Keyword>> {
         }
     }
     Ok(accum)
-}
-
-pub fn load_dir(dir: &Path) -> Result<Vec<Keyword>> {
-    let mut keywords = if exists(dir.join(".cade")).unwrap_or(false) {
-        read(&dir.join(".cade")).context("reading cade file")?
-    } else {
-        vec![Keyword::Load(Loadable::Envrc(String::new()))]
-    };
-    for keyword in &mut keywords {
-        expand_keyword(keyword);
-    }
-    Ok(keywords)
 }
 
 #[cfg(test)]
