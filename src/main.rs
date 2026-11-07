@@ -50,7 +50,10 @@ use crate::{
         },
         permissions::allow_here,
         project::edit_project,
-        reload::do_reload,
+        reload::{
+            do_reload,
+            request_reload,
+        },
         restore::do_restore,
         sessions::leases::{
             lease_close,
@@ -123,9 +126,13 @@ fn try_main() -> Result<()> {
         },
         CliAction::Reload { shell } => {
             let cade = Cade::init()?;
-            let output = ShellName::from(shell).get_output();
-            do_reload(&cade, output.as_ref(), client_id.as_deref(), owner_pid)
-                .context("reload cade environment")?;
+            if let Some(format) = shell {
+                let output = ShellName::from(format).get_output();
+                do_reload(&cade, output.as_ref(), client_id.as_deref(), owner_pid)
+                    .context("reload cade environment")?;
+            } else {
+                request_reload(&cade).context("request environment reload")?;
+            }
         },
         CliAction::Export {
             format: CliExportFormat::Json,

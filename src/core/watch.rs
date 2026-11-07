@@ -49,7 +49,7 @@ use crate::{
     types::keyword::Keyword,
 };
 
-pub(super) const LAYER_CACHE_VERSION: &str = "layer-cache-v7";
+pub(super) const LAYER_CACHE_VERSION: &str = "layer-cache-v8";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum WatchChange {
@@ -219,6 +219,12 @@ pub fn load_watch_ref(raw: &str) -> Option<WatchState> {
     serde_json::from_str(&body).ok()
 }
 
+pub(super) fn reload_marker(cade: &Cade, dir: &Path) -> PathBuf {
+    cade.state_dir
+        .join("reload")
+        .join(stable_hash_hex(&dir.to_string_lossy()))
+}
+
 fn snapshot_layer_key(files: &[PathBuf], snapshot: &ConfigSnapshot) -> Result<String> {
     let contents =
         from_utf8(&snapshot.contents).context("parse approved configuration as UTF-8")?;
@@ -242,18 +248,23 @@ pub(super) fn layer_watch(
         return Ok((files, token));
     }
 
-    let files = watched_files_for_keywords(dir, keywords, snapshot)?;
+    let files = watched_files_for_keywords(cade, dir, keywords, snapshot)?;
     let token = snapshot_layer_key(&files, snapshot)?;
     store_watch_discovery(cade, &key, &files, &token)?;
     Ok((files, token))
 }
 
 fn watched_files_for_keywords(
+    cade: &Cade,
     dir: &Path,
     keywords: &[Keyword],
     snapshot: &ConfigSnapshot,
 ) -> Result<Vec<PathBuf>> {
-    let mut files = vec![dir.join(".cade"), dir.join(".envrc")];
+    let mut files = vec![
+        dir.join(".cade"),
+        dir.join(".envrc"),
+        reload_marker(cade, dir),
+    ];
     if snapshot.kind == ConfigKind::Envrc {
         let contents = from_utf8(&snapshot.contents).context("parse approved .envrc as UTF-8")?;
         files.extend(envrc_watch_files_from_contents(
