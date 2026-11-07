@@ -13,6 +13,7 @@ use std::{
         Path,
         PathBuf,
     },
+    str::from_utf8,
     time::UNIX_EPOCH,
 };
 
@@ -27,6 +28,10 @@ use serde::{
 };
 
 use crate::{
+    cade_file::{
+        ConfigKind,
+        ConfigSnapshot,
+    },
     core::{
         Cade,
         cache::{
@@ -40,12 +45,13 @@ use crate::{
             stable_hash_hex,
         },
     },
+    envrc::watch::envrc_watch_files_from_contents,
     types::keyword::Keyword,
 };
 
-pub(super) const LAYER_CACHE_VERSION: &str = "layer-cache-v6";
+pub(super) const LAYER_CACHE_VERSION: &str = "layer-cache-v7";
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum WatchChange {
     Unchanged,
     Metadata,
@@ -213,28 +219,49 @@ pub fn load_watch_ref(raw: &str) -> Option<WatchState> {
     serde_json::from_str(&body).ok()
 }
 
+fn snapshot_layer_key(files: &[PathBuf], snapshot: &ConfigSnapshot) -> Result<String> {
+    let contents =
+        from_utf8(&snapshot.contents).context("parse approved configuration as UTF-8")?;
+    let identity =
+        serde_json::to_string(&(snapshot.filename(), contents, compute_layer_key(files)))?;
+    Ok(format!("{LAYER_CACHE_VERSION}\n{identity}"))
+}
+
 // The walk is skipped while every file found last time keeps its mtime and
 // size, so a new file goes unseen until an already-watched one changes.
 pub(super) fn layer_watch(
     cade: &Cade,
     dir: &Path,
     keywords: &[Keyword],
+    snapshot: &ConfigSnapshot,
 ) -> Result<(Vec<PathBuf>, String)> {
     let key = dir.to_string_lossy();
     if let Some((files, token)) = get_watch_discovery(cade, &key)
-        && compute_layer_key(&files) == token
+        && snapshot_layer_key(&files, snapshot)? == token
     {
         return Ok((files, token));
     }
 
-    let files = watched_files_for_keywords(dir, keywords)?;
-    let token = compute_layer_key(&files);
+    let files = watched_files_for_keywords(dir, keywords, snapshot)?;
+    let token = snapshot_layer_key(&files, snapshot)?;
     store_watch_discovery(cade, &key, &files, &token)?;
     Ok((files, token))
 }
 
-fn watched_files_for_keywords(dir: &Path, keywords: &[Keyword]) -> Result<Vec<PathBuf>> {
-    let mut files = vec![dir.join(".cade")];
+fn watched_files_for_keywords(
+    dir: &Path,
+    keywords: &[Keyword],
+    snapshot: &ConfigSnapshot,
+) -> Result<Vec<PathBuf>> {
+    let mut files = vec![dir.join(".cade"), dir.join(".envrc")];
+    if snapshot.kind == ConfigKind::Envrc {
+        let contents = from_utf8(&snapshot.contents).context("parse approved .envrc as UTF-8")?;
+        files.extend(envrc_watch_files_from_contents(
+            &dir.join(".envrc"),
+            contents,
+        ));
+        return Ok(files);
+    }
     for kw in keywords {
         match *kw {
             Keyword::Load(ref loadable) => files.extend(loadable.resolve(dir).watch),
@@ -339,8 +366,16 @@ mod tests {
     };
 
     use crate::{
+        cade_file::{
+            ConfigKind,
+            ConfigSnapshot,
+        },
         core::{
             Cade,
+            cache::{
+                get_cached_layer,
+                store_cached_layer,
+            },
             watch::{
                 LAYER_CACHE_VERSION,
                 WatchChange,
@@ -353,9 +388,16 @@ mod tests {
                 persist_watch_state,
             },
         },
-        types::keyword::{
-            Keyword,
-            Loadable,
+        env::set::EnvSet,
+        types::{
+            keyword::{
+                Keyword,
+                Loadable,
+            },
+            layer::{
+                CachedLayer,
+                CadeAction,
+            },
         },
     };
 
@@ -386,21 +428,80 @@ mod tests {
             state_dir: root.clone(),
         };
         let keywords = [Keyword::Load(Loadable::Envrc(String::new()))];
+        let snapshot = ConfigSnapshot {
+            kind:     ConfigKind::Envrc,
+            contents: b"use flake\n".to_vec(),
+        };
         let extra = root.join("nix").join("extra.nix");
 
-        let (first, _) = layer_watch(&cade, &root, &keywords).unwrap();
+        let (first, _) = layer_watch(&cade, &root, &keywords, &snapshot).unwrap();
         assert!(first.contains(&root.join("flake.nix")));
         assert!(!first.contains(&extra));
 
         write(&extra, "{}\n").unwrap();
-        let (reused, _) = layer_watch(&cade, &root, &keywords).unwrap();
+        let (reused, _) = layer_watch(&cade, &root, &keywords, &snapshot).unwrap();
         assert!(!reused.contains(&extra));
 
         write(root.join("flake.nix"), "{ inputs = {}; }\n").unwrap();
-        let (rediscovered, _) = layer_watch(&cade, &root, &keywords).unwrap();
+        let (rediscovered, _) = layer_watch(&cade, &root, &keywords, &snapshot).unwrap();
         assert!(rediscovered.contains(&extra));
 
         let _ = remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cached_layers_cannot_cross_verified_snapshot_boundaries() {
+        let root = temp_dir().join(format!("cade-snapshot-cache-{}", id()));
+        create_dir_all(&root).unwrap();
+        write(root.join(".cade"), "VALUE=disk\n").unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        Cade::ensure_db(&db).unwrap();
+        let cade = Cade {
+            db,
+            cwd: root.clone(),
+            state_dir: root.clone(),
+        };
+        let approved = ConfigSnapshot {
+            kind:     ConfigKind::Cade,
+            contents: b"VALUE=old\n".to_vec(),
+        };
+        let keywords = approved.keywords(&root).unwrap();
+        let (_, old_key) = layer_watch(&cade, &root, &keywords, &approved).unwrap();
+        let cached = CachedLayer {
+            actions:         vec![CadeAction::Environ(
+                EnvSet::from_envs("VALUE=old\n").unwrap(),
+            )],
+            nix_store_paths: Vec::new(),
+        };
+        let dir = root.to_str().unwrap();
+        store_cached_layer(&cade, dir, &old_key, &cached).unwrap();
+
+        let revised = ConfigSnapshot {
+            kind:     ConfigKind::Cade,
+            contents: b"VALUE=new\n".to_vec(),
+        };
+        let (_, revised_key) =
+            layer_watch(&cade, &root, &revised.keywords(&root).unwrap(), &revised).unwrap();
+        assert!(
+            get_cached_layer(&cade, dir, &revised_key)
+                .unwrap()
+                .is_none(),
+            "unchanged disk metadata must not replay another approved snapshot"
+        );
+
+        let switched = ConfigSnapshot {
+            kind:     ConfigKind::Envrc,
+            contents: b"VALUE=old\n".to_vec(),
+        };
+        let (_, switched_key) =
+            layer_watch(&cade, &root, &switched.keywords(&root).unwrap(), &switched).unwrap();
+        assert!(
+            get_cached_layer(&cade, dir, &switched_key)
+                .unwrap()
+                .is_none(),
+            "identical bytes with another config kind must not share cached execution"
+        );
+        remove_dir_all(root).unwrap();
     }
 
     #[test]

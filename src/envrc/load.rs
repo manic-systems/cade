@@ -12,6 +12,7 @@ use misstep::{
 use crate::{
     env::set::EnvSet,
     envrc::plan::{
+        NixDirective,
         PlannedDirective,
         plan_directives,
     },
@@ -28,37 +29,30 @@ use crate::{
 };
 
 pub fn load_envrc(path: &Path, profile_dir: Option<&Path>) -> Result<(Vec<EnvrcAction>, EnvSet)> {
-    let dir = path.parent().unwrap_or(path);
     let contents =
         read_to_string(path).with_context(|| format!("reading .envrc at {}", path.display()))?;
+    load_envrc_from_contents(path, &contents, profile_dir)
+}
+
+pub fn load_envrc_from_contents(
+    path: &Path,
+    contents: &str,
+    profile_dir: Option<&Path>,
+) -> Result<(Vec<EnvrcAction>, EnvSet)> {
+    let dir = path.parent().unwrap_or(path);
     let mut actions = Vec::new();
     let mut warnings = Vec::new();
     let mut out = EnvSet::new();
 
-    for directive in plan_directives(dir, &contents) {
+    for directive in plan_directives(dir, contents) {
         let action = match directive.action {
-            PlannedDirective::UseFlake {
-                target,
-                profile_name,
-            } => {
-                let profile = profile_dir
-                    .context("creating nix profile")?
-                    .join(profile_name);
-                let (dev_env, env) = load_flake(&target, &profile).context("use flake")?;
-                out.merge_loaded(env);
-                actions.push(EnvrcAction::NixDevEnv(dev_env));
-                continue;
-            },
             PlannedDirective::UseNix {
-                shell,
+                source,
                 profile_name,
             } => {
-                let profile = profile_dir
-                    .context("creating nix profile")?
-                    .join(profile_name);
-                let (dev_env, env) = load_shell(&shell, &profile).context("use nix")?;
+                let (action, env) = load_nix_directive(source, profile_dir, &profile_name)?;
                 out.merge_loaded(env);
-                actions.push(EnvrcAction::NixDevEnv(dev_env));
+                actions.push(action);
                 continue;
             },
             PlannedDirective::Dotenv {
@@ -94,6 +88,21 @@ pub fn load_envrc(path: &Path, profile_dir: Option<&Path>) -> Result<(Vec<EnvrcA
 
     warn_unsupported(path, &warnings);
     Ok((actions, out))
+}
+
+fn load_nix_directive(
+    source: NixDirective,
+    profile_dir: Option<&Path>,
+    profile_name: &str,
+) -> Result<(EnvrcAction, EnvSet)> {
+    let profile = profile_dir
+        .context("creating nix profile")?
+        .join(profile_name);
+    let (dev_env, env) = match source {
+        NixDirective::Flake(target) => load_flake(&target, &profile).context("use flake")?,
+        NixDirective::Shell(shell) => load_shell(&shell, &profile).context("use nix")?,
+    };
+    Ok((EnvrcAction::NixDevEnv(dev_env), env))
 }
 
 pub fn activate_envrc(actions: &[EnvrcAction]) -> Result<EnvSet> {
