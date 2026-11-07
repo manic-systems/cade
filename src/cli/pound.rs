@@ -116,14 +116,14 @@ pub enum CliAction {
         wait: bool,
     },
 
-    /// allow cade in the current .cade directory
-    Allow,
+    /// approve the nearest project configuration, or a specified path
+    Allow { path: Option<PathBuf> },
 
-    /// block cade in the current .cade directory
-    Disallow,
+    /// block the nearest project configuration, or a specified path
+    Disallow { path: Option<PathBuf> },
 
-    /// open .cade in $EDITOR, then allow this directory
-    Edit,
+    /// edit the project configuration, then approve it on success
+    Edit { path: Option<PathBuf> },
 
     /// print the shell hook initialization code
     #[pound(after_help = "Examples:\n  eval \"$(cade hook bash)\"\n  cade hook fish | source")]

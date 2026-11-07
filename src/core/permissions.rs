@@ -22,10 +22,8 @@ use crate::{
     cade_file::ConfigSnapshot,
     core::{
         Cade,
-        participants::{
-            find_cade_root,
-            participant_dirs,
-        },
+        participants::participant_dirs,
+        project::resolve_project,
     },
     verbosity::{
         self,
@@ -33,13 +31,12 @@ use crate::{
     },
 };
 
-pub fn allow_here(cade: &Cade, permission: bool) -> Result<()> {
-    let Some(root) = find_cade_root(&cade.cwd) else {
-        return Ok(());
-    };
+pub fn allow_here(cade: &Cade, path: Option<&Path>, permission: bool) -> Result<()> {
+    let (root, config) = resolve_project(cade, path)?;
     if !permission {
         return set_permission(cade, &root, false);
     }
+    config.context("no .cade or .envrc found in this directory or any parent")?;
 
     let chain = participant_dirs(&root);
     let upto = approval_gap_end(cade, &chain)?;
