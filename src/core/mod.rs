@@ -1,6 +1,7 @@
 pub mod activation;
 pub mod cache;
 pub mod enter;
+pub mod execute;
 mod layer;
 mod participants;
 pub mod permissions;
@@ -173,7 +174,10 @@ fn announce_loaded(dir: &str) {
 
 impl Cade {
     pub fn init() -> Result<Self> {
-        let state_dir = Self::state_dir_path()?;
+        Self::init_at(Self::state_dir_path()?)
+    }
+
+    pub fn init_at(state_dir: PathBuf) -> Result<Self> {
         create_dir_all(&state_dir).context("create cade state path")?;
         let db_path = state_dir.join("cade.db");
         let db = Connection::open(db_path)?;

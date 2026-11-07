@@ -116,6 +116,23 @@ pub enum CliAction {
         wait: bool,
     },
 
+    /// run a command in a project's approved environment
+    Exec {
+        /// the project directory to run in
+        directory: PathBuf,
+        /// the command and its arguments
+        #[pound(trailing, min_values = 1)]
+        command:   Vec<String>,
+    },
+
+    #[pound(hidden, name = "__exec-stage")]
+    ExecStage {
+        #[pound(long)]
+        state_dir: PathBuf,
+        #[pound(trailing, min_values = 1)]
+        command:   Vec<String>,
+    },
+
     /// allow cade in the current .cade directory
     Allow,
 
