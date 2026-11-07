@@ -16,21 +16,13 @@ mod types;
 mod verbosity;
 
 use std::{
-    env::{
-        current_dir,
-        current_exe,
-        var,
-    },
+    env::current_exe,
     fs::canonicalize,
     path::Path,
-    process::{
-        Command,
-        exit,
-    },
+    process::exit,
 };
 
 use misstep::{
-    OptionExt as _,
     Result,
     ResultExt as _,
 };
@@ -52,10 +44,8 @@ use crate::{
         Cade,
         activation::export_env_delta,
         enter::do_activation,
-        permissions::{
-            allow_here,
-            set_permission,
-        },
+        permissions::allow_here,
+        project::edit_project,
         reload::do_reload,
         restore::do_restore,
         sessions::leases::{
@@ -65,10 +55,7 @@ use crate::{
         },
         status::do_status,
     },
-    shells::{
-        ShellName,
-        quote::split_words,
-    },
+    shells::ShellName,
     verbosity::set as set_verbosity,
 };
 
@@ -144,25 +131,14 @@ fn try_main() -> Result<()> {
                 .context("export cade environment")?;
             print!("{}", delta.to_json());
         },
-        CliAction::Allow => {
-            allow_here(&Cade::init()?, true)?;
+        CliAction::Allow { path } => {
+            allow_here(&Cade::init()?, path.as_deref(), true)?;
         },
-        CliAction::Disallow => {
-            allow_here(&Cade::init()?, false)?;
+        CliAction::Disallow { path } => {
+            allow_here(&Cade::init()?, path.as_deref(), false)?;
         },
-        CliAction::Edit => {
-            let cade = Cade::init()?;
-            let editor = var("EDITOR").context("find EDITOR variable")?;
-            let parts = split_words(&editor).context("parse EDITOR variable")?;
-            let (program, editor_args) = parts.split_first().context("EDITOR variable is empty")?;
-            let mut session = Command::new(program)
-                .args(editor_args)
-                .arg(".cade")
-                .spawn()
-                .context("spawn editor process")?;
-            session.wait().context("wait for editor process")?;
-            let cwd = current_dir().context("determine cwd")?;
-            set_permission(&cade, &cwd, true)?;
+        CliAction::Edit { path } => {
+            edit_project(&Cade::init()?, path.as_deref())?;
         },
         CliAction::Lease { action: lease } => {
             let cade = Cade::init()?;

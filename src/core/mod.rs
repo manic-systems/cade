@@ -4,6 +4,7 @@ pub mod enter;
 mod layer;
 mod participants;
 pub mod permissions;
+pub mod project;
 pub mod reload;
 pub mod restore;
 pub mod sessions;
