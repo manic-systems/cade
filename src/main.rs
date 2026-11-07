@@ -44,6 +44,10 @@ use crate::{
         Cade,
         activation::export_env_delta,
         enter::do_activation,
+        execute::{
+            do_exec,
+            do_exec_stage,
+        },
         permissions::allow_here,
         project::edit_project,
         reload::do_reload,
@@ -131,6 +135,12 @@ fn try_main() -> Result<()> {
                 .context("export cade environment")?;
             print!("{}", delta.to_json());
         },
+        CliAction::Exec { directory, command } => {
+            do_exec(&Cade::init()?, &directory, &command)?;
+        },
+        CliAction::ExecStage { state_dir, command } => {
+            do_exec_stage(&Cade::init_at(state_dir)?, &command)?;
+        },
         CliAction::Allow { path } => {
             allow_here(&Cade::init()?, path.as_deref(), true)?;
         },
@@ -141,27 +151,28 @@ fn try_main() -> Result<()> {
             edit_project(&Cade::init()?, path.as_deref())?;
         },
         CliAction::Lease { action: lease } => {
-            let cade = Cade::init()?;
-            match lease {
-                LeaseAction::Open {
-                    kind,
-                    project,
-                    ttl_seconds,
-                } => lease_open(&cade, &kind, project.as_deref(), ttl_seconds)?,
-                LeaseAction::Refresh {
-                    client_id: lease_client,
-                    ttl_seconds,
-                } => lease_refresh(&cade, &lease_client, ttl_seconds)?,
-                LeaseAction::Close {
-                    client_id: lease_client,
-                } => lease_close(&cade, &lease_client)?,
-            }
+            manage_lease(&Cade::init()?, lease)?;
         },
         CliAction::Status => {
             do_status(&Cade::init()?).context("report status")?;
         },
     }
     Ok(())
+}
+
+fn manage_lease(cade: &Cade, lease: LeaseAction) -> Result<()> {
+    match lease {
+        LeaseAction::Open {
+            kind,
+            project,
+            ttl_seconds,
+        } => lease_open(cade, &kind, project.as_deref(), ttl_seconds),
+        LeaseAction::Refresh {
+            client_id,
+            ttl_seconds,
+        } => lease_refresh(cade, &client_id, ttl_seconds),
+        LeaseAction::Close { client_id } => lease_close(cade, &client_id),
+    }
 }
 
 fn main() {

@@ -97,6 +97,19 @@ impl ActivationEnv {
     }
 }
 
+#[derive(Clone, Copy)]
+enum CachePolicy {
+    Reuse,
+    Fresh,
+}
+
+pub(super) fn activation_plan_for_exec(cade: &Cade, session: &str) -> Result<ActivationPlan> {
+    let root = find_cade_root(&cade.cwd)
+        .context("no .cade or .envrc found in this directory or any parent")?;
+    maybe_activation_plan_for_root(cade, &root, session, CachePolicy::Fresh)?
+        .ok_or_else(|| report!("{DISALLOWED_REMINDER}"))
+}
+
 pub(super) fn activation_plan(cade: &Cade, session: &str) -> Result<ActivationPlan> {
     let root = find_cade_root(&cade.cwd)
         .context("no .cade or .envrc found in this directory or any parent")?;
@@ -104,7 +117,7 @@ pub(super) fn activation_plan(cade: &Cade, session: &str) -> Result<ActivationPl
 }
 
 fn activation_plan_for_root(cade: &Cade, root: &Path, session: &str) -> Result<ActivationPlan> {
-    maybe_activation_plan_for_root(cade, root, session)?
+    maybe_activation_plan_for_root(cade, root, session, CachePolicy::Reuse)?
         .ok_or_else(|| report!("{DISALLOWED_REMINDER}"))
 }
 
@@ -112,6 +125,7 @@ fn maybe_activation_plan_for_root(
     cade: &Cade,
     root: &Path,
     session: &str,
+    cache_policy: CachePolicy,
 ) -> Result<Option<ActivationPlan>> {
     let approved = approved_chain(cade, root)?;
     let Some(tip) = approved.last() else {
@@ -130,7 +144,15 @@ fn maybe_activation_plan_for_root(
         let (watch_files, token) = layer_watch(cade, &path, &keywords, &snapshot)?;
         all_watch_files.extend(watch_files);
         let entry = (path, keywords);
-        let layer = activate_layer(cade, session, layer_count, &entry, &snapshot, &token)?;
+        let layer = activate_layer(
+            cade,
+            session,
+            layer_count,
+            &entry,
+            &snapshot,
+            &token,
+            cache_policy,
+        )?;
         cade_files.push(entry);
         nix_store_paths.extend(layer.nix_store_paths.iter().cloned());
         cade_layers.push(layer);
@@ -148,6 +170,8 @@ fn maybe_activation_plan_for_root(
     }))
 }
 
+// Exec evaluates fresh in its restored process context. Its result must neither
+// consume nor replace a layer evaluated for an interactive shell.
 fn activate_layer(
     cade: &Cade,
     session: &str,
@@ -155,10 +179,13 @@ fn activate_layer(
     entry: &(PathBuf, Vec<Keyword>),
     snapshot: &ConfigSnapshot,
     token: &str,
+    cache_policy: CachePolicy,
 ) -> Result<CadeLayer> {
     let path = &entry.0;
     let dir = path.to_string_lossy();
-    if let Some(layer) = reusable_cached_layer(cade, &dir, token, path)? {
+    if matches!(cache_policy, CachePolicy::Reuse)
+        && let Some(layer) = reusable_cached_layer(cade, &dir, token, path)?
+    {
         return Ok(layer);
     }
     verbosity::log(
@@ -166,7 +193,9 @@ fn activate_layer(
         format_args!("cade: loading layer {}.", path.display()),
     );
     let (cached, layer) = load_single_layer(layer_count, path, &entry.1, snapshot, cade, session)?;
-    store_cached_layer(cade, &dir, token, &cached)?;
+    if matches!(cache_policy, CachePolicy::Reuse) {
+        store_cached_layer(cade, &dir, token, &cached)?;
+    }
     Ok(layer)
 }
 
@@ -268,7 +297,8 @@ pub fn export_env_delta(
 
     let session = direnv_session_id(client_id, owner_pid)
         .unwrap_or_else(|| direnv_fallback_session_id(&root));
-    let Some(plan) = maybe_activation_plan_for_root(cade, &root, &session)? else {
+    let Some(plan) = maybe_activation_plan_for_root(cade, &root, &session, CachePolicy::Reuse)?
+    else {
         if export.previous.is_some() {
             return Ok(direnv_export::inactive_delta(export.previous));
         }
