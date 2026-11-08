@@ -72,9 +72,11 @@ pub(super) fn captured_env_output<'output>(
     Ok((&stdout[..start], &stdout[start + ENV_MARKER.len()..]))
 }
 
+// Exported vars stay when equal to ambient, the replay lands in other shells
 pub(super) fn env_set_from_captured_env(
     raw: &[u8],
     previous: &BTreeMap<String, String>,
+    exported: &BTreeSet<String>,
 ) -> Result<EnvSet> {
     let path_suffix = previous.get("PATH").map(String::as_str);
     let mut vars: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -92,7 +94,10 @@ pub(super) fn env_set_from_captured_env(
         if !keep_loaded_env_var(key) {
             continue;
         }
-        if previous.get(key).is_some_and(|value| value == raw_value) && !is_kept_nix_env_var(key) {
+        if previous.get(key).is_some_and(|value| value == raw_value)
+            && !is_kept_nix_env_var(key)
+            && !exported.contains(key)
+        {
             continue;
         }
 
@@ -192,6 +197,7 @@ mod tests {
         let env = env_set_from_captured_env(
             b"PATH=/dev/bin:/path-not-set:/usr/bin:/bin\0FOO=bar\0",
             &previous,
+            &BTreeSet::new(),
         )
         .unwrap();
 
@@ -209,6 +215,7 @@ mod tests {
         let env = env_set_from_captured_env(
             b"NIX_CC=/nix/store/gcc-wrapper\0PKG_CONFIG_PATH=/old/pkgconfig\0AMBIENT=same\0",
             &previous,
+            &BTreeSet::new(),
         )
         .unwrap();
 

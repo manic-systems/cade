@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    env::var,
     fs::{
         create_dir_all,
         read_dir,
@@ -9,7 +10,10 @@ use std::{
         remove_file,
         write as write_file,
     },
-    os::unix::process::parent_id,
+    os::unix::{
+        fs::symlink,
+        process::parent_id,
+    },
     path::{
         Path,
         PathBuf,
@@ -90,6 +94,7 @@ fn holders_dir(cade: &Cade, session: &str) -> PathBuf {
 
 pub fn gc_state(cade: &Cade, protected_session: Option<&str>) {
     let live_sessions = gc_shell_roots(cade, protected_session);
+    gc_user_roots(&live_sessions);
     gc_session_files(&cade.state_dir.join("snapshots"), &live_sessions, |name| {
         name.strip_suffix(".env")
     });
@@ -166,6 +171,49 @@ fn gc_shell_roots(cade: &Cade, protected_session: Option<&str>) -> HashSet<Strin
         }
     }
     live_sessions
+}
+
+// GC treats every symlink under gcroots as a root, so cade can register
+// one without a nix-daemon round trip.
+fn user_gc_roots_dir() -> Option<PathBuf> {
+    let dir = Path::new("/nix/var/nix/gcroots/per-user").join(var("USER").ok()?);
+    dir.is_dir().then_some(dir)
+}
+
+fn gc_user_roots(live_sessions: &HashSet<String>) {
+    let Some(dir) = user_gc_roots_dir() else {
+        return;
+    };
+    let Ok(entries) = read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(session) = name
+            .to_str()
+            .and_then(|text| text.strip_prefix("cade-"))
+            .and_then(|rest| rest.rsplit_once('-'))
+            .map(|(session, _)| session)
+        else {
+            continue;
+        };
+        if !live_sessions.contains(session) {
+            let _ = remove_file(entry.path());
+        }
+    }
+}
+
+fn link_user_roots(session: &str, session_dir: &Path, to_root: &[String]) -> bool {
+    let Some(user_dir) = user_gc_roots_dir() else {
+        return false;
+    };
+    to_root.iter().all(|store_path| {
+        let name = format!("cade-{session}-{}", stable_hash_hex(store_path));
+        let session_link = session_dir.join(&name);
+        let user_link = user_dir.join(&name);
+        (session_link.exists() || symlink(store_path, &session_link).is_ok())
+            && (user_link.exists() || symlink(store_path, &user_link).is_ok())
+    })
 }
 
 fn session_has_live_holder(cade: &Cade, session: &str) -> bool {
@@ -379,6 +427,10 @@ pub fn root_nix_store_paths(cade: &Cade, session: &str, paths: &[String]) {
         return;
     }
     to_root.sort_unstable();
+
+    if link_user_roots(session, &session_dir, &to_root) {
+        return;
+    }
 
     let base = session_dir.join(format!("cade-{}", stable_hash_hex(&to_root.join("\n"))));
     let add_result = Command::new("nix-store")

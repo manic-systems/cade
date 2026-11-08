@@ -43,7 +43,7 @@ use crate::{
     types::keyword::Keyword,
 };
 
-pub(super) const LAYER_CACHE_VERSION: &str = "layer-cache-v6";
+pub(super) const LAYER_CACHE_VERSION: &str = "layer-cache-v7";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum WatchChange {
