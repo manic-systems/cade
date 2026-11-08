@@ -35,25 +35,32 @@ impl ShellOutput for Nushell {
         r#"let cade = __CADE__
 let cade_args = __CADE_ARGS__
 let nu_exe = (try { which nu | get path.0 } catch { "nu" })
+let cade_reload = {|...flags|
+    for line in (^$cade ...$cade_args --owner-pid $nu.pid reload --shell nushell ...$flags | lines) {
+        if ($line | str trim | is-empty) { continue }
+        let m = ($line | from json)
+        if "s" in $m { load-env $m.s }
+        if "u" in $m { hide-env --ignore-errors $m.u }
+        if "h" in $m {
+            let prog = ("let __pre = $env\n" + $m.h + "\nlet __post = $env\nlet __set = ($__post | transpose k v | where {|r| ($r.v | describe) == \"string\" and $r.k not-in [PWD OLDPWD] and (($__pre | get --optional $r.k) != $r.v)} | reduce -f {} {|r, a| $a | upsert $r.k $r.v}); {set: $__set, unset: ($__pre | columns | where {|k| $k not-in ($__post | columns)})} | to json | print --stderr")
+            let d = (^$nu_exe --no-config-file --commands $prog err>| from json)
+            load-env $d.set
+            for k in $d.unset { hide-env --ignore-errors $k }
+        }
+    }
+}
 
 $env.config.hooks.pre_prompt = (
     ($env.config.hooks?.pre_prompt? | default [])
     | append {||
         let __cade_last_exit = ($env.LAST_EXIT_CODE? | default 0)
-        for line in (^$cade ...$cade_args --owner-pid $nu.pid reload --shell nushell | lines) {
-            if ($line | str trim | is-empty) { continue }
-            let m = ($line | from json)
-            if "s" in $m { load-env $m.s }
-            if "u" in $m { hide-env --ignore-errors $m.u }
-            if "h" in $m {
-                let prog = ("let __pre = $env\n" + $m.h + "\nlet __post = $env\nlet __set = ($__post | transpose k v | where {|r| ($r.v | describe) == \"string\" and $r.k not-in [PWD OLDPWD] and (($__pre | get --optional $r.k) != $r.v)} | reduce -f {} {|r, a| $a | upsert $r.k $r.v}); {set: $__set, unset: ($__pre | columns | where {|k| $k not-in ($__post | columns)})} | to json | print --stderr")
-                let d = (^$nu_exe --no-config-file --commands $prog err>| from json)
-                load-env $d.set
-                for k in $d.unset { hide-env --ignore-errors $k }
-            }
-        }
+        do --env $cade_reload
         $env.LAST_EXIT_CODE = $__cade_last_exit
     }
+)
+$env.config.hooks.pre_execution = (
+    ($env.config.hooks?.pre_execution? | default [])
+    | append {|| do --env $cade_reload "--wait" }
 )
 "#
         .replace("__CADE__", &cade)

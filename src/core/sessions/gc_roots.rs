@@ -29,6 +29,7 @@ use misstep::{
 use crate::{
     core::{
         Cade,
+        reload_job::jobs_dir,
         sessions::{
             SessionHolder,
             identity::{
@@ -96,6 +97,9 @@ pub fn gc_state(cade: &Cade, protected_session: Option<&str>) {
         name.strip_suffix(".json")?
             .rsplit_once('-')
             .map(|(session, _)| session)
+    });
+    gc_session_files(&jobs_dir(cade), &live_sessions, |name| {
+        name.rsplit_once('.').map(|(session, _)| session)
     });
 }
 

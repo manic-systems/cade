@@ -5,6 +5,7 @@ mod layer;
 mod participants;
 pub mod permissions;
 pub mod reload;
+pub mod reload_job;
 pub mod restore;
 pub mod sessions;
 pub mod shell_state;

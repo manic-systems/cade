@@ -42,6 +42,9 @@ impl ShellOutput for Murex {
         "event onPrompt cade=before {
     __CADE__ reload --shell murex -> source
 }
+event onPrompt cade_exec=after {
+    __CADE__ reload --shell murex --wait -> source
+}
 "
         .replace("__CADE__", &posix_command(cade_exe, cade_args))
     }

@@ -74,6 +74,17 @@ impl From<CliShell> for ShellName {
     }
 }
 
+impl CliShell {
+    // bash has no pre-exec hook to wait in, and json clients never poll a
+    // second time
+    pub const fn waits_for_reload(self) -> bool {
+        match self {
+            Self::Bash | Self::Json => true,
+            Self::Fish | Self::Zsh | Self::Nushell | Self::Elvish | Self::Murex => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum CliExportFormat {
     Json,
@@ -100,6 +111,9 @@ pub enum CliAction {
         /// the shell to print reload code for
         #[pound(long)]
         shell: CliShell,
+
+        /// block until a background reload finishes, run before each command
+        wait: bool,
     },
 
     /// allow cade in the current .cade directory
@@ -120,6 +134,12 @@ pub enum CliAction {
 
     #[pound(hidden)]
     Export { format: CliExportFormat },
+
+    #[pound(hidden)]
+    ReloadJob {
+        #[pound(long)]
+        session: String,
+    },
 
     /// manage leases that keep a non-shell client's GC roots alive
     Lease {

@@ -32,6 +32,17 @@ impl FromStr for Verbosity {
     }
 }
 
+impl fmt::Display for Verbosity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match *self {
+            Self::Quiet => "quiet",
+            Self::Normal => "normal",
+            Self::Vars => "vars",
+            Self::Trace => "trace",
+        })
+    }
+}
+
 static OVERRIDE: OnceLock<Verbosity> = OnceLock::new();
 
 pub fn set(verbosity: Verbosity) {
