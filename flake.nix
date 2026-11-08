@@ -65,7 +65,7 @@
                 nativeBuildInputs = [
                   pkgs.cargo
                   (rustfmtFor pkgs system)
-                  pkgs.taplo
+                  pkgs.tombi
                   pkgs.nixfmt
                 ];
                 src = ./.;
@@ -75,7 +75,7 @@
                 chmod -R +w ./tree
                 cd ./tree
                 cargo fmt -- --check
-                taplo fmt --check
+                tombi format --offline --check
                 find . -name '*.nix' -exec nixfmt --check {} +
                 touch $out
               '';
@@ -117,12 +117,12 @@
             packages = [
               pkgs.cargo
               (rustfmtFor pkgs system)
-              pkgs.taplo
+              pkgs.tombi
               pkgs.nixfmt
             ];
             shellHook = ''
               cargo fmt
-              taplo fmt
+              tombi format
               find . -name '*.nix' -not -path './target/*' -exec nixfmt {} +
             '';
           };

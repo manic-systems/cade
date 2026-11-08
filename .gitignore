@@ -8,7 +8,7 @@
 !.github/**
 !.gitignore
 !.rustfmt.toml
-!.taplo.toml
+!tombi.toml
 !Cargo.lock
 !Cargo.toml
 !LICENSE
