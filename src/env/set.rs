@@ -164,8 +164,9 @@ impl EnvSet {
         store_paths::from_env(&self.vars)
     }
 
-    pub fn retain_store_path(&mut self, path: String) {
-        self.merge_store_paths(vec![path]);
+    // nix-shell-env references every store path in its vars
+    pub fn root_by_store_path(&mut self, path: String) {
+        self.nix_store_paths = vec![path];
     }
 
     pub(super) fn into_parsed_env(self) -> ParsedEnv {

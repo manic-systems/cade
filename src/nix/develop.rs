@@ -62,7 +62,7 @@ fn load_nix_dev_env(mut proc: Command, path: &Path, profile: &Path) -> Result<(N
     let mut env = capture_dev_env(proc, path)?;
     let store_path = canonicalize(profile)
         .with_context(|| format!("resolving nix environment at {}", profile.display()))?;
-    env.retain_store_path(store_path.to_string_lossy().into_owned());
+    env.root_by_store_path(store_path.to_string_lossy().into_owned());
     wipe_history(profile);
     Ok((
         NixDevEnv {
@@ -78,7 +78,7 @@ impl NixDevEnv {
         let mut proc = Command::new("nix");
         proc.arg("develop").arg(&self.store_path);
         let mut env = capture_dev_env(proc, &self.cwd)?;
-        env.retain_store_path(self.store_path.to_string_lossy().into_owned());
+        env.root_by_store_path(self.store_path.to_string_lossy().into_owned());
         Ok(env)
     }
 }
