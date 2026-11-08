@@ -6,6 +6,8 @@ use crate::{
         Announce,
         Cade,
         activation::{
+            ActivationEnv,
+            ActivationPlan,
             activation_env_with_snapshot,
             activation_plan,
         },
@@ -24,7 +26,10 @@ use crate::{
             persist_watch_state,
         },
     },
-    progress::start,
+    progress::{
+        Spinner,
+        start,
+    },
     shells::ShellOutput,
     types::hook::HookType,
 };
@@ -42,6 +47,36 @@ pub fn do_activation(
     let (activation_env, session, new_session) = activation_env_with_snapshot(cade)?;
     let plan = activation_plan(cade, &session)?;
     refresh_session_holders(cade, &session, client_id, owner_pid);
+    root_nix_store_paths(cade, &session, &plan.nix_store_paths);
+    apply_plan(
+        cade,
+        shell,
+        spinner,
+        announce,
+        (activation_env, session, new_session),
+        &plan,
+    )
+}
+
+pub(super) fn apply_prepared_plan(
+    cade: &Cade,
+    shell: &dyn ShellOutput,
+    announce: Option<Announce>,
+    plan: &ActivationPlan,
+) -> Result<()> {
+    let spinner = start(&plan.root.display().to_string());
+    let activation = activation_env_with_snapshot(cade)?;
+    apply_plan(cade, shell, spinner, announce, activation, plan)
+}
+
+fn apply_plan(
+    cade: &Cade,
+    shell: &dyn ShellOutput,
+    spinner: Spinner,
+    announce: Option<Announce>,
+    (activation_env, session, new_session): (ActivationEnv, String, bool),
+    plan: &ActivationPlan,
+) -> Result<()> {
     clear_disallowed_root_marker(shell);
     let rollup = &plan.rollup;
 
@@ -51,8 +86,6 @@ pub fn do_activation(
             print!("{}", shell.emit_hook(&hook.content));
         }
     }
-
-    root_nix_store_paths(cade, &session, &plan.nix_store_paths);
 
     let delta = activation_env.delta(rollup);
     print!("{}", delta.render_shell(shell));
@@ -64,17 +97,13 @@ pub fn do_activation(
         }
     }
 
-    let layer_paths: Vec<_> = plan
-        .cade_files
-        .iter()
-        .map(|layer| layer.0.clone())
-        .collect();
     let set_keys: Vec<String> = rollup.set_keys().into_iter().map(str::to_owned).collect();
-    let watch_state = WatchState::capture(&plan.root, layer_paths.clone(), &plan.all_watch_files);
+    let watch_state =
+        WatchState::capture(&plan.root, plan.layer_paths.clone(), &plan.all_watch_files);
     let watches_ref = persist_watch_state(cade, &session, &watch_state)?;
     let shell_state = ShellState::active(
         session,
-        layer_paths.clone(),
+        plan.layer_paths.clone(),
         cade.state_dir.clone(),
         config::current().path.clone(),
         rollup,
@@ -88,7 +117,7 @@ pub fn do_activation(
                 "cade: {} {}{}.",
                 detail.verb(),
                 plan.root.display(),
-                layer_count_suffix(layer_paths.len())
+                layer_count_suffix(plan.layer_paths.len())
             ));
         },
         None => spinner.done(),

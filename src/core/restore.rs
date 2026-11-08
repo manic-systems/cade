@@ -6,6 +6,7 @@ use crate::{
         announce_unloaded,
         log_hook,
         log_key_list,
+        reload_job::cancel,
         sessions::gc_roots::{
             gc_state,
             remove_current_session_holders,
@@ -30,6 +31,9 @@ pub fn do_restore(
 
     if shell_state.is_empty() {
         return;
+    }
+    if let Some(session) = shell_state.valid_session() {
+        cancel(cade, session);
     }
 
     let prev_env: BTreeMap<String, String> = shell_state

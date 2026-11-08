@@ -13,6 +13,10 @@ use misstep::{
     ResultExt as _,
     report,
 };
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 use crate::{
     config::direnv_mode,
@@ -36,6 +40,7 @@ use crate::{
             },
             is_valid_session,
             new_session_id,
+            stable_hash_hex,
         },
         shell_state::SESSION_VAR,
         snapshot::{
@@ -59,8 +64,16 @@ use crate::{
             rollup_envs,
         },
     },
+    envrc::{
+        envrc_arg,
+        envrc_uses_nix,
+    },
+    path_resolve::resolve_for_watch,
     types::{
-        keyword::Keyword,
+        keyword::{
+            Keyword,
+            Loadable,
+        },
         layer::CadeLayer,
     },
     verbosity::{
@@ -69,9 +82,10 @@ use crate::{
     },
 };
 
+#[derive(Serialize, Deserialize)]
 pub(super) struct ActivationPlan {
     pub root:            PathBuf,
-    pub cade_files:      Vec<(PathBuf, Vec<Keyword>)>,
+    pub layer_paths:     Vec<PathBuf>,
     pub all_watch_files: Vec<PathBuf>,
     pub nix_store_paths: Vec<String>,
     pub rollup:          RollupResult,
@@ -154,7 +168,7 @@ fn maybe_activation_plan_for_root(
 
     Ok(Some(ActivationPlan {
         root: effective_root,
-        cade_files,
+        layer_paths: cade_files.into_iter().map(|entry| entry.0).collect(),
         all_watch_files,
         nix_store_paths,
         rollup,
@@ -181,6 +195,50 @@ pub(super) fn chain_watch_state(cade: &Cade) -> Result<Option<WatchState>> {
         layer_paths,
         &watch_files,
     )))
+}
+
+pub(super) struct ChainKey {
+    pub key:           String,
+    pub runs_commands: bool,
+}
+
+pub(super) fn chain_key(cade: &Cade) -> Result<Option<ChainKey>> {
+    let Some(root) = find_cade_root(&cade.cwd) else {
+        return Ok(None);
+    };
+    let mut parts = Vec::new();
+    let mut runs_commands = false;
+    for (path, keywords) in approved_chain(cade, &root)? {
+        let (_, token) = layer_watch(cade, &path, &keywords)?;
+        parts.push(format!("{}\n{token}", path.display()));
+        runs_commands |= keywords
+            .iter()
+            .any(|keyword| keyword_runs_command(&path, keyword));
+    }
+    Ok((!parts.is_empty()).then(|| {
+        ChainKey {
+            key: stable_hash_hex(&parts.join("\n")),
+            runs_commands,
+        }
+    }))
+}
+
+fn keyword_runs_command(layer_dir: &Path, keyword: &Keyword) -> bool {
+    match *keyword {
+        Keyword::Call(_)
+        | Keyword::Load(Loadable::Default | Loadable::Flake(_) | Loadable::Shell(_)) => true,
+        Keyword::Load(Loadable::Envrc(ref file)) => {
+            envrc_uses_nix(&resolve_for_watch(layer_dir, envrc_arg(file)))
+        },
+        Keyword::Load(Loadable::Env(_))
+        | Keyword::Pure
+        | Keyword::Disinherit
+        | Keyword::Hook(_)
+        | Keyword::Clear(_)
+        | Keyword::Watch(_)
+        | Keyword::Concat(_)
+        | Keyword::Set(_) => false,
+    }
 }
 
 fn reusable_cached_layer(

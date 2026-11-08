@@ -76,6 +76,13 @@ typeset -ag precmd_functions
 if (( ! ${precmd_functions[(I)_cade_hook]} )); then
     precmd_functions=(_cade_hook $precmd_functions)
 fi
+_cade_preexec() {
+    eval "$(__CADE__ --owner-pid $$ reload --shell zsh --wait)"
+}
+typeset -ag preexec_functions
+if (( ! ${preexec_functions[(I)_cade_preexec]} )); then
+    preexec_functions=(_cade_preexec $preexec_functions)
+fi
 "#
         .replace("__CADE__", &posix_command(cade_exe, cade_args))
     }

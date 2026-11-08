@@ -3,6 +3,11 @@ use std::collections::{
     BTreeSet,
 };
 
+use serde::{
+    Deserialize,
+    Serialize,
+};
+
 use crate::{
     env::delta::is_shell_managed,
     types::{
@@ -11,6 +16,7 @@ use crate::{
     },
 };
 
+#[derive(Serialize, Deserialize)]
 pub struct RollupResult {
     env:      BTreeMap<String, Vec<String>>,
     absorb:   BTreeSet<String>,

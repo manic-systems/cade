@@ -137,7 +137,7 @@ fn parse_proc_stat(raw: &str) -> Option<(u32, String)> {
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn process_start_time(pid: u32) -> Option<String> {
+pub fn process_start_time(pid: u32) -> Option<String> {
     let raw = read_to_string(format!("/proc/{pid}/stat")).ok()?;
     parse_proc_stat(&raw).map(|(_, start)| start)
 }
@@ -148,7 +148,7 @@ pub(super) fn process_start_time(pid: u32) -> Option<String> {
     reason = "PROC_PIDTBSDINFO buffer size plus success count check ensures proc_bsdinfo \
               initialized before reading"
 )]
-pub(super) fn process_start_time(pid: u32) -> Option<String> {
+pub fn process_start_time(pid: u32) -> Option<String> {
     let posix_pid = pid_t::try_from(pid).ok()?;
     let mut info = MaybeUninit::<proc_bsdinfo>::uninit();
     let info_len = size_of::<proc_bsdinfo>();
@@ -174,7 +174,7 @@ pub(super) fn process_start_time(pid: u32) -> Option<String> {
     })
 }
 
-pub(super) fn process_holder_is_live(pid: u32, start_time: &str) -> bool {
+pub fn process_holder_is_live(pid: u32, start_time: &str) -> bool {
     process_start_time(pid).is_some_and(|current| current == start_time)
 }
 

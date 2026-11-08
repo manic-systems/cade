@@ -4,19 +4,33 @@ use std::{
     path::Path,
 };
 
-use misstep::Result;
+use misstep::{
+    Result,
+    bail,
+};
 
 use crate::{
     core::{
         Announce,
         Cade,
-        activation::chain_watch_state,
+        activation::{
+            chain_key,
+            chain_watch_state,
+        },
         announce_loaded,
         announce_unloaded,
         clear_disallowed_root_marker,
-        enter::do_activation,
+        enter::{
+            apply_prepared_plan,
+            do_activation,
+        },
         mark_disallowed_root,
         permissions::resolve_active,
+        reload_job::{
+            JobPoll,
+            poll_or_spawn,
+            wait_for_job,
+        },
         restore::do_restore,
         sessions::{
             gc_roots::refresh_session_holders,
@@ -37,11 +51,16 @@ use crate::{
         },
     },
     shells::ShellOutput,
+    verbosity::{
+        self,
+        Verbosity,
+    },
 };
 
 pub fn do_reload(
     cade: &Cade,
     shell: &dyn ShellOutput,
+    wait: bool,
     client_id: Option<&str>,
     owner_pid: Option<u32>,
 ) -> Result<()> {
@@ -106,6 +125,25 @@ pub fn do_reload(
             let new_tip = new_root_path.to_string_lossy().to_string();
             let old_tip = old_root.as_deref();
 
+            if old_tip == Some(new_tip.as_str())
+                && old_set == new_set
+                && let Some(session) = shell_state.valid_session()
+                && let Some(chain) = chain_key(cade)?
+                && chain.runs_commands
+            {
+                let result = reload_in_background(
+                    cade,
+                    shell,
+                    session,
+                    &chain.key,
+                    new_root_path,
+                    wait,
+                    (client_id, owner_pid),
+                );
+                sync_disallowed_prompt(disallowed_tip.as_deref(), shell);
+                return result;
+            }
+
             let unload_old_tip = old_tip.is_none_or(|tip| !new_set.contains(tip));
             let verb = if old_tip == Some(new_tip.as_str()) {
                 Some(Announce::Reloaded)
@@ -133,6 +171,41 @@ pub fn do_reload(
     Ok(())
 }
 
+fn reload_in_background(
+    cade: &Cade,
+    shell: &dyn ShellOutput,
+    session: &str,
+    key: &str,
+    root: &Path,
+    wait: bool,
+    (client_id, owner_pid): (Option<&str>, Option<u32>),
+) -> Result<()> {
+    let poll = if wait {
+        wait_for_job(cade, session, key, &root.display().to_string())?
+    } else {
+        poll_or_spawn(cade, session, key)?
+    };
+
+    match poll {
+        JobPoll::Ready(plan) => {
+            do_restore(cade, shell, false, false, client_id, owner_pid);
+            apply_prepared_plan(cade, shell, Some(Announce::Reloaded), &plan)?;
+        },
+        JobPoll::Failed(message) => {
+            mark_failed_watches(cade, shell, session);
+            bail!("{message}");
+        },
+        JobPoll::Running => {},
+        JobPoll::Spawned => {
+            verbosity::log(
+                Verbosity::Normal,
+                format_args!("cade: reloading {} in the background.", root.display()),
+            );
+        },
+    }
+    Ok(())
+}
+
 fn activate_or_mark_failed(
     cade: &Cade,
     shell: &dyn ShellOutput,
@@ -149,12 +222,16 @@ fn activate_or_mark_failed(
         .ok()
         .filter(|session| is_valid_session(session))
         .unwrap_or_else(new_session_id);
+    mark_failed_watches(cade, shell, &session);
+    Err(error)
+}
+
+fn mark_failed_watches(cade: &Cade, shell: &dyn ShellOutput, session: &str) {
     if let Ok(Some(watches)) = chain_watch_state(cade)
-        && let Ok(watches_ref) = persist_watch_state(cade, &session, &watches)
+        && let Ok(watches_ref) = persist_watch_state(cade, session, &watches)
     {
         print!("{}", shell.set_env(FAILED_WATCHES_VAR, &watches_ref));
     }
-    Err(error)
 }
 
 fn sync_disallowed_prompt(disallowed_tip: Option<&Path>, shell: &dyn ShellOutput) {

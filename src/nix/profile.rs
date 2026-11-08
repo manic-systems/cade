@@ -16,6 +16,7 @@ pub(super) fn wipe_history(profile: &Path) {
         .args(["profile", "wipe-history", "--profile"])
         .arg(profile)
         .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status();
     match spawn_result {
         Ok(exit_status) if exit_status.success() => {},
