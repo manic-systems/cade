@@ -43,6 +43,7 @@ pub enum EnvrcAction {
 pub struct NixDevEnv {
     pub store_path: PathBuf,
     pub cwd:        PathBuf,
+    pub replay:     Option<EnvSet>,
 }
 
 #[derive(Debug, Default)]

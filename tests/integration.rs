@@ -1019,7 +1019,7 @@ fn reload_into_disallowed_child_keeps_the_approved_parent() {
 
     let root_str = sb.root.to_string_lossy().to_string();
     let watches = serde_json::json!({
-        "version": "layer-cache-v6",
+        "version": "layer-cache-v7",
         "root": root_str,
         "cade_paths": [root_str],
         "files": []

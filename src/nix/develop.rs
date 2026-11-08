@@ -1,5 +1,8 @@
 use std::{
-    collections::BTreeMap,
+    collections::{
+        BTreeMap,
+        BTreeSet,
+    },
     env::{
         split_paths,
         var_os,
@@ -8,6 +11,7 @@ use std::{
     fs::{
         canonicalize,
         create_dir_all,
+        read,
     },
     io::{
         Write as _,
@@ -25,6 +29,7 @@ use misstep::{
     Result,
     ResultExt as _,
 };
+use serde::Deserialize;
 
 use crate::{
     command::run_checked_output,
@@ -59,31 +64,84 @@ fn load_nix_dev_env(mut proc: Command, path: &Path, profile: &Path) -> Result<(N
             .with_context(|| format!("creating nix profile dir at {}", parent.display()))?;
     }
     proc.arg("--profile").arg(profile);
-    let mut env = capture_dev_env(proc, path)?;
-    let store_path = canonicalize(profile)
-        .with_context(|| format!("resolving nix environment at {}", profile.display()))?;
-    env.root_by_store_path(store_path.to_string_lossy().into_owned());
+    let (env, store_path, has_shell_hook) = capture_dev_env(proc, path, || {
+        canonicalize(profile)
+            .with_context(|| format!("resolving nix environment at {}", profile.display()))
+            .erase()
+    })?;
     wipe_history(profile);
+    let replay = (!has_shell_hook).then(|| env.clone());
     Ok((
         NixDevEnv {
             store_path,
             cwd: path.to_path_buf(),
+            replay,
         },
         env,
     ))
 }
 
+#[derive(Deserialize)]
+struct DevEnvFile {
+    variables: BTreeMap<String, DevEnvVariable>,
+}
+
+#[derive(Deserialize)]
+struct DevEnvVariable {
+    #[serde(rename = "type")]
+    kind:  DevEnvKind,
+    #[serde(default)]
+    value: serde_json::Value,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum DevEnvKind {
+    Exported,
+    Var,
+    Array,
+    Associative,
+    Unknown,
+}
+
+impl DevEnvFile {
+    fn read(store_path: &Path) -> Option<Self> {
+        serde_json::from_slice(&read(store_path).ok()?).ok()
+    }
+
+    fn exported(&self) -> BTreeSet<String> {
+        self.variables
+            .iter()
+            .filter(|entry| entry.1.kind == DevEnvKind::Exported)
+            .map(|entry| entry.0.clone())
+            .collect()
+    }
+
+    fn has_shell_hook(&self) -> bool {
+        self.variables
+            .get("shellHook")
+            .and_then(|hook| hook.value.as_str())
+            .is_some_and(|hook| !hook.trim().is_empty())
+    }
+}
+
 impl NixDevEnv {
     pub fn activate(&self) -> Result<EnvSet> {
+        if let Some(replay) = self.replay.as_ref() {
+            return Ok(replay.clone());
+        }
         let mut proc = Command::new("nix");
         proc.arg("develop").arg(&self.store_path);
-        let mut env = capture_dev_env(proc, &self.cwd)?;
-        env.root_by_store_path(self.store_path.to_string_lossy().into_owned());
+        let (env, ..) = capture_dev_env(proc, &self.cwd, || Ok(self.store_path.clone()))?;
         Ok(env)
     }
 }
 
-fn capture_dev_env(mut proc: Command, cwd: &Path) -> Result<EnvSet> {
+fn capture_dev_env(
+    mut proc: Command,
+    cwd: &Path,
+    resolve_store_path: impl FnOnce() -> Result<PathBuf>,
+) -> Result<(EnvSet, PathBuf, bool)> {
     let mut previous_env = vars().collect::<BTreeMap<String, String>>();
     // NOTE: We need to use `-u` over `--unset-env-var` here since mainline
     // Nix and Lix use different flags. Both accept the short form `-u`,
@@ -111,7 +169,17 @@ fn capture_dev_env(mut proc: Command, cwd: &Path) -> Result<EnvSet> {
                 .context("write nix shellHook error output")?;
         }
     }
-    capture::env_set_from_captured_env(raw_env, &previous_env)
+
+    let store_path = resolve_store_path()?;
+    let dev_env = DevEnvFile::read(&store_path);
+    let exported = dev_env
+        .as_ref()
+        .map(DevEnvFile::exported)
+        .unwrap_or_default();
+    let has_shell_hook = dev_env.as_ref().is_none_or(DevEnvFile::has_shell_hook);
+    let mut env = capture::env_set_from_captured_env(raw_env, &previous_env, &exported)?;
+    env.root_by_store_path(store_path.to_string_lossy().into_owned());
+    Ok((env, store_path, has_shell_hook))
 }
 
 fn find_on_path(name: &str) -> PathBuf {
