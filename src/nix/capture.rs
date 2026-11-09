@@ -17,13 +17,19 @@ use super::filter::{
     keep_loaded_env_var,
 };
 use crate::{
-    core::shell_state::{
-        SET_VAR,
-        decode_key_list,
+    core::{
+        shell_state::{
+            SET_VAR,
+            decode_key_list,
+        },
+        snapshot::current_session_snapshot,
     },
     env::set::EnvSet,
 };
 
+// nix develop appends the outer value of these, see
+// https://github.com/NixOS/nix/blob/43bcda119d88768a71da6a3cb4f266a9d42bf70a/src/nix/develop.cc#L359-L376
+const NIX_SAVED_VARS: &[&str] = &["PATH", "XDG_DATA_DIRS"];
 const ENV_MARKER: &[u8] = b"\0__CADE_ENV_BEGIN__\0";
 const ENV_CAPTURE_SCRIPT: &str = "printf '\\0__CADE_ENV_BEGIN__\\0'\nexec \"$1\" -0";
 
@@ -35,6 +41,13 @@ pub(super) fn remove_cade_managed_env(previous: &mut BTreeMap<String, String>, p
     for key in cade_managed_env_keys(previous) {
         previous.remove(&key);
         proc.env_remove(&key);
+    }
+    // Use the PATH from before cade loaded anything. If a shellHook rewrites
+    // the live PATH, the previous layers' entries end up in this layer.
+    if let Some(path) = current_session_snapshot().and_then(|mut snapshot| snapshot.remove("PATH"))
+    {
+        proc.env("PATH", &path);
+        previous.insert("PATH".to_owned(), path);
     }
 }
 
@@ -78,7 +91,6 @@ pub(super) fn env_set_from_captured_env(
     previous: &BTreeMap<String, String>,
     exported: &BTreeSet<String>,
 ) -> Result<EnvSet> {
-    let path_suffix = previous.get("PATH").map(String::as_str);
     let mut vars: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut seen = BTreeSet::new();
 
@@ -101,12 +113,13 @@ pub(super) fn env_set_from_captured_env(
             continue;
         }
 
-        let value = if key == "PATH" {
-            clean_captured_path(raw_value, path_suffix)
+        let saved = NIX_SAVED_VARS.contains(&key);
+        let value = if saved {
+            strip_ambient_entries(raw_value, previous.get(key).map(String::as_str))
         } else {
             raw_value.to_owned()
         };
-        if key == "PATH" && value.is_empty() {
+        if saved && value.is_empty() {
             continue;
         }
 
@@ -125,19 +138,23 @@ pub(super) fn env_set_from_captured_env(
     Ok(EnvSet::from_captured_parts(vars, clears))
 }
 
-fn clean_captured_path(value: &str, path_suffix: Option<&str>) -> String {
+fn strip_ambient_entries(value: &str, ambient: Option<&str>) -> String {
     let mut parts: Vec<&str> = value
         .split(':')
         .filter(|part| !part.is_empty() && *part != "/path-not-set")
         .collect();
 
-    if let Some(suffix) = path_suffix {
-        let suffix_parts: Vec<&str> = suffix
+    if let Some(ambient_value) = ambient {
+        let ambient_parts: Vec<&str> = ambient_value
             .split(':')
             .filter(|part| !part.is_empty() && *part != "/path-not-set")
             .collect();
-        if !suffix_parts.is_empty() && parts.ends_with(&suffix_parts) {
-            parts.truncate(parts.len() - suffix_parts.len());
+        if !ambient_parts.is_empty()
+            && let Some(start) = parts
+                .windows(ambient_parts.len())
+                .rposition(|window| window == ambient_parts)
+        {
+            parts.drain(start..start + ambient_parts.len());
         }
     }
 
