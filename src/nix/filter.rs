@@ -7,6 +7,7 @@ const KEPT_NIX_ENV_KEYS: &[&str] = &[
     "NIX_ENFORCE_NO_NATIVE",
     "NIX_HARDENING_ENABLE",
     "NIX_LDFLAGS",
+    "NIX_SHELL_LEVEL",
     "NIX_STORE",
 ];
 const KEPT_NIX_ENV_PREFIXES: &[&str] = &[
