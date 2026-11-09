@@ -29,6 +29,7 @@ pub enum CadeAction {
 pub struct CachedLayer {
     pub actions:         Vec<CadeAction>,
     pub nix_store_paths: Vec<String>,
+    pub keywords:        String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -44,6 +45,13 @@ pub struct NixDevEnv {
     pub store_path: PathBuf,
     pub cwd:        PathBuf,
     pub replay:     Option<EnvSet>,
+    pub shell_drv:  Option<ShellDrv>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellDrv {
+    pub installable: String,
+    pub path:        String,
 }
 
 #[derive(Debug, Default)]

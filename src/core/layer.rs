@@ -13,7 +13,10 @@ use misstep::{
 use crate::{
     core::{
         Cade,
-        sessions::gc_roots::nix_profile_path,
+        sessions::{
+            gc_roots::nix_profile_path,
+            stable_hash_hex,
+        },
     },
     env::set::EnvSet,
     envrc::{
@@ -30,6 +33,7 @@ use crate::{
     },
     nix::{
         develop::{
+            flake_shell_drv,
             load_flake,
             load_shell,
         },
@@ -49,6 +53,7 @@ use crate::{
             CachedLayer,
             CadeAction,
             CadeLayer,
+            ShellDrv,
         },
         load_spec::LoadSpec,
     },
@@ -82,6 +87,35 @@ impl CadeLayer {
 }
 
 impl CachedLayer {
+    pub(super) fn shell_drvs(&self) -> Option<(Vec<ShellDrv>, Vec<ShellDrv>)> {
+        let mut dev_envs = Vec::new();
+        for action in &self.actions {
+            match *action {
+                CadeAction::NixDevEnv(ref dev_env) => dev_envs.push(dev_env),
+                CadeAction::Envrc(_) => return None,
+                CadeAction::Purify
+                | CadeAction::Environ(_)
+                | CadeAction::EnvFile(_)
+                | CadeAction::Hook(_)
+                | CadeAction::Clear(_)
+                | CadeAction::Concat(_) => {},
+            }
+        }
+        if dev_envs.is_empty() {
+            return None;
+        }
+
+        let cached = dev_envs
+            .iter()
+            .map(|dev_env| dev_env.shell_drv.clone())
+            .collect::<Option<Vec<_>>>()?;
+        let current = dev_envs
+            .iter()
+            .map(|dev_env| dev_env.current_shell_drv())
+            .collect::<Option<Vec<_>>>()?;
+        Some((cached, current))
+    }
+
     pub(super) fn activate(&self) -> Result<CadeLayer> {
         let mut layer = CadeLayer::default();
         for action in &self.actions {
@@ -178,9 +212,11 @@ pub(super) fn load_single_layer(
     keywords: &[Keyword],
     cade: &Cade,
     session: &str,
+    known_drvs: &[ShellDrv],
 ) -> Result<(CachedLayer, CadeLayer)> {
     let mut actions = Vec::new();
     let mut layer = CadeLayer::default();
+    let key = keywords_key(keywords);
 
     for (action_index, keyword) in keywords.iter().enumerate() {
         let action = match *keyword {
@@ -195,9 +231,13 @@ pub(super) fn load_single_layer(
                     nix_profile_path(cade, session, layer_count, action_index, path, &spec_key);
                 let (loaded_action, env) = match resolved.run {
                     LoadRun::Flake(target) => {
-                        let (dev_env, env) =
+                        let shell_drv = (!key.is_empty())
+                            .then(|| flake_shell_drv(&target, known_drvs))
+                            .flatten();
+                        let (mut dev_env, env) =
                             load_flake(&target, &profile.context("creating nix profile")?)
                                 .context("loading flake")?;
+                        dev_env.shell_drv = shell_drv;
                         (CadeAction::NixDevEnv(dev_env), env)
                     },
                     LoadRun::Shell(file) => {
@@ -233,8 +273,21 @@ pub(super) fn load_single_layer(
     let cached = CachedLayer {
         actions,
         nix_store_paths: layer.nix_store_paths.clone(),
+        keywords: key,
     };
     Ok((cached, layer))
+}
+
+pub(super) fn keywords_key(keywords: &[Keyword]) -> String {
+    if keywords.iter().any(|keyword| {
+        matches!(
+            *keyword,
+            Keyword::Call(_) | Keyword::Load(Loadable::Shell(_) | Loadable::Envrc(_))
+        )
+    }) {
+        return String::new();
+    }
+    stable_hash_hex(&format!("{keywords:?}"))
 }
 
 pub(super) fn tokenize_args(raw: &str) -> Result<Vec<String>> {

@@ -22,7 +22,11 @@ use std::{
         Path,
         PathBuf,
     },
-    process::Command,
+    process::{
+        Command,
+        Stdio,
+    },
+    sync::OnceLock,
 };
 
 use misstep::{
@@ -39,7 +43,10 @@ use crate::{
         profile::wipe_history,
         target::FlakeTarget,
     },
-    types::layer::NixDevEnv,
+    types::layer::{
+        NixDevEnv,
+        ShellDrv,
+    },
 };
 
 pub fn load_flake(target: &FlakeTarget, profile: &Path) -> Result<(NixDevEnv, EnvSet)> {
@@ -49,6 +56,98 @@ pub fn load_flake(target: &FlakeTarget, profile: &Path) -> Result<(NixDevEnv, En
         proc.arg(&target.installable);
     }
     load_nix_dev_env(proc, &target.cwd, profile)
+}
+
+// Must run before nix develop. A drvPath newer than the captured env would
+// pass revalidation and keep replaying the stale env.
+pub fn flake_shell_drv(target: &FlakeTarget, known: &[ShellDrv]) -> Option<ShellDrv> {
+    if let Some(drv) = known
+        .iter()
+        .find(|drv| drv.installable == target.installable)
+    {
+        return Some(drv.clone());
+    }
+    // Read-only evals can't fetch inputs missing from flake.lock
+    resolve_shell_drv(&target.cwd, &target.installable, true)
+        .or_else(|| resolve_shell_drv(&target.cwd, &target.installable, false))
+}
+
+fn resolve_shell_drv(cwd: &Path, installable: &str, read_only: bool) -> Option<ShellDrv> {
+    let (flake, fragment) = installable.split_once('#').unwrap_or((installable, ""));
+    if fragment.contains('"') {
+        return None;
+    }
+    let flake_ref = if flake.is_empty() { "." } else { flake };
+    let candidates = shell_attrs(fragment, nix_system()?)
+        .iter()
+        .map(|attr| {
+            let quoted = attr
+                .split('.')
+                .map(|name| format!("\"{}\"", name.replace('\\', "\\\\").replace('$', "\\$")))
+                .collect::<Vec<_>>();
+            format!("outputs.{}", quoted.join("."))
+        })
+        .collect::<Vec<_>>();
+
+    let mut proc = Command::new("nix");
+    proc.arg("eval");
+    if read_only {
+        proc.arg("--read-only");
+    }
+    proc.arg("--raw")
+        .arg(format!("{flake_ref}#."))
+        .arg("--apply")
+        .arg(format!("outputs: ({}).drvPath", candidates.join(" or ")))
+        .current_dir(cwd);
+    capture::remove_cade_managed_env(&mut vars().collect(), &mut proc);
+    Some(ShellDrv {
+        installable: installable.to_owned(),
+        path:        nix_stdout(&mut proc)?,
+    })
+}
+
+// https://github.com/NixOS/nix/blob/16fa212a96192479593620e9b928733aaf7a2a6d/src/nix/develop.cc#L461-L477
+// https://github.com/NixOS/nix/blob/16fa212a96192479593620e9b928733aaf7a2a6d/src/libcmd/installable-flake.cc#L17-L33
+fn shell_attrs(fragment: &str, system: &str) -> Vec<String> {
+    if fragment.is_empty() {
+        return vec![
+            format!("devShells.{system}.default"),
+            format!("devShell.{system}"),
+            format!("packages.{system}.default"),
+            format!("defaultPackage.{system}"),
+        ];
+    }
+    if let Some(attr) = fragment.strip_prefix('.') {
+        return vec![attr.to_owned()];
+    }
+    vec![
+        format!("devShells.{system}.{fragment}"),
+        format!("packages.{system}.{fragment}"),
+        format!("legacyPackages.{system}.{fragment}"),
+        fragment.to_owned(),
+    ]
+}
+
+fn nix_system() -> Option<&'static str> {
+    static SYSTEM: OnceLock<Option<String>> = OnceLock::new();
+    SYSTEM
+        .get_or_init(|| nix_stdout(Command::new("nix").args(["config", "show", "system"])))
+        .as_deref()
+}
+
+fn nix_stdout(proc: &mut Command) -> Option<String> {
+    let output = proc
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8(output.stdout).ok())
+        .flatten()
+        .map(|text| text.trim_end().to_owned())
+        .filter(|text| !text.is_empty())
 }
 
 pub fn load_shell(file: &Path, profile: &Path) -> Result<(NixDevEnv, EnvSet)> {
@@ -76,6 +175,7 @@ fn load_nix_dev_env(mut proc: Command, path: &Path, profile: &Path) -> Result<(N
             store_path,
             cwd: path.to_path_buf(),
             replay,
+            shell_drv: None,
         },
         env,
     ))
@@ -126,6 +226,10 @@ impl DevEnvFile {
 }
 
 impl NixDevEnv {
+    pub fn current_shell_drv(&self) -> Option<ShellDrv> {
+        resolve_shell_drv(&self.cwd, &self.shell_drv.as_ref()?.installable, true)
+    }
+
     pub fn activate(&self) -> Result<EnvSet> {
         if let Some(replay) = self.replay.as_ref() {
             return Ok(replay.clone());

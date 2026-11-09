@@ -27,7 +27,10 @@ use crate::{
             get_cached_layer,
             store_cached_layer,
         },
-        layer::load_single_layer,
+        layer::{
+            keywords_key,
+            load_single_layer,
+        },
         participants::find_cade_root,
         permissions::approved_chain,
         sessions::{
@@ -74,7 +77,11 @@ use crate::{
             Keyword,
             Loadable,
         },
-        layer::CadeLayer,
+        layer::{
+            CachedLayer,
+            CadeLayer,
+            ShellDrv,
+        },
     },
     verbosity::{
         self,
@@ -146,21 +153,20 @@ fn maybe_activation_plan_for_root(
 
         let dir = path.to_string_lossy();
 
-        let (layer, store_paths) = if let Some(reused) =
-            reusable_cached_layer(cade, &dir, &token, path)?
-        {
-            reused
-        } else {
-            verbosity::log(
-                Verbosity::Trace,
-                format_args!("cade: loading layer {}.", path.display()),
-            );
-            let (cached, layer) = load_single_layer(layer_count, path, keywords, cade, session)?;
-            store_cached_layer(cade, &dir, &token, &cached)?;
-            let store_paths = layer.nix_store_paths.clone();
-            (layer, store_paths)
+        let layer = match lookup_layer(cade, &dir, &token, path, keywords)? {
+            Lookup::Hit(layer) => layer,
+            Lookup::Miss(known_drvs) => {
+                verbosity::log(
+                    Verbosity::Trace,
+                    format_args!("cade: loading layer {}.", path.display()),
+                );
+                let (cached, layer) =
+                    load_single_layer(layer_count, path, keywords, cade, session, &known_drvs)?;
+                store_cached_layer(cade, &dir, &token, &cached)?;
+                layer
+            },
         };
-        nix_store_paths.extend(store_paths);
+        nix_store_paths.extend(layer.nix_store_paths.iter().cloned());
         cade_layers.push(layer);
     }
 
@@ -241,26 +247,29 @@ fn keyword_runs_command(layer_dir: &Path, keyword: &Keyword) -> bool {
     }
 }
 
-fn reusable_cached_layer(
+enum Lookup {
+    Hit(CadeLayer),
+    Miss(Vec<ShellDrv>),
+}
+
+fn lookup_layer(
     cade: &Cade,
     dir: &str,
     token: &str,
     path: &Path,
-) -> Result<Option<(CadeLayer, Vec<String>)>> {
-    let Some(cached) = get_cached_layer(cade, dir, token)? else {
-        return Ok(None);
+    keywords: &[Keyword],
+) -> Result<Lookup> {
+    let Some((cached, cached_token)) = get_cached_layer(cade, dir)? else {
+        return Ok(Lookup::Miss(Vec::new()));
     };
-    if store_paths_all_present(&cached.nix_store_paths) {
-        let layer = cached
-            .activate()
-            .with_context(|| format!("replaying entry actions for {}", path.display()))?;
-        let store_paths = layer.nix_store_paths.clone();
-        verbosity::log(
-            Verbosity::Trace,
-            format_args!("cade: using cached layer {}.", path.display()),
-        );
-        Ok(Some((layer, store_paths)))
-    } else {
+    if cached_token == token {
+        if store_paths_all_present(&cached.nix_store_paths) {
+            verbosity::log(
+                Verbosity::Trace,
+                format_args!("cade: using cached layer {}.", path.display()),
+            );
+            return Ok(Lookup::Hit(replay_cached_layer(&cached, path)?));
+        }
         verbosity::log(
             Verbosity::Trace,
             format_args!(
@@ -268,8 +277,33 @@ fn reusable_cached_layer(
                 path.display()
             ),
         );
-        Ok(None)
+        return Ok(Lookup::Miss(Vec::new()));
     }
+
+    let key = keywords_key(keywords);
+    if key.is_empty() || cached.keywords != key || !store_paths_all_present(&cached.nix_store_paths)
+    {
+        return Ok(Lookup::Miss(Vec::new()));
+    }
+    let Some((stored, current)) = cached.shell_drvs() else {
+        return Ok(Lookup::Miss(Vec::new()));
+    };
+    if stored != current {
+        return Ok(Lookup::Miss(current));
+    }
+
+    store_cached_layer(cade, dir, token, &cached)?;
+    verbosity::log(
+        Verbosity::Trace,
+        format_args!("cade: dev shell for {} is unchanged.", path.display()),
+    );
+    Ok(Lookup::Hit(replay_cached_layer(&cached, path)?))
+}
+
+fn replay_cached_layer(cached: &CachedLayer, path: &Path) -> Result<CadeLayer> {
+    cached
+        .activate()
+        .with_context(|| format!("replaying entry actions for {}", path.display()))
 }
 
 pub(super) fn activation_env_with_snapshot(cade: &Cade) -> Result<(ActivationEnv, String, bool)> {
