@@ -33,6 +33,7 @@ use misstep::{
     OptionExt as _,
     Result,
     ResultExt as _,
+    report,
 };
 use pound::Parse as _;
 
@@ -41,6 +42,7 @@ use crate::{
         Cli,
         CliAction,
         CliExportFormat,
+        CliShell,
         LeaseAction,
     },
     config::{
@@ -72,6 +74,17 @@ use crate::{
     },
     verbosity::set as set_verbosity,
 };
+
+fn hook_shell(explicit: Option<CliShell>) -> Result<ShellName> {
+    explicit.map_or_else(
+        || {
+            ShellName::detect().map_err(|reason| {
+                report!("{reason}. name one explicitly, for example `cade hook zsh`")
+            })
+        },
+        |shell| Ok(shell.into()),
+    )
+}
 
 fn print_hook(shell: ShellName, config_path: Option<&Path>) -> Result<()> {
     let output = shell.get_output();
@@ -106,7 +119,7 @@ fn try_main() -> Result<()> {
         set_verbosity(level.into());
     }
     match action {
-        CliAction::Hook { shell } => print_hook(shell.into(), config.as_deref())?,
+        CliAction::Hook { shell } => print_hook(hook_shell(shell)?, config.as_deref())?,
         CliAction::Enter { shell } => {
             let cade = Cade::init()?;
             let output = ShellName::from(shell).get_output();

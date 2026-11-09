@@ -18,11 +18,16 @@ use std::{
         write,
     },
     iter::once,
+    os::unix::{
+        fs::symlink,
+        process::CommandExt as _,
+    },
     path::{
         Path,
         PathBuf,
     },
     process::{
+        Command,
         Output,
         id,
     },
@@ -1240,5 +1245,54 @@ fn directed_load_missing_path_errors_clearly() {
     assert!(
         err.contains("env file") && err.contains("missing.env"),
         "error should name the loader and path: {err}"
+    );
+}
+
+fn hook_from_parent(sb: &Sandbox, parent: &str) -> Output {
+    let shell = sb.root.join(parent);
+    symlink("/bin/sh", &shell).unwrap();
+    Command::new(&shell)
+        .arg0("sh")
+        .args(["-c", r#""$0" hook; exit $?"#, env!("CARGO_BIN_EXE_cade")])
+        .current_dir(&sb.root)
+        .env_clear()
+        .env("HOME", &sb.state)
+        .output()
+        .expect("run cade hook")
+}
+
+#[test]
+fn hook_detects_the_parent_shell() {
+    let sb = Sandbox::new();
+    let out = hook_from_parent(&sb, "zsh");
+    assert!(out.status.success(), "hook failed: {out:?}");
+    assert!(
+        stdout(&out).contains("precmd_functions"),
+        "expected zsh hook: {}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn hook_refuses_unsupported_parent_shell() {
+    let sb = Sandbox::new();
+    let out = hook_from_parent(&sb, "dash");
+    assert!(!out.status.success(), "dash should not get a hook");
+    assert!(
+        stderr(&out).contains("dash is not a supported shell"),
+        "unexpected stderr: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn hook_without_shell_parent_does_not_guess() {
+    let sb = Sandbox::new();
+    let out = sb.run(&sb.root, &["hook"], &[("SHELL", "/bin/zsh")]);
+    assert!(!out.status.success(), "hook should not fall back to SHELL");
+    assert!(
+        stderr(&out).contains("cade hook zsh"),
+        "unexpected stderr: {}",
+        stderr(&out)
     );
 }
