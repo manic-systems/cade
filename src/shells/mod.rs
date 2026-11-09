@@ -86,9 +86,9 @@ impl ShellName {
         let parent = program_name(&process_name(parent_id()).unwrap_or_default());
         Self::from_name(&parent).ok_or_else(|| {
             if UNSUPPORTED_SHELLS.contains(&parent.as_str()) {
-                format!("{parent} is not a supported shell")
+                format!("hook {parent}, which is not a supported shell")
             } else {
-                "could not detect the invoking shell".to_owned()
+                "detect the invoking shell".to_owned()
             }
         })
     }

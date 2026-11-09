@@ -18,10 +18,7 @@ use std::{
         write,
     },
     iter::once,
-    os::unix::{
-        fs::symlink,
-        process::CommandExt as _,
-    },
+    os::unix::fs::symlink,
     path::{
         Path,
         PathBuf,
@@ -1249,10 +1246,14 @@ fn directed_load_missing_path_errors_clearly() {
 }
 
 fn hook_from_parent(sb: &Sandbox, parent: &str) -> Output {
+    let bash = split_paths(&var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join("bash"))
+        .find(|path| path.exists())
+        .expect("bash on PATH");
     let shell = sb.root.join(parent);
-    symlink("/bin/sh", &shell).unwrap();
+    symlink(bash, &shell).unwrap();
+
     Command::new(&shell)
-        .arg0("sh")
         .args(["-c", r#""$0" hook; exit $?"#, env!("CARGO_BIN_EXE_cade")])
         .current_dir(&sb.root)
         .env_clear()
@@ -1279,7 +1280,7 @@ fn hook_refuses_unsupported_parent_shell() {
     let out = hook_from_parent(&sb, "dash");
     assert!(!out.status.success(), "dash should not get a hook");
     assert!(
-        stderr(&out).contains("dash is not a supported shell"),
+        stderr(&out).contains("hook dash, which is not a supported shell"),
         "unexpected stderr: {}",
         stderr(&out)
     );

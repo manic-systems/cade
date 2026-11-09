@@ -79,7 +79,7 @@ fn hook_shell(explicit: Option<CliShell>) -> Result<ShellName> {
     explicit.map_or_else(
         || {
             ShellName::detect().map_err(|reason| {
-                report!("{reason}. name one explicitly, for example `cade hook zsh`")
+                report!("{reason}. Name one explicitly, for example `cade hook zsh`")
             })
         },
         |shell| Ok(shell.into()),
