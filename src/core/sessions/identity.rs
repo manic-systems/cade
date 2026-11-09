@@ -1,4 +1,8 @@
-#[cfg(target_os = "linux")] use std::fs::read_to_string;
+#[cfg(target_os = "linux")]
+use std::fs::{
+    read,
+    read_to_string,
+};
 #[cfg(target_os = "macos")]
 use std::mem::{
     MaybeUninit,
@@ -144,8 +148,9 @@ pub fn process_start_time(pid: u32) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 pub fn process_name(pid: u32) -> Option<String> {
-    let raw = read_to_string(format!("/proc/{pid}/comm")).ok()?;
-    Some(raw.trim_end().to_owned())
+    let raw = read(format!("/proc/{pid}/cmdline")).ok()?;
+    let argv0 = raw.split(|&byte| byte == 0).next()?;
+    String::from_utf8(argv0.to_vec()).ok()
 }
 
 #[cfg(target_os = "macos")]
