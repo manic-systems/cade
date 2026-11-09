@@ -13,6 +13,8 @@ use crate::shells::{
 
 type EnvDiff = BTreeMap<String, Option<String>>;
 
+const NIX_SHELL_LEVEL: &str = "NIX_SHELL_LEVEL";
+
 pub struct EnvDelta {
     changes: EnvDiff,
 }
@@ -60,7 +62,9 @@ impl EnvDelta {
         for (key, parts) in env {
             let mut joined = parts.join(":");
 
-            if !purified
+            if key == NIX_SHELL_LEVEL {
+                joined = nix_shell_level(baseline);
+            } else if !purified
                 && absorb.contains(key)
                 && let Some(baseline_value) =
                     baseline.get(key).filter(|candidate| !candidate.is_empty())
@@ -124,6 +128,15 @@ fn is_pure_preserved_key(key: &str) -> bool {
                 | "CADE_SHELL_GC_ROOT_TTL_SECONDS"
                 | "CADE_CLIENT_ID"
         )
+}
+
+// Cached layers replay the count Lix captured, so recount from the baseline
+fn nix_shell_level(baseline: &BTreeMap<String, String>) -> String {
+    let outer = baseline
+        .get(NIX_SHELL_LEVEL)
+        .and_then(|level| level.parse::<u64>().ok())
+        .unwrap_or(0);
+    (outer + 1).to_string()
 }
 
 fn record_change(changes: &mut EnvDiff, key: &str, value: Option<String>) {
