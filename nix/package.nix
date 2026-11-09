@@ -5,6 +5,7 @@
   pkg-config,
   sqlite,
   buildPackages,
+  gitRev ? null,
 }:
 let
   inherit (buildPackages) clang wild;
@@ -40,9 +41,13 @@ rustPlatform.buildRustPackage {
 
   stripAllList = [ "bin" ];
 
-  env = lib.optionalAttrs hasWild {
-    RUSTFLAGS = "-Clinker=${clang}/bin/${clang.targetPrefix}clang -Clink-arg=--ld-path=wild";
-  };
+  env =
+    lib.optionalAttrs hasWild {
+      RUSTFLAGS = "-Clinker=${clang}/bin/${clang.targetPrefix}clang -Clink-arg=--ld-path=wild";
+    }
+    // lib.optionalAttrs (gitRev != null) {
+      POUND_GIT_HASH = gitRev;
+    };
 
   meta = {
     description = manifest.description;

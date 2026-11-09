@@ -78,7 +78,9 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.callPackage "${self}/nix/package.nix" { };
+      default = pkgs.callPackage "${self}/nix/package.nix" {
+        gitRev = self.shortRev or self.dirtyShortRev or null;
+      };
       defaultText = lib.literalExpression "cade built from the cade flake";
       description = "The cade package to install and hook into shells.";
     };

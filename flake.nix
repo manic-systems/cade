@@ -132,7 +132,9 @@
         system:
         let
           pkgs = pkgsFor system;
-          cade = pkgs.callPackage ./nix/package.nix { };
+          cade = pkgs.callPackage ./nix/package.nix {
+            gitRev = self.shortRev or self.dirtyShortRev or null;
+          };
           direnvCompat = pkgs.callPackage ./nix/direnv-compat.nix { inherit cade; };
         in
         {
