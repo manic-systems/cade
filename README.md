@@ -150,7 +150,7 @@ cade allow                    # allow cade in the current .cade directory
 cade disallow                 # block cade in the current .cade directory
 cade edit                     # open .cade in $EDITOR + allow this path
 cade status                   # show activation state, layer chain, permissions
-cade hook <SHELL>             # print the shell hook initialization code
+cade hook [<SHELL>]           # print the shell hook, for the invoking shell by default
 cade enter --shell <SHELL>    # activate the environment (used by the hook)
 cade exit --shell <SHELL>     # deactivate and restore the previous environment
 cade reload --shell <SHELL>   # re-evaluate on directory change (called by the hook)

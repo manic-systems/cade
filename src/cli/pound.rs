@@ -128,8 +128,8 @@ pub enum CliAction {
     /// print the shell hook initialization code
     #[pound(after_help = "Examples:\n  eval \"$(cade hook bash)\"\n  cade hook fish | source")]
     Hook {
-        /// the shell to print the hook for
-        shell: CliShell,
+        /// the shell to print the hook for, defaulting to the invoking shell
+        shell: Option<CliShell>,
     },
 
     #[pound(hidden)]

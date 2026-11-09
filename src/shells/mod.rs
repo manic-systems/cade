@@ -6,7 +6,10 @@ mod nushell;
 mod posix;
 pub mod quote;
 
-use std::fmt;
+use std::{
+    fmt,
+    os::unix::process::parent_id,
+};
 
 use elvish::Elvish;
 use fish::Fish;
@@ -17,6 +20,8 @@ use posix::{
     Bash,
     Zsh,
 };
+
+use crate::core::sessions::identity::process_name;
 
 pub trait ShellOutput {
     fn set_env(&self, key: &str, value: &str) -> String;
@@ -63,7 +68,43 @@ impl fmt::Display for ShellName {
     }
 }
 
+const UNSUPPORTED_SHELLS: &[&str] = &[
+    "sh", "dash", "ash", "ksh", "mksh", "oksh", "yash", "busybox", "csh", "tcsh", "xonsh", "pwsh",
+];
+
+fn program_name(program: &str) -> String {
+    let name = program
+        .rsplit('/')
+        .next()
+        .unwrap_or(program)
+        .trim_start_matches(['-', '.']);
+    name.strip_suffix("-wrapped").unwrap_or(name).to_lowercase()
+}
+
 impl ShellName {
+    pub fn detect() -> Result<Self, String> {
+        let parent = program_name(&process_name(parent_id()).unwrap_or_default());
+        Self::from_name(&parent).ok_or_else(|| {
+            if UNSUPPORTED_SHELLS.contains(&parent.as_str()) {
+                format!("{parent} is not a supported shell")
+            } else {
+                "could not detect the invoking shell".to_owned()
+            }
+        })
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "fish" => Some(Self::Fish),
+            "bash" => Some(Self::Bash),
+            "zsh" => Some(Self::Zsh),
+            "nu" | "nushell" => Some(Self::Nushell),
+            "elvish" => Some(Self::Elvish),
+            "murex" => Some(Self::Murex),
+            _ => None,
+        }
+    }
+
     pub fn get_output(self) -> Box<dyn ShellOutput> {
         match self {
             Self::Fish => Box::new(Fish),
@@ -82,6 +123,20 @@ mod tests {
     use super::*;
 
     const HOSTILE: &str = r#"$(touch /tmp/pwned)`id`;rm -rf ~ "quote' end"#;
+
+    #[test]
+    fn program_names_map_to_shells() {
+        let shell = |program| ShellName::from_name(&program_name(program));
+        assert!(matches!(shell("/bin/zsh"), Some(ShellName::Zsh)));
+        assert!(matches!(shell("-bash"), Some(ShellName::Bash)));
+        assert!(matches!(shell(".nu-wrapped"), Some(ShellName::Nushell)));
+        assert!(matches!(shell(".fish-wrapped"), Some(ShellName::Fish)));
+        assert!(matches!(shell("Elvish"), Some(ShellName::Elvish)));
+        assert!(matches!(shell("/usr/bin/murex"), Some(ShellName::Murex)));
+        assert!(shell("json").is_none());
+        assert!(shell("cargo").is_none());
+        assert_eq!(program_name("/nix/store/x-dash/bin/.DASH-wrapped"), "dash");
+    }
 
     #[test]
     fn valid_keys() {

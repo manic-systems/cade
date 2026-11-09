@@ -142,13 +142,19 @@ pub fn process_start_time(pid: u32) -> Option<String> {
     parse_proc_stat(&raw).map(|(_, start)| start)
 }
 
+#[cfg(target_os = "linux")]
+pub fn process_name(pid: u32) -> Option<String> {
+    let raw = read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    Some(raw.trim_end().to_owned())
+}
+
 #[cfg(target_os = "macos")]
 #[expect(
     clippy::undocumented_unsafe_blocks,
     reason = "PROC_PIDTBSDINFO buffer size plus success count check ensures proc_bsdinfo \
               initialized before reading"
 )]
-pub fn process_start_time(pid: u32) -> Option<String> {
+fn bsd_info(pid: u32) -> Option<proc_bsdinfo> {
     let posix_pid = pid_t::try_from(pid).ok()?;
     let mut info = MaybeUninit::<proc_bsdinfo>::uninit();
     let info_len = size_of::<proc_bsdinfo>();
@@ -166,12 +172,23 @@ pub fn process_start_time(pid: u32) -> Option<String> {
         return None;
     }
     let initialized_info = unsafe { info.assume_init() };
-    (initialized_info.pbi_pid == pid).then(|| {
-        format!(
-            "{}-{}",
-            initialized_info.pbi_start_tvsec, initialized_info.pbi_start_tvusec
-        )
-    })
+    (initialized_info.pbi_pid == pid).then_some(initialized_info)
+}
+
+#[cfg(target_os = "macos")]
+pub fn process_start_time(pid: u32) -> Option<String> {
+    bsd_info(pid).map(|info| format!("{}-{}", info.pbi_start_tvsec, info.pbi_start_tvusec))
+}
+
+#[cfg(target_os = "macos")]
+pub fn process_name(pid: u32) -> Option<String> {
+    let bytes: Vec<u8> = bsd_info(pid)?
+        .pbi_comm
+        .iter()
+        .take_while(|&&ch| ch != 0)
+        .map(|&ch| ch.to_ne_bytes()[0])
+        .collect();
+    String::from_utf8(bytes).ok()
 }
 
 pub fn process_holder_is_live(pid: u32, start_time: &str) -> bool {
