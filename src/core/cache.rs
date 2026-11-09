@@ -105,25 +105,24 @@ pub(super) fn store_watch_discovery(
     Ok(())
 }
 
-pub(super) fn get_cached_layer(cade: &Cade, dir: &str, token: &str) -> Result<Option<CachedLayer>> {
-    match cade.db.query_row(
-        "SELECT Data FROM LayerCache WHERE Dir=(?1) AND Token=(?2)",
-        [dir, token],
-        |row| row.get::<_, String>(0),
+pub(super) fn get_cached_layer(cade: &Cade, dir: &str) -> Result<Option<(CachedLayer, String)>> {
+    let (data, stored_token) = match cade.db.query_row(
+        "SELECT Data, Token FROM LayerCache WHERE Dir=(?1)",
+        [dir],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
     ) {
-        Ok(data) => {
-            let Some(layer) = serde_json::from_str(&data).ok() else {
-                return Ok(None);
-            };
-            cade.db.execute(
-                "UPDATE LayerCache SET LastUsed=(?3) WHERE Dir=(?1) AND Token=(?2)",
-                (dir, token, now_secs()),
-            )?;
-            Ok(Some(layer))
-        },
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(error) => Err(error.into()),
-    }
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let Some(layer) = serde_json::from_str(&data).ok() else {
+        return Ok(None);
+    };
+    cade.db.execute(
+        "UPDATE LayerCache SET LastUsed=(?2) WHERE Dir=(?1)",
+        (dir, now_secs()),
+    )?;
+    Ok(Some((layer, stored_token)))
 }
 
 pub(super) fn store_cached_layer(
