@@ -1,10 +1,14 @@
 use std::{
     collections::BTreeMap,
+    env::var,
     fs::{
         create_dir_all,
         read_to_string,
     },
-    path::PathBuf,
+    path::{
+        Path,
+        PathBuf,
+    },
 };
 
 use misstep::{
@@ -18,19 +22,26 @@ use crate::core::{
         atomic_write,
         is_valid_session,
     },
+    shell_state::SESSION_VAR,
 };
 
-pub(super) fn snapshot_path(cade: &Cade, session: &str) -> PathBuf {
-    cade.state_dir
-        .join("snapshots")
-        .join(format!("{session}.env"))
+fn snapshot_path(state_dir: &Path, session: &str) -> PathBuf {
+    state_dir.join("snapshots").join(format!("{session}.env"))
 }
 
 pub(super) fn read_snapshot(cade: &Cade, session: &str) -> Option<BTreeMap<String, String>> {
+    read_snapshot_in(&cade.state_dir, session)
+}
+
+pub fn current_session_snapshot() -> Option<BTreeMap<String, String>> {
+    read_snapshot_in(&Cade::state_dir_path().ok()?, &var(SESSION_VAR).ok()?)
+}
+
+fn read_snapshot_in(state_dir: &Path, session: &str) -> Option<BTreeMap<String, String>> {
     if !is_valid_session(session) {
         return None;
     }
-    let raw = read_to_string(snapshot_path(cade, session)).ok()?;
+    let raw = read_to_string(snapshot_path(state_dir, session)).ok()?;
     serde_json::from_str(&raw)
         .ok()
         .or_else(|| Some(read_legacy_snapshot(&raw)))
@@ -44,7 +55,7 @@ pub(super) fn write_snapshot(
     let dir = cade.state_dir.join("snapshots");
     create_dir_all(&dir).context("create snapshots dir")?;
     let body = serde_json::to_vec(env).context("serialize snapshot")?;
-    atomic_write(&snapshot_path(cade, session), &body)
+    atomic_write(&snapshot_path(&cade.state_dir, session), &body)
         .context("write snapshot")
         .erase()
 }

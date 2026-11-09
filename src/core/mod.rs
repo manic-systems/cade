@@ -9,7 +9,7 @@ pub mod reload_job;
 pub mod restore;
 pub mod sessions;
 pub mod shell_state;
-mod snapshot;
+pub mod snapshot;
 pub mod status;
 mod watch;
 
