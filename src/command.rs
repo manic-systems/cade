@@ -159,11 +159,14 @@ impl<'task> LongRunningProgress<'task> {
     }
 }
 
-fn spawn_reader<Reader: Read + Send + 'static>(
+fn spawn_reader<Reader>(
     mut reader: Reader,
     kind: StreamKind,
     tx: Sender<StreamEvent>,
-) -> JoinHandle<()> {
+) -> JoinHandle<()>
+where
+    Reader: Read + Send + 'static,
+{
     spawn(move || {
         let mut buf = [0; 8192];
         loop {
