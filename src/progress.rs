@@ -416,7 +416,7 @@ mod tests {
         output.clear();
         renderer.render_at_width(&mut output, &block, 80);
 
-        assert!(output.is_empty());
+        assert_eq!(output, b"");
     }
 
     #[test]
