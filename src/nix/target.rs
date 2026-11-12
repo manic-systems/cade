@@ -307,7 +307,7 @@ mod tests {
     fn no_arg_is_current_dir_default() {
         let layer = Path::new("/layer");
         let target = resolve_flake_target(layer, None);
-        assert!(target.installable.is_empty());
+        assert_eq!(target.installable, "");
         assert_eq!(target.cwd, layer);
         assert_eq!(target.spec.cache_key(), "flake");
     }

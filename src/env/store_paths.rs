@@ -86,7 +86,7 @@ mod tests {
                 .into_iter(),
         );
 
-        assert!(paths.is_empty());
+        assert_eq!(paths, Vec::<String>::new());
     }
 
     #[test]

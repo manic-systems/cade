@@ -152,7 +152,10 @@ impl EnvSet {
         self.prepend_values("PATH".to_owned(), values);
     }
 
-    pub fn expand_values<Expander: FnMut(&str) -> String>(&mut self, mut expand: Expander) {
+    pub fn expand_values<Expander>(&mut self, mut expand: Expander)
+    where
+        Expander: FnMut(&str) -> String,
+    {
         for values in self.vars.values_mut() {
             let value = expand(&values.join(":"));
             *values = parse::split_env_value(&value);
@@ -296,6 +299,6 @@ mod tests {
             STORE_PATH.to_owned(),
         ])]));
         out.merge_loaded(other);
-        assert!(out.nix_store_paths.is_empty());
+        assert_eq!(out.nix_store_paths, Vec::<String>::new());
     }
 }
