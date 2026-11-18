@@ -32,7 +32,10 @@ use misstep::{
     Result,
     ResultExt as _,
 };
-use rusqlite::Connection;
+use rusqlite::{
+    Connection,
+    config::DbConfig,
+};
 
 use crate::{
     config::xdg_dir,
@@ -190,6 +193,23 @@ impl Cade {
             .context("set busy_timeout")?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("enable WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")
+            .context("set synchronous")?;
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+            .context("disable checkpoint on close")?;
+
+        let auto_vacuum = conn
+            .pragma_query_value(None, "auto_vacuum", |row| row.get::<_, i64>(0))
+            .context("read auto_vacuum")?;
+
+        if auto_vacuum != 2 {
+            // sqlite only changes an existing database's auto_vacuum mode on a
+            // VACUUM.
+            conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")
+                .context("set auto_vacuum")?;
+            conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
+                .context("vacuum into incremental auto_vacuum")?;
+        }
 
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS WorkingPaths (
@@ -221,6 +241,8 @@ impl Cade {
         )
         .context("create WatchDiscovery table")?;
         prune_stale_watch_discovery(conn).context("prune stale watch discovery entries")?;
+        conn.execute_batch("PRAGMA incremental_vacuum")
+            .context("release free pages")?;
         Ok(())
     }
 
