@@ -32,9 +32,6 @@ impl ShellOutput for Fish {
     __CADE__ --owner-pid $fish_pid reload --shell fish | source
     return $__cade_status
 end
-function __cade_preexec --on-event fish_preexec
-    __CADE__ --owner-pid $fish_pid reload --shell fish --wait | source
-end
 "
         .replace("__CADE__", &fish_command(cade_exe, cade_args))
     }

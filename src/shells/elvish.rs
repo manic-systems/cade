@@ -31,11 +31,6 @@ impl ShellOutput for Elvish {
         eval (__CADE_CMD__ reload --shell elvish | slurp)
     }
 ]
-set edit:after-readline = [
-    {|_|
-        eval (__CADE_CMD__ reload --shell elvish --wait | slurp)
-    }
-]
 "
         .replace("__CADE_CMD__", &posix_command(cade_exe, cade_args))
     }

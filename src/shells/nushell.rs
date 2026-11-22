@@ -35,8 +35,8 @@ impl ShellOutput for Nushell {
         r#"let cade = __CADE__
 let cade_args = __CADE_ARGS__
 let nu_exe = (try { which nu | get path.0 } catch { "nu" })
-let cade_reload = {|...flags|
-    for line in (^$cade ...$cade_args --owner-pid $nu.pid reload --shell nushell ...$flags | lines) {
+let cade_reload = {||
+    for line in (^$cade ...$cade_args --owner-pid $nu.pid reload --shell nushell | lines) {
         if ($line | str trim | is-empty) { continue }
         let m = ($line | from json)
         if "s" in $m { load-env $m.s }
@@ -57,10 +57,6 @@ $env.config.hooks.pre_prompt = (
         do --env $cade_reload
         $env.LAST_EXIT_CODE = $__cade_last_exit
     }
-)
-$env.config.hooks.pre_execution = (
-    ($env.config.hooks?.pre_execution? | default [])
-    | append {|| do --env $cade_reload "--wait" }
 )
 "#
         .replace("__CADE__", &cade)
