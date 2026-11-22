@@ -1,11 +1,13 @@
 use std::{
     collections::BTreeSet,
     env::var,
+    fs::create_dir_all,
     path::Path,
 };
 
 use misstep::{
     Result,
+    ResultExt as _,
     bail,
 };
 
@@ -33,6 +35,7 @@ use crate::{
         },
         restore::do_restore,
         sessions::{
+            atomic_write,
             gc_roots::refresh_session_holders,
             is_valid_session,
             new_session_id,
@@ -48,6 +51,7 @@ use crate::{
             WatchState,
             load_watch_ref,
             persist_watch_state,
+            reload_marker,
         },
     },
     shells::ShellOutput,
@@ -56,6 +60,21 @@ use crate::{
         Verbosity,
     },
 };
+
+pub fn request_reload(cade: &Cade) -> Result<()> {
+    let (active, _) = resolve_active(cade, &cade.cwd)?;
+    if active.is_empty() {
+        bail!("no allowed .cade or .envrc in this directory or any parent");
+    }
+
+    create_dir_all(cade.state_dir.join("reload")).context("create reload marker directory")?;
+    let generation = new_session_id();
+    for dir in active {
+        atomic_write(&reload_marker(cade, &dir), generation.as_bytes())
+            .context("request layer reload")?;
+    }
+    Ok(())
+}
 
 pub fn do_reload(
     cade: &Cade,

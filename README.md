@@ -346,8 +346,9 @@ for Nix dev shells, cade saves the realised environment from `nix develop`
 and enters it again on each environment entry. Nix runs `shellHook` and handles
 shell setup while cade reuses the saved environment until a watched input
 changes. a flake is watched through `flake.nix` and `flake.lock` only, so
-`watch` any other file the dev shell reads. each session keeps the
-environment rooted against garbage collection.
+`watch` any other file the dev shell reads, or run `cade reload` to force a
+fresh evaluation at the next prompt. each session keeps the environment rooted
+against garbage collection.
 `shellHook` output is sent to stderr so it cannot corrupt the shell commands
 cade emits on stdout.
 

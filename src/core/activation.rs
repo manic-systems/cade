@@ -148,7 +148,7 @@ fn maybe_activation_plan_for_root(
     for (layer_count, layer_entry) in cade_files.iter().enumerate() {
         let path = &layer_entry.0;
         let keywords = &layer_entry.1;
-        let (watch_files, token) = layer_watch(path, keywords)?;
+        let (watch_files, token) = layer_watch(cade, path, keywords)?;
         all_watch_files.extend(watch_files);
 
         let dir = path.to_string_lossy();
@@ -192,7 +192,7 @@ pub(super) fn chain_watch_state(cade: &Cade) -> Result<Option<WatchState>> {
 
     let mut watch_files = Vec::new();
     for layer_entry in &cade_files {
-        watch_files.extend(layer_watch(&layer_entry.0, &layer_entry.1)?.0);
+        watch_files.extend(layer_watch(cade, &layer_entry.0, &layer_entry.1)?.0);
     }
 
     let layer_paths = cade_files.into_iter().map(|entry| entry.0).collect();
@@ -215,7 +215,7 @@ pub(super) fn chain_key(cade: &Cade) -> Result<Option<ChainKey>> {
     let mut parts = Vec::new();
     let mut runs_commands = false;
     for (path, keywords) in approved_chain(cade, &root)? {
-        let (_, token) = layer_watch(&path, &keywords)?;
+        let (_, token) = layer_watch(cade, &path, &keywords)?;
         parts.push(format!("{}\n{token}", path.display()));
         runs_commands |= keywords
             .iter()

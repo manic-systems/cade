@@ -209,14 +209,25 @@ pub fn load_watch_ref(raw: &str) -> Option<WatchState> {
     serde_json::from_str(&body).ok()
 }
 
-pub(super) fn layer_watch(dir: &Path, keywords: &[Keyword]) -> Result<(Vec<PathBuf>, String)> {
-    let files = watched_files_for_keywords(dir, keywords)?;
+pub(super) fn reload_marker(cade: &Cade, dir: &Path) -> PathBuf {
+    cade.state_dir
+        .join("reload")
+        .join(stable_hash_hex(&dir.to_string_lossy()))
+}
+
+pub(super) fn layer_watch(
+    cade: &Cade,
+    dir: &Path,
+    keywords: &[Keyword],
+) -> Result<(Vec<PathBuf>, String)> {
+    let mut files = vec![dir.join(".cade"), reload_marker(cade, dir)];
+    files.extend(watched_files_for_keywords(dir, keywords)?);
     let token = compute_layer_key(&files);
     Ok((files, token))
 }
 
 fn watched_files_for_keywords(dir: &Path, keywords: &[Keyword]) -> Result<Vec<PathBuf>> {
-    let mut files = vec![dir.join(".cade")];
+    let mut files = Vec::new();
     for kw in keywords {
         match *kw {
             Keyword::Load(ref loadable) => files.extend(loadable.resolve(dir).watch),

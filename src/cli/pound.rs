@@ -106,11 +106,11 @@ pub enum CliAction {
         shell: CliShell,
     },
 
-    /// re-evaluate after a directory change, run by the hook
+    /// force a fresh evaluation at the next prompt
     Reload {
-        /// the shell to print reload code for
+        /// print shell updates now, as the hook does
         #[pound(long)]
-        shell: CliShell,
+        shell: Option<CliShell>,
 
         /// block until a background reload finishes, run before each command
         wait: bool,
