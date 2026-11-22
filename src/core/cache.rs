@@ -1,9 +1,6 @@
-use std::{
-    path::PathBuf,
-    time::{
-        SystemTime,
-        UNIX_EPOCH,
-    },
+use std::time::{
+    SystemTime,
+    UNIX_EPOCH,
 };
 
 use misstep::{
@@ -58,50 +55,6 @@ pub(super) fn prune_stale_layer_cache(conn: &rusqlite::Connection) -> Result<()>
     )?;
     let cutoff = now_secs().saturating_sub(shell_gc_root_ttl().as_secs());
     conn.execute("DELETE FROM LayerCache WHERE LastUsed < ?1", [cutoff])?;
-    Ok(())
-}
-
-pub(super) fn prune_stale_watch_discovery(conn: &rusqlite::Connection) -> Result<()> {
-    let prefix = format!("{LAYER_CACHE_VERSION}\n%");
-    conn.execute(
-        "DELETE FROM WatchDiscovery WHERE Token != ?1 AND Token NOT LIKE ?2",
-        [LAYER_CACHE_VERSION, &prefix],
-    )?;
-    let cutoff = now_secs().saturating_sub(shell_gc_root_ttl().as_secs());
-    conn.execute("DELETE FROM WatchDiscovery WHERE LastUsed < ?1", [cutoff])?;
-    Ok(())
-}
-
-pub(super) fn get_watch_discovery(cade: &Cade, dir: &str) -> Option<(Vec<PathBuf>, String)> {
-    let (files, token) = cade
-        .db
-        .query_row(
-            "SELECT Files, Token FROM WatchDiscovery WHERE Dir=(?1)",
-            [dir],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .ok()?;
-    cade.db
-        .execute(
-            "UPDATE WatchDiscovery SET LastUsed=(?2) WHERE Dir=(?1)",
-            (dir, now_secs()),
-        )
-        .ok()?;
-    Some((serde_json::from_str(&files).ok()?, token))
-}
-
-pub(super) fn store_watch_discovery(
-    cade: &Cade,
-    dir: &str,
-    files: &[PathBuf],
-    token: &str,
-) -> Result<()> {
-    let data = serde_json::to_string(files)?;
-    cade.db.execute(
-        "INSERT OR REPLACE INTO WatchDiscovery (Dir, Token, Files, LastUsed) VALUES (?1, ?2, ?3, \
-         ?4)",
-        (dir, token, &data, now_secs()),
-    )?;
     Ok(())
 }
 

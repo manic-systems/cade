@@ -42,7 +42,6 @@ use crate::{
     core::cache::{
         ensure_layer_cache_schema,
         prune_stale_layer_cache,
-        prune_stale_watch_discovery,
     },
     progress::{
         eviction_marker,
@@ -231,16 +230,6 @@ impl Cade {
         ensure_layer_cache_schema(conn).context("migrate LayerCache schema")?;
         prune_stale_layer_cache(conn).context("prune stale layer cache entries")?;
 
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS WatchDiscovery (
-                    Dir TEXT PRIMARY KEY,
-                    Token TEXT NOT NULL,
-                    Files TEXT NOT NULL,
-                    LastUsed INTEGER NOT NULL DEFAULT 0
-                );",
-        )
-        .context("create WatchDiscovery table")?;
-        prune_stale_watch_discovery(conn).context("prune stale watch discovery entries")?;
         conn.execute_batch("PRAGMA incremental_vacuum")
             .context("release free pages")?;
         Ok(())

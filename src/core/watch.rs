@@ -29,10 +29,6 @@ use serde::{
 use crate::{
     core::{
         Cade,
-        cache::{
-            get_watch_discovery,
-            store_watch_discovery,
-        },
         layer::tokenize_args,
         sessions::{
             atomic_write,
@@ -43,7 +39,7 @@ use crate::{
     types::keyword::Keyword,
 };
 
-pub(super) const LAYER_CACHE_VERSION: &str = "layer-cache-v7";
+pub(super) const LAYER_CACHE_VERSION: &str = "layer-cache-v8";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum WatchChange {
@@ -213,23 +209,9 @@ pub fn load_watch_ref(raw: &str) -> Option<WatchState> {
     serde_json::from_str(&body).ok()
 }
 
-// The walk is skipped while every file found last time keeps its mtime and
-// size, so a new file goes unseen until an already-watched one changes.
-pub(super) fn layer_watch(
-    cade: &Cade,
-    dir: &Path,
-    keywords: &[Keyword],
-) -> Result<(Vec<PathBuf>, String)> {
-    let key = dir.to_string_lossy();
-    if let Some((files, token)) = get_watch_discovery(cade, &key)
-        && compute_layer_key(&files) == token
-    {
-        return Ok((files, token));
-    }
-
+pub(super) fn layer_watch(dir: &Path, keywords: &[Keyword]) -> Result<(Vec<PathBuf>, String)> {
     let files = watched_files_for_keywords(dir, keywords)?;
     let token = compute_layer_key(&files);
-    store_watch_discovery(cade, &key, &files, &token)?;
     Ok((files, token))
 }
 
@@ -338,70 +320,19 @@ mod tests {
         time::Duration,
     };
 
-    use crate::{
-        core::{
-            Cade,
-            watch::{
-                LAYER_CACHE_VERSION,
-                WatchChange,
-                WatchEntry,
-                WatchFileState,
-                WatchState,
-                compute_layer_key,
-                layer_watch,
-                load_watch_ref,
-                persist_watch_state,
-            },
-        },
-        types::keyword::{
-            Keyword,
-            Loadable,
+    use crate::core::{
+        Cade,
+        watch::{
+            LAYER_CACHE_VERSION,
+            WatchChange,
+            WatchEntry,
+            WatchFileState,
+            WatchState,
+            compute_layer_key,
+            load_watch_ref,
+            persist_watch_state,
         },
     };
-
-    #[test]
-    fn watch_discovery_refreshes_only_when_a_watched_file_changes() {
-        let root = temp_dir().join(format!(
-            "cade-watch-discovery-{}-{}",
-            id(),
-            current().name().unwrap_or("test")
-        ));
-        create_dir_all(root.join("nix")).unwrap();
-        write(root.join(".envrc"), "use flake\n").unwrap();
-        write(root.join("flake.nix"), "{}\n").unwrap();
-
-        let db = rusqlite::Connection::open_in_memory().unwrap();
-        db.execute_batch(
-            "CREATE TABLE WatchDiscovery (
-                Dir TEXT PRIMARY KEY,
-                Token TEXT NOT NULL,
-                Files TEXT NOT NULL,
-                LastUsed INTEGER NOT NULL DEFAULT 0
-            );",
-        )
-        .unwrap();
-        let cade = Cade {
-            db,
-            cwd: root.clone(),
-            state_dir: root.clone(),
-        };
-        let keywords = [Keyword::Load(Loadable::Envrc(String::new()))];
-        let extra = root.join("nix").join("extra.nix");
-
-        let (first, _) = layer_watch(&cade, &root, &keywords).unwrap();
-        assert!(first.contains(&root.join("flake.nix")));
-        assert!(!first.contains(&extra));
-
-        write(&extra, "{}\n").unwrap();
-        let (reused, _) = layer_watch(&cade, &root, &keywords).unwrap();
-        assert!(!reused.contains(&extra));
-
-        write(root.join("flake.nix"), "{ inputs = {}; }\n").unwrap();
-        let (rediscovered, _) = layer_watch(&cade, &root, &keywords).unwrap();
-        assert!(rediscovered.contains(&extra));
-
-        let _ = remove_dir_all(&root);
-    }
 
     #[test]
     fn timestamp_only_changes_do_not_invalidate_content_identity() {
