@@ -5,6 +5,7 @@
   pkg-config,
   sqlite,
   buildPackages,
+  installShellFiles,
 }:
 let
   inherit (buildPackages) clang wild;
@@ -30,6 +31,7 @@ rustPlatform.buildRustPackage {
   cargoLock.lockFile = ../Cargo.lock;
 
   nativeBuildInputs = [
+    installShellFiles
     pkg-config
   ]
   ++ lib.optionals hasWild [
@@ -43,6 +45,19 @@ rustPlatform.buildRustPackage {
   env = lib.optionalAttrs hasWild {
     RUSTFLAGS = "-Clinker=${clang}/bin/${clang.targetPrefix}clang -Clink-arg=--ld-path=wild";
   };
+
+  postInstall = lib.optionalString (stdenv.hostPlatform.emulatorAvailable buildPackages) (
+    let
+      cade = "${stdenv.hostPlatform.emulator buildPackages} $out/bin/cade";
+    in
+    ''
+      installShellCompletion --cmd cade \
+        --bash    <(COMPLETE=bash ${cade}) \
+        --zsh     <(COMPLETE=zsh  ${cade}) \
+        --fish    <(COMPLETE=fish ${cade}) \
+        --nushell <(COMPLETE=nu   ${cade})
+    ''
+  );
 
   meta = {
     description = manifest.description;
