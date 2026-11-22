@@ -141,6 +141,19 @@ source ${
 }
 ```
 
+## completions
+
+The Nix package installs completions for Bash, Zsh, Fish and Nushell. To set
+completions up by hand, source the script cade prints.
+
+| shell  | setup                                                    |
+|--------|----------------------------------------------------------|
+| bash   | `source <(COMPLETE=bash cade)`                           |
+| zsh    | `COMPLETE=zsh cade > ~/.zfunc/_cade`, with it in `fpath` |
+| fish   | `COMPLETE=fish cade \| source`                           |
+| nu     | `COMPLETE=nu cade \| save cade.nu`, then `source` it     |
+| elvish | `eval (env COMPLETE=elvish cade \| slurp)`               |
+
 ## usage
 
 ### commands
