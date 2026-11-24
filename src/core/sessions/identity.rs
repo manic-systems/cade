@@ -3,11 +3,6 @@ use std::fs::{
     read,
     read_to_string,
 };
-#[cfg(target_os = "macos")]
-use std::mem::{
-    MaybeUninit,
-    size_of,
-};
 use std::{
     env::var,
     fmt::Write as _,
@@ -29,15 +24,27 @@ use std::{
         UNIX_EPOCH,
     },
 };
+#[cfg(target_os = "macos")]
+use std::{
+    mem::{
+        MaybeUninit,
+        size_of,
+    },
+    ptr::null_mut,
+};
 
 #[cfg(target_os = "macos")]
 use libc::{
+    CTL_KERN,
+    KERN_ARGMAX,
+    KERN_PROCARGS2,
     PROC_PIDTBSDINFO,
     c_int,
     c_void,
     pid_t,
     proc_bsdinfo,
     proc_pidinfo,
+    sysctl,
 };
 use misstep::{
     Result,
@@ -185,15 +192,51 @@ pub fn process_start_time(pid: u32) -> Option<String> {
     bsd_info(pid).map(|info| format!("{}-{}", info.pbi_start_tvsec, info.pbi_start_tvusec))
 }
 
+/// argv[0], since `pbi_comm` is the resolved binary cut to 16 bytes.
 #[cfg(target_os = "macos")]
 pub fn process_name(pid: u32) -> Option<String> {
-    let bytes: Vec<u8> = bsd_info(pid)?
-        .pbi_comm
-        .iter()
-        .take_while(|&&ch| ch != 0)
-        .map(|&ch| ch.to_ne_bytes()[0])
-        .collect();
-    String::from_utf8(bytes).ok()
+    let mut argmax: c_int = 0;
+    let mut argmax_len = size_of::<c_int>();
+    let mut argmax_mib = [CTL_KERN, KERN_ARGMAX];
+    // SAFETY: argmax is an int, the size KERN_ARGMAX writes.
+    let argmax_status = unsafe {
+        sysctl(
+            argmax_mib.as_mut_ptr(),
+            2,
+            (&raw mut argmax).cast::<c_void>(),
+            &raw mut argmax_len,
+            null_mut(),
+            0,
+        )
+    };
+    if argmax_status != 0_i32 {
+        return None;
+    }
+
+    let mut args = vec![0_u8; usize::try_from(argmax).ok()?];
+    let mut args_len = args.len();
+    let mut args_mib = [CTL_KERN, KERN_PROCARGS2, pid_t::try_from(pid).ok()?];
+    // SAFETY: the kernel writes at most args_len bytes into args.
+    let args_status = unsafe {
+        sysctl(
+            args_mib.as_mut_ptr(),
+            3,
+            args.as_mut_ptr().cast::<c_void>(),
+            &raw mut args_len,
+            null_mut(),
+            0,
+        )
+    };
+    if args_status != 0_i32 {
+        return None;
+    }
+
+    let argv0 = args
+        .get(size_of::<c_int>()..args_len)?
+        .split(|&byte| byte == 0)
+        .skip(1)
+        .find(|part| !part.is_empty())?;
+    String::from_utf8(argv0.to_vec()).ok()
 }
 
 pub fn process_holder_is_live(pid: u32, start_time: &str) -> bool {
