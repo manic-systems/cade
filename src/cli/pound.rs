@@ -114,6 +114,11 @@ pub enum CliAction {
 
         /// block until a background reload finishes, run before each command
         wait: bool,
+
+        /// whether --wait blocks, overriding `wait_before_command` in the
+        /// config
+        #[pound(long, value_name = "BOOL", env = "CADE_WAIT_BEFORE_COMMAND")]
+        wait_before_command: Option<bool>,
     },
 
     /// allow cade in the current .cade directory

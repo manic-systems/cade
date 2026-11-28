@@ -65,6 +65,7 @@ pub struct Config {
     pub long_running_warning_ms:   Option<u64>,
     pub shell_gc_root_ttl_seconds: Option<u64>,
     pub direnv:                    DirenvMode,
+    pub wait_before_command:       Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -74,6 +75,7 @@ struct RawConfig {
     long_running_warning_ms:   Option<u64>,
     shell_gc_root_ttl_seconds: Option<u64>,
     direnv:                    Option<String>,
+    wait_before_command:       Option<bool>,
 }
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
@@ -115,6 +117,13 @@ pub fn direnv_mode() -> DirenvMode {
             }
         },
     )
+}
+
+// the command line and env beat the config, which beats waiting by default
+pub fn wait_before_command(explicit: Option<bool>) -> bool {
+    explicit
+        .or_else(|| current().wait_before_command)
+        .unwrap_or(true)
 }
 
 pub fn xdg_dir(xdg_var: &str, home_relative: &str) -> Option<PathBuf> {
@@ -214,6 +223,7 @@ impl TryFrom<RawConfig> for Config {
             long_running_warning_ms: raw.long_running_warning_ms,
             shell_gc_root_ttl_seconds: raw.shell_gc_root_ttl_seconds,
             direnv,
+            wait_before_command: raw.wait_before_command,
         })
     }
 }
@@ -229,12 +239,14 @@ mod tests {
             long_running_warning_ms:   Some(100),
             shell_gc_root_ttl_seconds: Some(200),
             direnv:                    Some("full".into()),
+            wait_before_command:       Some(false),
         };
         let cfg: Config = raw.try_into().unwrap();
         assert_eq!(cfg.verbosity, Some(Verbosity::Vars));
         assert_eq!(cfg.long_running_warning_ms, Some(100));
         assert_eq!(cfg.shell_gc_root_ttl_seconds, Some(200));
         assert_eq!(cfg.direnv, DirenvMode::Full);
+        assert_eq!(cfg.wait_before_command, Some(false));
     }
 
     #[test]

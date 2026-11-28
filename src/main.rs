@@ -48,6 +48,7 @@ use crate::{
     config::{
         load as load_config,
         set as set_config,
+        wait_before_command,
     },
     core::{
         Announce,
@@ -106,6 +107,17 @@ fn print_hook(shell: ShellName, config_path: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+fn reload(
+    shell: CliShell,
+    wait: bool,
+    client_id: Option<&str>,
+    owner_pid: Option<u32>,
+) -> Result<()> {
+    let output = ShellName::from(shell).get_output();
+    do_reload(&Cade::init()?, output.as_ref(), wait, client_id, owner_pid)
+        .context("reload cade environment")
+}
+
 fn try_main() -> Result<()> {
     let Cli {
         config,
@@ -144,16 +156,13 @@ fn try_main() -> Result<()> {
                 owner_pid,
             );
         },
-        CliAction::Reload { shell, wait } => {
-            let output = ShellName::from(shell).get_output();
-            do_reload(
-                &Cade::init()?,
-                output.as_ref(),
-                wait || shell.waits_for_reload(),
-                client_id.as_deref(),
-                owner_pid,
-            )
-            .context("reload cade environment")?;
+        CliAction::Reload {
+            shell,
+            wait,
+            wait_before_command: wait_override,
+        } => {
+            let blocking = (wait && wait_before_command(wait_override)) || shell.waits_for_reload();
+            reload(shell, blocking, client_id.as_deref(), owner_pid)?;
         },
         CliAction::Export {
             format: CliExportFormat::Json,
