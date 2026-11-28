@@ -184,6 +184,7 @@ error. this is intended for wrappers and declarative systems.
 verbosity = "normal"           # quiet | normal | vars | trace
 long_running_warning_ms = 5000
 shell_gc_root_ttl_seconds = 2592000
+wait_before_command = true
 ```
 
 CLI flags override environment variables, which override the config file.
@@ -206,6 +207,16 @@ shell GC roots and snapshots are retained for 30 days by default. set
 in the environment to adjust that retention. for non-shell clients such as
 editors, open a lease and pass `--client-id` or `CADE_CLIENT_ID` when calling
 `cade`; the lease keeps associated roots alive until it is closed or expires.
+
+slow reloads (such as `use flake` after an edit) run in the background. by
+default the pre-command hook of fish, zsh, nushell, elvish, and murex blocks
+until that reload finishes, so the command sees the new environment. set
+`wait_before_command = false` in cade's config, `CADE_WAIT_BEFORE_COMMAND=false`
+in the environment, or pass `--wait-before-command=false` to `cade reload` to
+never block; the new environment is picked up at the first prompt or command
+after the reload completes. since bash has no pre-command hook, it always waits
+at the prompt.
+
 ## permissions
 
 cade only composes layers from directories you've **explicitly allowed**.

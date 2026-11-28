@@ -17,6 +17,7 @@ let
     inherit (cfg) verbosity;
     long_running_warning_ms = cfg.longRunningWarningMs;
     shell_gc_root_ttl_seconds = cfg.shellGcRootTtlSeconds;
+    wait_before_command = if cfg.waitBeforeCommand then null else false;
     direnv =
       if cfg.configFile != null || direnvCompatString == "envrc" then null else direnvCompatString;
   };
@@ -125,6 +126,12 @@ in
       default = null;
       description = "Shell GC root and snapshot retention time, in seconds.";
     };
+
+    waitBeforeCommand =
+      lib.mkEnableOption "blocking the pre-command hook until a background reload finishes"
+      // {
+        default = true;
+      };
 
     configFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
